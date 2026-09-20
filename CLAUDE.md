@@ -9,6 +9,132 @@ Designer flow: upload a master `.cdr` → pick a brand → add shops with W×H �
 position/size report. Backend is FastAPI (`backend/app`), frontend is
 React + Vite (`frontend/`).
 
+**Two UIs currently coexist** while the new one is built out in phases
+(see "New UI" below): the original single-page `App.jsx` flow described
+just above (`/api/jobs`, `/api/brands`, `/api/parse-shops`) is untouched
+and still works; the new sidebar-shell UI (`/api/v2/...`, SQLite-backed)
+is being built alongside it, not as a replacement yet. Engine-side work
+(layout rules, validation, tiling) is unaffected by either UI and
+continues independently - none of it was touched building the new UI.
+
+## New UI (in progress, phased - `frontend/src/pages/`, `backend/app/db.py`)
+
+A ground-up UI rebuild, kept deliberately separate from the original
+`App.jsx`/`/api/jobs` flow above (both currently work; nothing from the
+old flow was removed or changed). Building in phases, each reviewed
+before the next starts:
+
+- **Phase A (done)**: app shell (red/white/black theme, left sidebar,
+  React Router) + the "Automation" page - upload a master with a real
+  XHR upload-progress bar, an instant preview extracted from the `.cdr`
+  itself (see below - no CorelDRAW needed for this), brand management,
+  and a shops table where each row converts independently with live
+  step-by-step progress, reusing the existing `CorelEngine`/
+  `corel_supervisor`/single-worker queue unchanged.
+- **Phase B (not started)**: "Recently generated" page (currently a
+  placeholder stub) - list of past jobs/shops with download links.
+- **Phase C (not started)**: the canvas editor at `/editor/:jobId/:shopId`
+  (currently a placeholder stub, opened in a new browser tab from a
+  finished shop's row) - select/move/resize objects, layers panel,
+  undo/redo, backed by a COM-exported scene.
+- **Phase D (not started)**: "Save and Generate" - replay the editor's
+  recorded operations through COM and export the chosen output formats.
+
+### A real discovery: `.cdr` files (X4+) are ZIP archives
+
+CorelDRAW's own file format for X4 and later is a zip archive - confirmed
+by opening a real generated `.cdr` with Python's `zipfile` (`is_zipfile`
+returns `True`), which lists `previews/page1.png` and
+`previews/thumbnail.png` among its members, both valid, directly
+-decodable PNGs. This means the Automation page can show a real preview
+of the just-uploaded master **the instant the upload finishes**, with no
+CorelDRAW call at all - `main.py`'s `_extract_cdr_preview()` just opens
+the upload as a zip and pulls `previews/page1.png` straight out. Falls
+back to a clear "no preview available" message (not a crash) if the file
+turns out not to be zip-based (a pre-X4 `.cdr`) or has no matching entry.
+
+### Backend: `app/db.py` (SQLite) + `/api/v2/...` endpoints in `main.py`
+
+New, additive endpoints under `/api/v2/` - the pre-existing `/api/...`
+endpoints are untouched. Storage is SQLite (`<SIGNAGE_DATA>/signage.db`,
+`app/db.py`: `brands`, `jobs`, `shops` tables) rather than the old
+in-memory `_jobs` dict, specifically so an uploaded master, its shop list
+and any completed conversions survive a server restart - verified by hand
+(kill the server mid-session, restart it, `GET /api/v2/jobs/{id}` still
+returns the same shops and their `done` status).
+
+- `POST /api/v2/upload` (`master` file + `brand` form field) - saves the
+  master, extracts its preview (above), creates a `jobs` row. The upload
+  progress bar itself is a **frontend** concern
+  (`components/UploadDropzone.jsx` uses a raw `XMLHttpRequest` with
+  `xhr.upload.onprogress` - `fetch()` doesn't expose upload progress
+  reliably across browsers) - the backend just receives an ordinary
+  multipart body; `UploadFile` already spools large files to disk itself,
+  so no special handling was needed for the 300MB target.
+- `POST /api/v2/jobs/{job_id}/shops` - add one shop row (name,
+  width+unit, height+unit, optional reference note); persisted
+  immediately, independent of conversion.
+- `POST /api/v2/shops/{shop_id}/convert` - submitted to the **same**
+  single-worker `ThreadPoolExecutor` the old `/api/jobs` flow already
+  uses (`main.py`'s module-level `_pool`), so "one CorelDRAW job at a
+  time" holds across both UIs, not just within the new one. For
+  `CorelEngine`, routes through `corel_supervisor.run_batch` as a
+  single-job batch (same hang-protected worker-subprocess path
+  `validate_all.py` uses - see "Process isolation"); for `MockEngine`,
+  calls `engine.process()` directly in-process (no subprocess needed,
+  there's no COM/hang risk with the mock). Neither `engines.py` nor
+  `layout.py` needed any changes for this.
+- `GET /api/v2/shops/{shop_id}/status` - polled every ~800ms by the
+  frontend while a shop is converting. `_STEP_PERCENT` maps
+  `CorelEngine`'s existing named steps (`launch`/`open`/`tile_resize`/
+  `saveas`/`pdf`/`png` - see "Production hardening") to a rough
+  completion percentage and reads them **live off `corel_supervisor`'s
+  own heartbeat file** (written before each step of the running job) -
+  real backend-driven progress, not a fake timer, though necessarily
+  coarse (discrete step jumps) since COM gives step transitions, not
+  byte-level progress within a step. Verified against a live conversion:
+  the UI showed 55% (tile_resize) → 88% (pdf) → 97% (png) → Done, driven
+  entirely by these real heartbeat reads.
+- `GET /api/v2/shops/{shop_id}/files/{filename}` - serves a completed
+  shop's output files (cdr/pdf/png/report), same path-containment guard
+  pattern as the old `/api/jobs/{id}/files/...` endpoint.
+
+Width and height each have their **own** unit dropdown in the new UI
+(`in`/`cm`/`mm`/`ft`) - `engines.py`'s `_process` still only accepts one
+`shop["unit"]` for both dimensions (unchanged, per this phase's "don't
+touch engine layout logic" instruction), so `main.py`'s convert worker
+pre-converts both to mm itself via `layout.to_mm()` before building the
+`shop` dict the engine sees - the engine never has to know the UI offered
+two independent units.
+
+### Frontend: `frontend/src/` structure
+
+`main.jsx` wraps the app in `<BrowserRouter>` and imports `theme.css`
+(design tokens - colors/spacing/radius/shadows, the single file to edit
+for a theme change) then `styles.css` (component styles, built on those
+tokens). `App.jsx` is now just the route table: `/editor/:jobId/:shopId`
+is a top-level route with no sidebar (it opens in its own browser tab, so
+there's no shell to share); everything else renders inside `Shell`
+(sidebar + `<Routes>` for `Automation`/`RecentlyGenerated`).
+`pages/Automation.jsx` holds all of Phase A's logic; `components/
+UploadDropzone.jsx` is the standalone click-or-drag upload control.
+`pages/RecentlyGenerated.jsx` and `pages/EditorPage.jsx` are intentional
+placeholders for Phases B and C - not unfinished code left by accident,
+each just says what's coming.
+
+Verified by hand with Playwright (headless Chromium) driving the actual
+dev servers - both engines: a full upload → preview → add-brand →
+add-shop → convert → open-editor-in-new-tab pass against `MockEngine`,
+and the same pass again against the real `CorelEngine` (confirmed real
+step-by-step progress and real output files on disk, ~15s end to end for
+a 120×48in same-as-master-size board). Zero browser console errors in
+either run. No automated frontend tests yet (this phase's testing was
+manual + scripted browser verification, not unit tests) -
+`backend/tests/test_main_v2.py` covers the new API endpoints against
+`MockEngine` (brand add/list, upload+preview extraction including the
+non-zip and no-preview-found fallback paths, add-shop validation, convert
+-to-done, path-traversal rejection on the file-serving endpoint).
+
 ## Layout rules (`backend/app/layout.py`)
 
 Pure Python, unit-tested, no CorelDRAW dependency — takes a list of `Obj`
