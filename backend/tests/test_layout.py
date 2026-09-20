@@ -468,6 +468,40 @@ def test_panel_sequence_card_from_content_matches_measured_proportion():
     assert badge_content.h / borrowed_bg.h == pytest.approx(0.3, abs=0.02)
 
 
+def test_panel_sequence_card_from_recolors_white_content_to_match_template_text():
+    # tamil_content is styled dark blue in the master; badge_content is pure
+    # white (styled for the master's own dark background) - it must be
+    # recoloured to match when moved onto the new white card, or it renders
+    # invisibly (confirmed live on a real board - see CLAUDE.md)
+    objs = [o for o in CARD_FROM_OBJS if o.id != "tamil_content"] + [
+        Obj("tamil_content", "logo_icon", "group", 120, 170, 60, 60, fill_cmyk=(95, 80, 4, 0)),
+    ]
+    objs = [o for o in objs if o.id != "badge_content"] + [
+        Obj("badge_content", "logo_c", "group", 850, 350, 40, 40, fill_cmyk=(0, 0, 0, 0)),
+    ]
+    r = by_id(compute_layout(
+        objs, *CARD_FROM_PAGE, 3000, 1000, tile=True,
+        shopname_ids={"name"}, brand_rule=CARD_FROM_RULE,
+    ))
+    badge_content = next(p for k, p in r.items() if k.startswith("badge_content_tile"))
+    assert badge_content.recolor_cmyk == (95, 80, 4, 0)
+
+
+def test_panel_sequence_card_from_does_not_recolor_non_white_content():
+    objs = [o for o in CARD_FROM_OBJS if o.id != "tamil_content"] + [
+        Obj("tamil_content", "logo_icon", "group", 120, 170, 60, 60, fill_cmyk=(95, 80, 4, 0)),
+    ]
+    objs = [o for o in objs if o.id != "badge_content"] + [
+        Obj("badge_content", "logo_c", "group", 850, 350, 40, 40, fill_cmyk=(20, 30, 40, 0)),  # not white - e.g. the icon
+    ]
+    r = by_id(compute_layout(
+        objs, *CARD_FROM_PAGE, 3000, 1000, tile=True,
+        shopname_ids={"name"}, brand_rule=CARD_FROM_RULE,
+    ))
+    badge_content = next(p for k, p in r.items() if k.startswith("badge_content_tile"))
+    assert badge_content.recolor_cmyk is None
+
+
 def test_panel_sequence_keeps_unmatched_shape_at_its_own_proportional_position():
     # a decorative shape far from every named group's bbox (e.g. dalmia's
     # real full-width accent strip) must NOT be force-assigned to whichever

@@ -81,6 +81,7 @@ class Obj:
     w: float  # mm
     h: float  # mm
     text: str | None = None  # content, for kind=="text" objects only
+    fill_cmyk: tuple | None = None  # (c, m, y, k) 0-100, best-effort - None if not a uniform fill or unreadable
 
 
 @dataclass
@@ -96,6 +97,8 @@ class Placed:
     warnings: list = field(default_factory=list)
     text: str | None = None  # new text content, if this shape's text should be replaced
     font: str | None = None  # font to set alongside `text` (e.g. for Tamil content)
+    bring_to_front: bool = False  # CorelEngine should call Shape.OrderToFront() after positioning this shape
+    recolor_cmyk: tuple | None = None  # CorelEngine should set this shape's uniform fill to this (c, m, y, k)
 
     def to_dict(self):
         return asdict(self)
@@ -588,7 +591,7 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
             template_objs = buckets.get(card_from)
             if not template_objs:
                 continue  # template wasn't placed this run either - nothing to borrow
-            bg_objs, _ = _split_bg_and_content(template_objs)
+            bg_objs, template_content = _split_bg_and_content(template_objs)
             if not bg_objs:
                 continue
             bx0, by0, bx1, by1 = _bbox(bg_objs)
@@ -624,7 +627,40 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
             content_cy = card_bottom + frac["cy"] * gh_s
             content_x_offset = content_cx - c_gw_s / 2 - cbx0 * content_scale
             content_y_offset = content_cy - c_gh_s / 2 - cby0 * content_scale
-            out.extend(_place_tile_copy(objs, roles, content_scale, content_x_offset, content_y_offset, i))
+            content_placed = _place_tile_copy(objs, roles, content_scale, content_x_offset, content_y_offset, i)
+
+            # Some of this group's own content is styled for the master's
+            # ORIGINAL background, not the new white card it's being moved
+            # onto - confirmed live: the badge's English wordmark curves are
+            # pure white (CMYK 0,0,0,0), meant to read against the master's
+            # dark blue page, and render invisibly on the new white card.
+            # The Tamil card's own text is a consistent dark blue (CMYK
+            # 95,80,4,0 in the master) - recolour any pure-white content
+            # shape to that same colour (never touches the icon's own
+            # multi-coloured curves, which aren't white) so the borrowed
+            # -card content actually matches the template's own card style,
+            # not just its size and position.
+            template_text_cmyk = next((o.fill_cmyk for o in template_content
+                                        if o.fill_cmyk and o.fill_cmyk != (0, 0, 0, 0)), None)
+            if template_text_cmyk:
+                white_ids = {p.id for o, p in zip(objs, content_placed) if o.fill_cmyk == (0, 0, 0, 0)}
+                for p in content_placed:
+                    if p.id in white_ids:
+                        p.recolor_cmyk = template_text_cmyk
+
+            # The borrowed card background above is a COM Shape.Duplicate() of
+            # the template's own card, which CorelDRAW stacks directly above
+            # the template in z-order - not above this group's own content,
+            # which keeps whatever z-order position it already had in the
+            # master (often well below the template's card). Left alone, the
+            # new card visually covers the content it's supposed to frame -
+            # confirmed live: the badge's card rendered completely blank.
+            # CorelEngine brings each of these to the front of its layer
+            # after positioning it, so the content always ends up on top of
+            # its own newly-placed card.
+            for p in content_placed:
+                p.bring_to_front = True
+            out.extend(content_placed)
             continue
 
         bx0, by0, bx1, by1 = _bbox(objs)

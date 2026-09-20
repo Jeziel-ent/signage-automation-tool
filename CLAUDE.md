@@ -494,6 +494,36 @@ card's box. `enlarged_badge_card` in `brand_rules/dalmia.json` now uses
 `test_panel_sequence_card_from_gives_the_bare_group_a_matching_card_background`
 and `..._content_matches_measured_proportion`.
 
+**Two more bugs found getting `card_from` to actually render correctly**
+(both only visible by looking at the rendered PNG, not from any number):
+
+- **The duplicated card rendered on top of the badge's own content,
+  hiding it completely.** `Shape.Duplicate()` stacks the new card directly
+  above the template it was copied from in z-order, not above *this*
+  group's own content, which keeps whatever z-order position it already
+  had in the master. Fixed by adding `Placed.bring_to_front` (set on the
+  content shapes placed by `card_from`) and having `CorelEngine` call
+  `Shape.OrderToFront()` on them right after positioning.
+- **Even visible, the wordmark text was invisible on the new card**: it
+  rendered as the colourful icon with no "Dalmia Bharat CEMENT" text at
+  all. Read the shapes' actual fill via COM to find out why - the badge's
+  English wordmark curves are a uniform CMYK (0,0,0,0) - pure white,
+  styled for the master's own dark blue page background - while the Tamil
+  card's own text is CMYK (95,80,4,0), a dark blue. White-on-white is
+  invisible. Fixed by adding `Obj.fill_cmyk` (read via COM,
+  `Shape.Fill.UniformColor` - note `.RGBRed` etc. raise "Incompatible
+  color model" on a CMYK fill, so CMYK is read directly rather than tried
+  as a fallback) and `Placed.recolor_cmyk`: `_place_panel_sequence` finds
+  the template's own non-white content colour and applies it to any
+  *pure-white* content shape being moved onto the borrowed card (never
+  touches the icon's own multi-coloured curves, which aren't white).
+  `CorelEngine` applies it via `Shape.Fill.UniformColor.CMYKAssign(...)`
+  and reads the colour back to confirm it stuck, the same verify
+  -don't-trust pattern already used for font writes (see "Shop name
+  replacement"). Covered by
+  `test_panel_sequence_card_from_recolors_white_content_to_match_template_text`
+  and `..._does_not_recolor_non_white_content`.
+
 **b) The shop name belongs in the bottom bar, not a gap between panels.**
 The gap-centring shopname placement (`_place_shopname_in_gap`, built for
 the original single-rigid-panel tiling, before `panel_sequence` existed)
@@ -539,6 +569,25 @@ holds for more than one sample), **no rule was implemented**. Board 12
 stays exactly as already labelled: a known outlier
 (`validate_all.py`'s `KNOWN_OUTLIERS`), reviewed by hand, not covered by
 any geometric rule - a REVIEW case, not a fixable gap.
+
+**Final result on all 4 wide boards, after (a) and (b) above** (visual
+`combined` score; geometry diff % kept for reference only - see "Metrics
+suite" for why it's the less trustworthy number for this kind of change):
+
+| Board | Aspect | Before this round | After | 0.75 pass? |
+|---|---|---|---|---|
+| 02 (180x48) | 3.75 | 0.380 | **0.785** | **PASS** |
+| 06 (180x60) | 3.00 | 0.411 | **0.727** | FAIL (just under) |
+| 11 (216x48) | 4.50 | 0.347 | **0.620** | FAIL |
+| 11 (240x60) | 4.00 | 0.403 | **0.821** | **PASS** |
+
+Two of the four wide boards now pass outright (02, 240x60), a genuine
+first for this master's tiled boards. **Net effect on the full dalmia
+set: 9/12 pass at 0.75, up from 7/12** before this round. 06 (180x60) is
+close (0.02 under); 11 (216x48) - the one board using `sequence_4`, the
+least-evidenced regime (a single sample informs its sizing) - remains the
+furthest from passing, consistent with it being the hardest case in the
+dataset from the start.
 
 ## Per-shop content replacement (phone / GST / address)
 
@@ -1234,15 +1283,16 @@ tuning image-similarity weights.
 
 ## Tests
 
-`backend/tests/test_layout.py` (39 tests: the original 7, tiling, shop-name
+`backend/tests/test_layout.py` (41 tests: the original 7, tiling, shop-name
 replacement, the footer-text-not-tiled fix, brand-rule tiling, per-shop
 contact-info replacement - `find_contact_ids`/`_contact_replacement` - and
 `panel_sequence` tiling - slot count by aspect, badge enlargement, even
 spacing, schema precedence, the unmatched-shape fallback that catches the
 accent-strip bug, per-aspect `size_table` interpolation/clamping instead
 of a flat average, width-constrained scaling for a group whose real
-proportions don't match its master shape's own aspect ratio, and the
-`card_from` borrowed-card-background mechanism - all described above),
+proportions don't match its master shape's own aspect ratio, the
+`card_from` borrowed-card-background mechanism, and its white-content
+recolor-to-match-template logic - all described above),
 `backend/tests/test_batch_import.py`
 (8 tests), `backend/tests/test_metrics.py` (22 tests: dhash/edge math,
 cluster matching, counts, and every layout check including the full-bleed
@@ -1256,7 +1306,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 81 passed as of this writing. Note that the
+`pytest` from `backend/` — 83 passed as of this writing. Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a

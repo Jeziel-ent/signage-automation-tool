@@ -83,6 +83,27 @@ class CorelEngine:
             return None
 
     @staticmethod
+    def _shape_fill_cmyk(s) -> tuple | None:
+        """Best-effort: a shape's uniform fill colour in CMYK (0-100 each),
+        rounded to whole numbers - None for any other fill type (or an
+        unreadable one). Reading `.RGBRed` etc. on a CMYK-model colour
+        raises "Incompatible color model", confirmed live - CMYK is read
+        directly instead of trying RGB first, since every sampled shape in
+        this master's logos uses CMYK. Used by `_place_panel_sequence`'s
+        `card_from` to tell a genuinely white detail (styled for the
+        master's dark page background) from the icon's own multi-coloured
+        curves, so only the former gets recoloured for its new white card.
+        """
+        try:
+            fill = s.Fill
+            if int(fill.Type) != 1:  # cdrUniformFill
+                return None
+            c = fill.UniformColor
+            return (round(c.CMYKCyan), round(c.CMYKMagenta), round(c.CMYKYellow), round(c.CMYKBlack))
+        except Exception:
+            return None
+
+    @staticmethod
     def _set_replacement_text(shape, placed) -> None:
         """Write the replacement text (and font, for Tamil content) via COM,
         then fit it into the space the layout actually gave this shape.
@@ -217,7 +238,8 @@ class CorelEngine:
                     shapes_by_id[oid] = s
                     objs.append(Obj(oid, s.Name or f"object_{i+1}", kind,
                                     float(s.LeftX), float(s.BottomY),
-                                    float(s.SizeWidth), float(s.SizeHeight), text))
+                                    float(s.SizeWidth), float(s.SizeHeight), text,
+                                    self._shape_fill_cmyk(s)))
 
                 shopname_ids = find_shopname_ids(
                     objs, shop.get("master_shop_name"), shop.get("master_shop_name_local"),
@@ -270,6 +292,37 @@ class CorelEngine:
                     shape.SetSize(p.w, p.h)
                     shape.LeftX = p.x
                     shape.BottomY = p.y
+                    if p.bring_to_front:
+                        # A duplicated card background (see layout._place_panel_sequence's
+                        # `card_from`) stacks directly above the template it was
+                        # duplicated from, not above THIS shape's own content -
+                        # left alone, the new card visually covers the content
+                        # it's meant to frame. Confirmed live: without this, the
+                        # borrowed card rendered completely blank.
+                        try:
+                            shape.OrderToFront()
+                        except Exception as e:
+                            p.warnings.append(f"could not bring shape to front: {e}")
+                    if p.recolor_cmyk is not None:
+                        # A borrowed-card content shape (see `bring_to_front`
+                        # above) styled white for the master's own dark
+                        # background - recoloured to match the template
+                        # card's own text colour so it's actually visible on
+                        # its new white card. CMYKAssign is expected to
+                        # mutate the Color object `Fill.UniformColor`
+                        # returns in place - if it doesn't stick, the
+                        # warning below is how that gets caught rather than
+                        # failing silently.
+                        try:
+                            c, m, y, k = p.recolor_cmyk
+                            shape.Fill.UniformColor.CMYKAssign(c, m, y, k)
+                            after = shape.Fill.UniformColor
+                            got = (round(after.CMYKCyan), round(after.CMYKMagenta),
+                                   round(after.CMYKYellow), round(after.CMYKBlack))
+                            if got != (c, m, y, k):
+                                p.warnings.append(f"recolor to {p.recolor_cmyk} did not stick (read back {got})")
+                        except Exception as e:
+                            p.warnings.append(f"could not recolor shape: {e}")
                     if p.text is not None:
                         self._set_replacement_text(shape, p)
                 return page_w, page_h, placed
