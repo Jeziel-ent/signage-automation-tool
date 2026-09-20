@@ -3,7 +3,7 @@ pure Python, small synthetic values/labels, no CorelDRAW and no real report data
 """
 from __future__ import annotations
 
-from tools.calibrate_threshold import best_threshold, propose_thresholds
+from tools.calibrate_threshold import _render_md, best_threshold, propose_thresholds
 
 
 def test_best_threshold_perfectly_separable_higher_is_better():
@@ -57,7 +57,7 @@ def test_best_threshold_everything_passes_or_fails_is_a_valid_answer():
     assert r["threshold"] < min(values)
 
 
-def _card(safe, visual=None, pos_mm=None, size_mm=None, area=None, content=None):
+def _card(safe, visual=None, pos_mm=None, size_mm=None, area=None, content=None, unmatched_ours=None):
     c = {"safe": safe, "shop": safe, "target": "1000x500mm"}
     if visual is not None:
         c["visual"] = {"combined": visual}
@@ -69,6 +69,8 @@ def _card(safe, visual=None, pos_mm=None, size_mm=None, area=None, content=None)
         }
     if content is not None:
         c["content_check"] = {"overall": content}
+    if unmatched_ours is not None:
+        c["clusters"] = {"unmatched_ours": unmatched_ours}
     return c
 
 
@@ -114,3 +116,35 @@ def test_propose_thresholds_skips_a_metric_with_too_few_distinct_values():
     result = propose_thresholds(cards, labels)
     visual = next(p for p in result["proposals"] if p["metric"] == "visual_combined")
     assert "note" in visual and visual["accuracy"] is None
+
+
+def test_unmatched_ours_is_a_candidate_metric_lower_is_better():
+    cards = [
+        _card("a", visual=0.9, unmatched_ours=0),
+        _card("b", visual=0.9, unmatched_ours=1),
+        _card("c", visual=0.9, unmatched_ours=2),
+        _card("d", visual=0.9, unmatched_ours=5),
+    ]
+    labels = {"a": True, "b": True, "c": True, "d": False}
+    result = propose_thresholds(cards, labels)
+    row = next(p for p in result["proposals"] if p["metric"] == "unmatched_ours")
+    assert row["direction"] == "lower_is_better"
+    assert row["accuracy"] == 1.0 and row["misclassified"] == []
+
+
+def test_report_warns_specifically_on_the_unmatched_ours_row():
+    cards = [
+        _card("a", visual=0.9, unmatched_ours=0),
+        _card("b", visual=0.5, unmatched_ours=1),
+        _card("c", visual=0.9, unmatched_ours=2),
+        _card("d", visual=0.9, unmatched_ours=5),
+    ]
+    labels = {"a": True, "b": True, "c": True, "d": False}
+    result = propose_thresholds(cards, labels)
+    md = _render_md("dalmia", result)
+    lines = md.splitlines()
+    row_i = next(i for i, l in enumerate(lines) if l.startswith("| unmatched_ours"))
+    assert "Warning" in lines[row_i + 1] and "1 NOT_OK" in lines[row_i + 1]
+    # other metrics' rows do not get this same warning
+    visual_i = next(i for i, l in enumerate(lines) if l.startswith("| visual_combined"))
+    assert "Warning" not in lines[visual_i + 1]

@@ -94,6 +94,13 @@ _METRIC_DEFS = [
     ("geo_max_position_error_mm", "lower_is_better", lambda c: (c.get("geometric") or {}).get("position_error_mm", {}).get("max")),
     ("geo_max_size_error_mm", "lower_is_better", lambda c: (c.get("geometric") or {}).get("size_error_mm", {}).get("max")),
     ("geo_mean_position_error_mm", "lower_is_better", lambda c: (c.get("geometric") or {}).get("position_error_mm", {}).get("mean")),
+    # How many of our clusters had no matching cluster in the real file at all (metrics.cluster_compare) -
+    # a structural "we produced something the real file doesn't have" signal, distinct from position/size
+    # error on clusters that DID match. Added after manual inspection of the dalmia labels found it separates
+    # 11/12 boards (only TAMILNADU STEELS stands out at 5, everything else is 0-2) where every other candidate
+    # here caps at 10/12 - see CLAUDE.md "Step 3b" for the important caveat: this was found by looking at only
+    # 2 negative labels, so treat it as a lead worth watching, not a validated rule.
+    ("unmatched_ours", "lower_is_better", lambda c: (c.get("clusters") or {}).get("unmatched_ours")),
 ]
 for _t in (2.0, 5.0, 10.0):
     def _area_pct(c, _t=_t):
@@ -178,6 +185,12 @@ def _render_md(brand: str, result: dict) -> str:
             f"| {p['metric']} | {p['direction']} | {p['threshold']:.3f} | {p['accuracy']:.0%} | "
             f"{p['n_correct']}/{p['n_total']} | {', '.join(p['misclassified']) or '-'} |"
         )
+        if p["metric"] == "unmatched_ours":
+            lines.append(
+                f"> **Warning:** `unmatched_ours` was added as a candidate after eyeballing this exact "
+                f"labelled set - its apparent separation rests on only {result['n_not_ok']} NOT_OK label(s). "
+                f"Report only; not a validated rule until more negative labels confirm it."
+            )
     if result["content_check_reference"]:
         c = result["content_check_reference"]
         lines += ["", f"**Reference (not a threshold):** content check alone gets {c['accuracy']:.0%} "

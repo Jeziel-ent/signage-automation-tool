@@ -1749,6 +1749,26 @@ whether/how to apply a proposal).
   separability, tie-breaking, "everything passes" as a valid answer),
   independent of any real board data.
 
+### Step 3b: calibration run on real labels (10 OK / 2 NOT_OK) - full report in `docs/engine-report.md`
+
+First pass came back all-OK (0 negative labels - every metric trivially
+"succeeds," which is meaningless, not a good sign; reported honestly rather
+than presented as a real result). Second pass had 10 OK / 2 NOT_OK
+(AHMED TRADERS 240x60, TAMILNADU STEELS). No existing candidate beats 83%
+(10/12) - AHMED 216x48 (labelled OK) scores *worse* than both NOT_OK boards
+on visual/position/size/area, while AHMED 240x60 (labelled NOT_OK) scores
+*better* than several OK boards, so no single threshold on any one metric
+can separate them. Manually inspecting the labelled set found
+`clusters.unmatched_ours` (how many of our clusters matched nothing in the
+real file) separates 11/12 - added to `calibrate_threshold.py`'s candidate
+list, with an explicit warning (in both the code and its rendered report)
+that this rests on only 2 negative labels and is a lead, not a validated
+rule. `metrics_config.json` is still untouched; the threshold search was
+stopped here per instruction. Full table, the "what 12 labels can/cannot
+show" discussion, and the GOOD-vs-NOT_OK safety check against Step 5 (0
+violations on this labelled set - see below) are in `docs/engine-report.md`,
+not duplicated here.
+
 ### Step 4: wide-board scale gap - leave-one-out on the panel_sequence size_table (negative result, no rule changed)
 
 `tools/wide_board_loo.py` asks: given only 4 real wide dalmia boards, each
@@ -1867,6 +1887,12 @@ an unknown brand, non-positive sizes, and a regime with zero samples. A
 10th test DOES load the real `confidence_bounds.json` and checks every
 validated dalmia board comes back GOOD or REVIEW (never MANUAL purely for
 "unknown"), skipped gracefully if that file isn't present in a checkout.
+
+**Checked against the real Step 3b labels** (`docs/engine-report.md`): the
+property that actually matters - never GOOD on a board a human rejected -
+holds on all 12 labelled boards (0 violations). 3 boards the human accepted
+come back REVIEW (all tiled/wide, the regime with historically large
+error) - conservative in the safe direction, not treated as a defect.
 
 ## Metrics suite (Phase 1: `backend/tools/metrics.py`)
 
