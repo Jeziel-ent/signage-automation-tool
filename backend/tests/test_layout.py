@@ -412,6 +412,62 @@ def test_panel_sequence_clamps_scale_by_width_when_it_is_the_tighter_constraint(
     assert badge.h < 0.5 * 1000  # shorter than the naive height-only target, to preserve aspect
 
 
+# -- panel_sequence "card_from": a bare group gets a borrowed white-card background --
+CARD_FROM_PAGE = (1000.0, 400.0)
+CARD_FROM_OBJS = [
+    Obj("bg", "bg", "shape", 0, 0, 1000, 400),
+    Obj("tamil_bg", "card_bg", "shape", 50, 100, 200, 200),  # the "white card" - covers the whole group bbox
+    Obj("tamil_content", "logo_icon", "group", 120, 170, 60, 60),  # icon+text, small relative to the card
+    Obj("filler", "logo_b", "group", 400, 150, 100, 100),
+    Obj("badge_content", "logo_c", "group", 850, 350, 40, 40),  # bare in the master - no card of its own; square so its content:card ratio is exact on both axes
+    Obj("name", "Shop name", "text", 300, 350, 200, 30, text="OLD SHOP"),
+]
+CARD_FROM_RULE = {
+    "panel_sequence": {
+        "aspect_split": 100.0,  # keep this test in sequence_3
+        "groups": [
+            {"group_id": "tamil_card", "bbox_mm": {"x": 50, "y": 100, "w": 200, "h": 200},
+             "size_table": [{"aspect": 3.0, "target_h_frac": 0.5, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
+            {"group_id": "roof_graphic", "bbox_mm": {"x": 400, "y": 150, "w": 100, "h": 100},
+             "size_table": [{"aspect": 3.0, "target_h_frac": 0.3, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
+            {"group_id": "enlarged_badge_card", "bbox_mm": {"x": 850, "y": 350, "w": 40, "h": 20},
+             "card_from": "tamil_card", "card_content_frac": {"w": 0.3, "h": 0.3, "cx": 0.5, "cy": 0.5}},
+        ],
+        "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
+        "sequence_4": ["tamil_card", "roof_graphic", "enlarged_badge_card", "roof_graphic"],
+    },
+}
+
+
+def test_panel_sequence_card_from_gives_the_bare_group_a_matching_card_background():
+    r = by_id(compute_layout(
+        CARD_FROM_OBJS, *CARD_FROM_PAGE, 3000, 1000, tile=True,
+        shopname_ids={"name"}, brand_rule=CARD_FROM_RULE,
+    ))
+    # the borrowed card background (a duplicate of tamil_bg) must appear in the badge's slot
+    borrowed_bg = next(p for k, p in r.items() if k.startswith("tamil_bg_tile") and k != "tamil_bg_tile0")
+    tamil_bg = r["tamil_bg_tile0"]
+    badge_content = next(p for k, p in r.items() if k.startswith("badge_content_tile"))
+    # same size as the template's own card (both use tamil_card's size table)
+    assert borrowed_bg.w == pytest.approx(tamil_bg.w, rel=0.01)
+    assert borrowed_bg.h == pytest.approx(tamil_bg.h, rel=0.01)
+    # badge's own content sits INSIDE the borrowed card, not stretched to fill it
+    assert badge_content.w < borrowed_bg.w
+    assert badge_content.h < borrowed_bg.h
+    assert borrowed_bg.x <= badge_content.x and badge_content.x + badge_content.w <= borrowed_bg.x + borrowed_bg.w
+
+
+def test_panel_sequence_card_from_content_matches_measured_proportion():
+    r = by_id(compute_layout(
+        CARD_FROM_OBJS, *CARD_FROM_PAGE, 3000, 1000, tile=True,
+        shopname_ids={"name"}, brand_rule=CARD_FROM_RULE,
+    ))
+    borrowed_bg = next(p for k, p in r.items() if k.startswith("tamil_bg_tile") and k != "tamil_bg_tile0")
+    badge_content = next(p for k, p in r.items() if k.startswith("badge_content_tile"))
+    assert badge_content.w / borrowed_bg.w == pytest.approx(0.3, abs=0.02)
+    assert badge_content.h / borrowed_bg.h == pytest.approx(0.3, abs=0.02)
+
+
 def test_panel_sequence_keeps_unmatched_shape_at_its_own_proportional_position():
     # a decorative shape far from every named group's bbox (e.g. dalmia's
     # real full-width accent strip) must NOT be force-assigned to whichever

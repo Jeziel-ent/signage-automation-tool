@@ -459,6 +459,87 @@ its existing behaviour (skip regenerating boards that already succeeded).
 A bare `--only <substr>` run can no longer silently discard the rest of
 the report.
 
+### Three more fixes from a visual review of the wide-board renders
+
+Found by looking at the actual rendered PNGs rather than only the scores,
+after the per-aspect sizing work above:
+
+**a) The enlarged badge needs a white card, not just bigger bare
+logo/text.** Every real wide board puts the "Dalmia Bharat Cement" badge
+inside a white card matching the Tamil card's own size and drop shadow -
+confirmed by eye earlier (see the panel-sequence description above) but
+not actually built: `_place_panel_sequence` was scaling up the master's
+*bare* badge shapes (icon + English text, no card - the master's own
+badge sits directly on the blue background) to card size, which visually
+reads as an oversized logo, not a matching card.
+
+Fixed with a new `card_from` mechanism, since the badge has no card
+background of its own to scale: a group can declare `"card_from":
+"<other_group_id>"`, and `_place_panel_sequence` then (1) splits the
+*template* group's own shapes into "background" vs. "content" by bounding
+-box area ratio (`BG_AREA_RATIO = 0.5` - a shape covering half or more of
+its group's own bbox is a card/shadow, not logo/text content; verified
+against the master's Tamil card: two duplicate-pair shapes at 94.7%/79.5%
+area ratio are clearly the white card + drop shadow, the remaining ~46
+shapes at 1-5% each are the icon and Tamil text), (2) duplicates the
+template's background shapes, sized via the *template's own* `size_table`
+(both cards measure out nearly identical anyway - see the per-aspect data
+above) but positioned in the borrowing group's own sequence cell, and (3)
+places the borrowing group's own content centred inside at a measured
+`card_content_frac` (`{w, h, cx, cy}`, fractions of the card) - read
+directly off the master's own Tamil card: its icon+text occupies 80.4% of
+the card's width, 50.0% of its height, centred at (45.8%, 56.4%) of the
+card's box. `enlarged_badge_card` in `brand_rules/dalmia.json` now uses
+`card_from: "tamil_card"` instead of its own `size_table`. Covered by
+`test_panel_sequence_card_from_gives_the_bare_group_a_matching_card_background`
+and `..._content_matches_measured_proportion`.
+
+**b) The shop name belongs in the bottom bar, not a gap between panels.**
+The gap-centring shopname placement (`_place_shopname_in_gap`, built for
+the original single-rigid-panel tiling, before `panel_sequence` existed)
+put the shop name near the page's vertical centre on wide boards instead
+of its normal spot in the bottom text bar alongside the "authorized
+dealer" footer and phone/GST line - confirmed by eye on 11-216's render,
+where it showed up as small text wedged between two panels. Real boards
+(tiled or not) always keep it in the bottom bar. Fixed: `compute_layout`
+now only defers the shop name to the gap-centring path for the generic
+single-panel/brand-ruled-groups tiling schemes; a `panel_sequence` brand
+rule lets it fall through to the same plain proportional scale+centre
+placement every other fixed text shape uses, landing it back in its
+natural bottom-bar position. Covered by the existing panel_sequence tests
+(none of which special-case the shop name's placement path anymore) plus
+a new metrics.py check:
+
+`metrics.layout_checks`'s new `shopname_in_bottom_bar` check - fails if
+any shopname shape's vertical centre sits more than
+`layout.bottom_bar_margin_mm` (30mm) outside the y-range spanned by the
+other `text`-role shapes (footer, phone/GST) on the SAME generated board;
+passes trivially if there's no shopname or no other fixed text to compare
+against. This is a hard-fail check (counts toward a board's overall
+PASS/FAIL in `build_metrics_report.py`, same as `text_overlap`).
+
+**c) Board 12 (120x60) - analyzed, not turned into a rule.** Compared 12's
+real file against 03 (120x48, a same-master-width board at the master's
+own height) to test the hypothesis that a taller-than-usual board scales
+content to fill the extra height rather than leaving it at the uniform
+-fit size. Found: the Tamil card's height fraction *did* grow (0.668 in
+03 -> 0.612 in 12) more than the "no scale" prediction (0.534, i.e.
+`0.668 / (60/48)`) but less than "scaled by the full height ratio, same
+fraction as 03" (0.668 unchanged) - a partial effect, not a clean factor.
+More tellingly, clustering 12's own logo shapes (even at a widened 40mm
+margin, well above the 20mm normally used) merges what are two separate
+groups on every other sampled board (the roof graphic and the badge) into
+one 82-shape blob - the designer moved them closer together on this
+board, not just resized them uniformly. This is the same "manual creative
+redesign" pattern already documented for extreme aspect ratios (see
+"Designer dataset analysis"), and there is exactly **one** 120x-tall
+-height sample in the whole dataset to test any hypothesis against - per
+the explicit instruction driving this analysis (apply a rule only if it
+holds for more than one sample), **no rule was implemented**. Board 12
+stays exactly as already labelled: a known outlier
+(`validate_all.py`'s `KNOWN_OUTLIERS`), reviewed by hand, not covered by
+any geometric rule - a REVIEW case, not a fixable gap.
+
 ## Per-shop content replacement (phone / GST / address)
 
 Real masters embed shop-specific contact details, not just the shop name -
@@ -1153,19 +1234,20 @@ tuning image-similarity weights.
 
 ## Tests
 
-`backend/tests/test_layout.py` (37 tests: the original 7, tiling, shop-name
+`backend/tests/test_layout.py` (39 tests: the original 7, tiling, shop-name
 replacement, the footer-text-not-tiled fix, brand-rule tiling, per-shop
 contact-info replacement - `find_contact_ids`/`_contact_replacement` - and
 `panel_sequence` tiling - slot count by aspect, badge enlargement, even
 spacing, schema precedence, the unmatched-shape fallback that catches the
 accent-strip bug, per-aspect `size_table` interpolation/clamping instead
-of a flat average, and width-constrained scaling for a group whose real
-proportions don't match its master shape's own aspect ratio - both
-described above), `backend/tests/test_batch_import.py`
-(8 tests), `backend/tests/test_metrics.py` (19 tests: dhash/edge math,
+of a flat average, width-constrained scaling for a group whose real
+proportions don't match its master shape's own aspect ratio, and the
+`card_from` borrowed-card-background mechanism - all described above),
+`backend/tests/test_batch_import.py`
+(8 tests), `backend/tests/test_metrics.py` (22 tests: dhash/edge math,
 cluster matching, counts, and every layout check including the full-bleed
-margin exemption and text_overlap, all on small synthetic shape
-lists/images - no CorelDRAW, no real dataset files) and
+margin exemption, text_overlap, and shopname_in_bottom_bar, all on small
+synthetic shape lists/images - no CorelDRAW, no real dataset files) and
 `backend/tests/test_example_engine.py` (7 tests: entity classification, the
 shopname-by-relative-height matching fix, example transform recording,
 nearest/interpolated prediction, and the brand-override hook, all on small
@@ -1174,7 +1256,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 76 passed as of this writing. Note that the
+`pytest` from `backend/` — 81 passed as of this writing. Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a

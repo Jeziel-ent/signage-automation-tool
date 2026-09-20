@@ -299,6 +299,32 @@ def layout_checks(ours_shapes: list[dict], page_w: float, page_h: float, config:
         "detail": f"{overlapping_text} pair(s) of text/shopname shapes overlap",
     })
 
+    # The shop name belongs in the same bottom text bar as the other fixed
+    # text (footer, phone/GST) - confirmed on every real dalmia board,
+    # tiled or not. Before this check existed, a wide/tiled board's
+    # gap-centring shopname placement put it near the page's vertical
+    # centre instead - visibly wrong on inspection, but nothing flagged it.
+    # "Bottom bar" is defined from the OTHER text shapes' own vertical
+    # span, not a fixed page fraction, since it should track wherever that
+    # band actually is on this specific master.
+    text_only = [s for s in ours_shapes if s["role"] == "text"]
+    shopname_only = [s for s in ours_shapes if s["role"] == "shopname"]
+    if not text_only or not shopname_only:
+        results.append({
+            "check": "shopname_in_bottom_bar", "status": "pass",
+            "detail": "no shopname or no other fixed text to compare its position against",
+        })
+    else:
+        bar_y0 = min(s["y"] for s in text_only)
+        bar_y1 = max(s["y"] + s["h"] for s in text_only)
+        margin = lc["bottom_bar_margin_mm"]
+        outside = [s for s in shopname_only if not (bar_y0 - margin <= s["y"] + s["h"] / 2 <= bar_y1 + margin)]
+        results.append({
+            "check": "shopname_in_bottom_bar", "status": "pass" if not outside else "fail",
+            "detail": f"{len(outside)} shopname shape(s) outside the bottom text bar "
+                      f"(y {bar_y0:.0f}-{bar_y1:.0f}mm +/-{margin:.0f}mm)",
+        })
+
     return results
 
 

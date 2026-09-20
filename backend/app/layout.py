@@ -179,7 +179,17 @@ def compute_layout(
 
         if o.id in shopname_ids:
             text, font = _shopname_replacement(o, shop_name, shop_name_local)
-            if axis and n_tiles > 1:
+            # A `panel_sequence` rule's real boards keep the shop name in its
+            # normal bottom-bar spot (between the "authorized dealer" footer
+            # and the phone/GST line), not in a gap between panel copies -
+            # confirmed by eye against dalmia's real wide renders, where the
+            # generic gap-centring path used to put it as tiny, oddly
+            # -positioned text between panels instead (GATE feedback). Only
+            # the generic single-rigid-panel/brand-ruled-groups schemes use
+            # the gap; panel_sequence lets it fall through to the ordinary
+            # proportional scale+centre placement below, same as any other
+            # text.
+            if axis and n_tiles > 1 and not (brand_rule and brand_rule.get("panel_sequence")):
                 continue  # placed after the panel, centred in the gap between tiles
             w, h = o.w * s, o.h * s
             cx = (o.x + o.w / 2) / page_w * new_w
@@ -242,10 +252,14 @@ def compute_layout(
         else:
             panel_placed, panel_scale = _place_tiled_panel(panel_objs, roles, new_w, new_h, axis, n_tiles)
         out.extend(panel_placed)
-        shopname_objs = [o for o in objects if o.id in shopname_ids]
-        out.extend(_place_shopname_in_gap(
-            shopname_objs, new_w, new_h, panel_scale, shop_name, shop_name_local,
-        ))
+        if not (brand_rule and brand_rule.get("panel_sequence")):
+            # panel_sequence already placed the shop name in its normal
+            # bottom-bar spot in the main loop above - see that branch's
+            # comment for why the gap-centring path doesn't apply here.
+            shopname_objs = [o for o in objects if o.id in shopname_ids]
+            out.extend(_place_shopname_in_gap(
+                shopname_objs, new_w, new_h, panel_scale, shop_name, shop_name_local,
+            ))
 
     return out
 
@@ -502,6 +516,7 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
         return [], 1.0
     groups_cfg = {g["group_id"]: g for g in seq_rule["groups"]}
     GROUP_MEMBERSHIP_MARGIN = 50.0
+    BG_AREA_RATIO = 0.5  # a shape covering >= half its group's own bbox area is card background (a white card + drop shadow), not logo/text content
 
     def _in_group(o, g):
         b = g["bbox_mm"]
@@ -513,6 +528,22 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
         b = g["bbox_mm"]
         gcx, gcy = b["x"] + b["w"] / 2, b["y"] + b["h"] / 2
         return (o.x + o.w / 2 - gcx) ** 2 + (o.y + o.h / 2 - gcy) ** 2
+
+    def _split_bg_and_content(objs):
+        """A group's "card background" (a white card + drop shadow, each
+        spanning most of the group's own bbox) vs. its actual logo/text
+        "content" (much smaller shapes sitting on top of it) - see
+        `card_from` below.
+        """
+        if not objs:
+            return [], []
+        bx0, by0, bx1, by1 = _bbox(objs)
+        area = (bx1 - bx0) * (by1 - by0)
+        bg, content = [], []
+        for o in objs:
+            ratio = (o.w * o.h) / area if area > 0 else 0
+            (bg if ratio >= BG_AREA_RATIO else content).append(o)
+        return bg, content
 
     buckets: dict[str, list] = {}
     fixed_objs: list[Obj] = []
@@ -537,6 +568,65 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
         if not objs:
             continue
         cfg = groups_cfg[group_id]
+
+        card_from = cfg.get("card_from")
+        if card_from:
+            # This group has no card background of its own in the master
+            # (e.g. dalmia's small top-right badge is bare icon+text on the
+            # blue page) but the real design puts it inside a white card
+            # matching another group's card (see CLAUDE.md "Wide-board
+            # panel sequence") - not just enlarged bare logo/text, which is
+            # what a naive uniform scale-up of the master's badge shapes
+            # produces. Borrows (duplicates) the template group's OWN card
+            # -background shapes, sized/positioned via the TEMPLATE's size
+            # table (both are measured to be nearly identical anyway - see
+            # CLAUDE.md), then places this group's own content centred
+            # inside at the master-measured content:card proportion
+            # (`card_content_frac`), rather than stretching the content to
+            # fill the whole card.
+            template_cfg = groups_cfg[card_from]
+            template_objs = buckets.get(card_from)
+            if not template_objs:
+                continue  # template wasn't placed this run either - nothing to borrow
+            bg_objs, _ = _split_bg_and_content(template_objs)
+            if not bg_objs:
+                continue
+            bx0, by0, bx1, by1 = _bbox(bg_objs)
+            gw, gh = bx1 - bx0, by1 - by0
+            if gh <= 0:
+                continue
+            t_h_frac, t_w_frac, t_cy_frac = _interp_size_table(template_cfg["size_table"], target_aspect)
+            scale = min((t_h_frac * new_h) / gh, (t_w_frac * new_w) / gw) if gw > 0 else (t_h_frac * new_h) / gh
+            scales.append(scale)
+            gw_s, gh_s = gw * scale, gh * scale
+
+            if axis == "x":
+                cell_left = i * cell_w
+                x_offset = cell_left + (cell_w - gw_s) / 2 - bx0 * scale
+            else:
+                x_offset = (new_w - gw_s) / 2 - bx0 * scale
+            y_offset = t_cy_frac * new_h - gh_s / 2 - by0 * scale
+            if axis == "y":
+                cell_bottom = (n - 1 - i) * cell_h
+                y_offset = cell_bottom + (cell_h - gh_s) / 2 - by0 * scale
+
+            out.extend(_place_tile_copy(bg_objs, roles, scale, x_offset, y_offset, i))
+
+            frac = cfg["card_content_frac"]
+            cbx0, cby0, cbx1, cby1 = _bbox(objs)
+            c_gw, c_gh = cbx1 - cbx0, cby1 - cby0
+            if c_gh <= 0:
+                continue
+            content_scale = min((frac["h"] * gh_s) / c_gh, (frac["w"] * gw_s) / c_gw) if c_gw > 0 else (frac["h"] * gh_s) / c_gh
+            c_gw_s, c_gh_s = c_gw * content_scale, c_gh * content_scale
+            card_left, card_bottom = x_offset + bx0 * scale, y_offset + by0 * scale
+            content_cx = card_left + frac["cx"] * gw_s
+            content_cy = card_bottom + frac["cy"] * gh_s
+            content_x_offset = content_cx - c_gw_s / 2 - cbx0 * content_scale
+            content_y_offset = content_cy - c_gh_s / 2 - cby0 * content_scale
+            out.extend(_place_tile_copy(objs, roles, content_scale, content_x_offset, content_y_offset, i))
+            continue
+
         bx0, by0, bx1, by1 = _bbox(objs)
         gw, gh = bx1 - bx0, by1 - by0
         if gh <= 0:

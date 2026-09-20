@@ -206,3 +206,29 @@ def test_layout_checks_text_overlap_ignores_non_text_clusters():
     ]
     checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
     assert checks["text_overlap"]["status"] == "pass"
+
+
+def test_layout_checks_flags_shopname_outside_bottom_bar():
+    shapes = [
+        _shape("footer", "text", 100, 50, 200, 30, kind="text"),
+        _shape("phone", "text", 700, 60, 200, 30, kind="text"),
+        _shape("shopname", "shopname", 400, 480, 200, 30, kind="text"),  # near page vertical centre, not the bottom bar
+    ]
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["shopname_in_bottom_bar"]["status"] == "fail"
+
+
+def test_layout_checks_passes_shopname_in_bottom_bar():
+    shapes = [
+        _shape("footer", "text", 100, 50, 200, 30, kind="text"),
+        _shape("phone", "text", 700, 60, 200, 30, kind="text"),
+        _shape("shopname", "shopname", 400, 55, 200, 30, kind="text"),  # same band as the other fixed text
+    ]
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["shopname_in_bottom_bar"]["status"] == "pass"
+
+
+def test_layout_checks_shopname_in_bottom_bar_passes_when_nothing_to_compare():
+    shapes = [_shape("logo", "logo", 100, 100, 200, 200)]  # no shopname, no other text
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["shopname_in_bottom_bar"]["status"] == "pass"

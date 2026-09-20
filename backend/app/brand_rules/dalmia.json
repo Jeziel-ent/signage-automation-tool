@@ -39,12 +39,9 @@
       {
         "group_id": "enlarged_badge_card",
         "bbox_mm": {"x": 2607.3269, "y": 975.9158, "w": 392.9035, "h": 199.9416},
-        "size_table": [
-          {"aspect": 3.0, "target_h_frac": 0.562, "target_w_frac": 0.298, "target_cy_frac": 0.527},
-          {"aspect": 3.75, "target_h_frac": 0.624, "target_w_frac": 0.265, "target_cy_frac": 0.530},
-          {"aspect": 4.0, "target_h_frac": 0.681, "target_w_frac": 0.271, "target_cy_frac": 0.530},
-          {"aspect": 4.5, "target_h_frac": 0.602, "target_w_frac": 0.211, "target_cy_frac": 0.529}
-        ]
+        "card_from": "tamil_card",
+        "card_from_note": "The master's small top-right badge (bare icon+text, no card - see 'Wide-board panel sequence') is redesigned in every real wide file into a white card matching the Tamil card's size/shadow, with the badge's own icon+text centred inside - not a bare enlarged logo, which is what a uniform scale-up of the master's badge shapes alone produces. card_content_frac is measured from the master's own Tamil card: its icon+Tamil-text content occupies 80.4% of the card's width and 50.0% of its height, centred at (45.8%, 56.4%) of the card's own box - applied here to size/centre this group's own icon+English-text content inside the borrowed card.",
+        "card_content_frac": {"w": 0.804, "h": 0.500, "cx": 0.458, "cy": 0.564}
       }
     ],
     "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
