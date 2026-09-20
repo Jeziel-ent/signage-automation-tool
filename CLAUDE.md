@@ -148,6 +148,29 @@ API doesn't yet pass `master_shop_name`/phone/GST, so the master's own
 shop name is kept as-is - the new UI doesn't expose shop-name replacement
 yet.
 
+### Phase B: Recently generated (`pages/RecentlyGenerated.jsx`)
+
+`GET /api/v2/recent` (`db.list_all_shops_with_job`) returns every shop
+across all jobs, newest first, joined with its job's brand/master filename:
+name, size + units, reference, status, error, timestamps, and `files`
+(cdr / pdf / preview / report, or `null` before a conversion finishes).
+`report_json` is deliberately left out - the list stays light.
+
+The page shows preview thumbnail, brand, shop (+ master filename), size
+(each dimension with its own unit), created time, status pill (failure
+reason on hover), per-file download buttons, and "Open in editor" (done
+rows only; opens `/editor/:jobId/:shopId` in a new tab). Brand and status
+filters are client-side; the list auto-refreshes every 3s while any row is
+queued/converting. Downloads reuse the path-guarded
+`/api/v2/shops/{id}/files/{filename}` route.
+
+Approximate / not real Corel: with MockEngine the thumbnail and "preview"
+download are the mock SVG, not a CorelDRAW render (with CorelEngine they are
+the real PNG). The editor tab is still the Phase C placeholder. The Phase B
+screenshots were taken against a seeded mock-engine database (done / new /
+failed rows across two brands), not real conversions - real conversions
+already exercise the same rows via Phase A.
+
 ### Frontend: `frontend/src/` structure
 
 `main.jsx` wraps the app in `<BrowserRouter>` and imports `theme.css`
@@ -159,9 +182,9 @@ there's no shell to share); everything else renders inside `Shell`
 (sidebar + `<Routes>` for `Automation`/`RecentlyGenerated`).
 `pages/Automation.jsx` holds all of Phase A's logic; `components/
 UploadDropzone.jsx` is the standalone click-or-drag upload control.
-`pages/RecentlyGenerated.jsx` and `pages/EditorPage.jsx` are intentional
-placeholders for Phases B and C - not unfinished code left by accident,
-each just says what's coming.
+`pages/RecentlyGenerated.jsx` is Phase B (done); `pages/EditorPage.jsx` is
+an intentional placeholder for Phase C - not unfinished code left by
+accident, it just says what's coming.
 
 Verified by hand with Playwright (headless Chromium) driving the actual
 dev servers - both engines: a full upload → preview → add-brand →

@@ -292,6 +292,29 @@ def v2_add_shop(job_id: str, payload: dict):
     return db.get_shop(shop_id)
 
 
+@app.get("/api/v2/recent")
+def v2_recent():
+    """Every shop across every job, newest first, for the "Recently
+    generated" page. `report_json` is deliberately left out (it holds every
+    object's placement - large and not needed for a list view); `files`
+    maps output kind -> filename, served via
+    /api/v2/shops/{shop_id}/files/{filename}.
+    """
+    out = []
+    for r in db.list_all_shops_with_job():
+        files = json.loads(r["files_json"]) if r.get("files_json") else None
+        out.append({
+            "shop_id": r["id"], "job_id": r["job_id"], "brand": r["brand"],
+            "master_filename": r["master_filename"], "name": r["name"],
+            "width": r["width"], "width_unit": r["width_unit"],
+            "height": r["height"], "height_unit": r["height_unit"],
+            "reference": r["reference"], "status": r["status"], "error": r["error"],
+            "created_at": r["created_at"], "completed_at": r["completed_at"],
+            "files": files,
+        })
+    return out
+
+
 @app.get("/api/v2/step-estimates")
 def v2_step_estimates():
     """Average measured duration (seconds) per CorelEngine step across every

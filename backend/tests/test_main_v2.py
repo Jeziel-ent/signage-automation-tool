@@ -207,3 +207,33 @@ def test_get_step_timing_estimates_averages_real_timings(tmp_path, monkeypatch):
 
     estimates = db.get_step_timing_estimates()
     assert estimates == {"launch": 2.0, "open": 3.0}
+
+
+def test_v2_recent_lists_shops_across_jobs_newest_first_with_files(client):
+    assert client.get("/api/v2/recent").json() == []
+
+    def make_shop(brand, name):
+        files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+        job_id = client.post("/api/v2/upload", data={"brand": brand}, files=files).json()["id"]
+        return client.post(f"/api/v2/jobs/{job_id}/shops", json={
+            "name": name, "width": 12, "width_unit": "ft", "height": 4, "height_unit": "ft",
+        }).json()
+
+    first = make_shop("dalmia", "First Shop")
+    time.sleep(0.02)
+    second = make_shop("agarpathi", "Second Shop")
+    client.post(f"/api/v2/shops/{second['id']}/convert")
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if client.get(f"/api/v2/shops/{second['id']}/status").json()["status"] == "done":
+            break
+        time.sleep(0.05)
+
+    recent = client.get("/api/v2/recent").json()
+    assert [r["name"] for r in recent] == ["Second Shop", "First Shop"]  # newest first
+    assert recent[0]["brand"] == "agarpathi" and recent[0]["status"] == "done"
+    assert recent[0]["files"]["report"].endswith("_report.json")
+    assert recent[1]["status"] == "new" and recent[1]["files"] is None
+    assert "report_json" not in recent[0]  # list view stays light
+    assert recent[0]["shop_id"] == second["id"] and recent[0]["job_id"] == second["job_id"]
+    assert first["id"] == recent[1]["shop_id"]
