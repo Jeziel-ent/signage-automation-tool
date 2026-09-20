@@ -10,6 +10,11 @@ __pycache__
 # generated analysis/validation/report output (regenerable from signage_dataset + tools)
 /backend/dataset_analysis/
 
+# Phase 2 example-engine data - regenerable from cached dumps via build_examples.py;
+# not wired into any runtime path yet (see CLAUDE.md "Example-based layout engine" -
+# a negative result as of this writing, unlike backend/app/brand_rules/ which IS used)
+/backend/brand_data/
+
 *.pyc
 .venv/
 venv/

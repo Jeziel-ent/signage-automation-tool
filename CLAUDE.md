@@ -414,6 +414,102 @@ genuinely broken shrink loop, not to model legibility-at-viewing-distance
 `layout.min_text_pt` uses the same value for its own legibility check -
 keep the two in sync if either changes.
 
+## Example-based layout engine (Phase 2, `backend/app/example_engine.py`) - honest result: not yet an improvement
+
+Built to replace the rigid geometric rules with predictions drawn from how
+real designers actually resized this exact master, instead of a formula.
+Pure Python, no CorelDRAW - not yet wired into `CorelEngine`/`compute_layout`
+(this is offline validation work; see "Not yet integrated" below).
+
+**Design**: a master's shapes are grouped into a fixed set of *named
+entities* (`master_entities`) - `bg` (1), `shopname` (1), `text` (each
+individual non-shopname text shape, e.g. the footer and phone/GST lines,
+tracked separately from each other), and `logo_cluster` (bbox-proximity
+-clustered logo shapes, same `derive_brand_rules.cluster()` used
+elsewhere). For each real board, `match_entities` matches its own entities
+back to the master's, then `build_examples` records each match as a
+page-size-independent transform (proportional centre + size + repeat
+count) in `backend/brand_data/<brand>/examples.json`. To predict a new
+target size, `predict_entities` finds the nearest example(s) by aspect
+ratio - uses one directly if within 3% aspect tolerance, else linearly
+interpolates between the two nearest - and `predict_layout` lets a brand
+register a hand-verified override (`WIDE_PANEL_OVERRIDES`) for regimes
+where geometry-only matching is known to fail (see next).
+
+**A real matching bug, found and fixed**: `find_shopname_ids` only
+recognizes a board's shopname text when it happens to still contain the
+*master's own* old shop name - true only for same-shop resizes. For every
+other real shop, the board's shopname text silently falls back to a
+generic `text` role, which broke `match_entities`' original design (fixed
+1:1 `shopname`-to-`shopname` mapping) for 12 of 13 real dalmia boards.
+Fixed by matching `shopname` and `text` entities *together*, by nearest
+relative page-height rather than by matching kind - the master's shopname
+entity is reliably the smallest of the three text-like shapes by height
+fraction across every sampled board, regardless of what its content says.
+
+**A second, harder bug: geometry-only matching cannot identify the
+enlarged badge on wide boards.** Applying the same nearest-relative-height
+matcher to `logo_cluster` entities reproduces exactly the mistake
+`derive_brand_rules.py` made (see "Per-brand tiling rule attempt") via a
+completely different algorithm - strong, convergent evidence this is a
+real limit of geometry-only matching for this master, not an algorithm bug
+to keep patching. The enlarged badge (see "Wide-board panel sequence")
+ends up closer in relative height to the Tamil card than to its own
+un-enlarged master size, so the matcher assigns it as "a second copy of
+the Tamil card" and, having nothing left to match the true small badge
+against, assigns the master's actual badge entity to an unrelated
+full-width decorative strip instead. **Fix applied**: `WIDE_PANEL_OVERRIDES`
+lets a brand supply a hand-verified function
+(`dalmia_wide_panel_entities`, built from the "Wide-board panel sequence"
+findings above, not from the automatic matcher) that `predict_layout`
+uses for `logo_cluster` entities specifically whenever the target is
+wide/tall enough to trigger tiling - the one regime the generic matcher is
+known to get wrong. Non-logo entities still use the generic prediction
+even for wide targets, since matching those doesn't have this ambiguity.
+
+**Leave-one-out validation (`backend/tools/leave_one_out.py`,
+`dataset_analysis/leave_one_out/dalmia/report.md`) - the honest accuracy
+number, and it's a negative result**: for the 9 plain (non-tiled) real
+dalmia boards, excluding board 12 (the already-known outlier), the
+example-based prediction's mean max-diff is **25.7%**, against the
+existing rule-based engine's **5.4%** on the same boards (both measured
+the same way - proportional position/size error against each board's own
+real layout). **The example-based approach is worse, not better, on this
+data** - most plausibly because a real designer's per-board placement
+carries its own small, idiosyncratic "hand-nudges" (documented since the
+original dalmia validation - see "Validation: all 13 dalmia files"), and
+copying one specific nearest example's exact transform inherits that
+example's own noise, whereas the existing rule (uniform scale + centred,
+proportional positioning) is a smoother prediction that isn't thrown off
+by any single example's idiosyncrasies - especially with only ~8 examples
+per leave-one-out fold, most clustered near the master's own aspect ratio
+(2.4-2.5), leaving little genuine diversity to interpolate between.
+**Per the project's own rules of engagement, this is reported as a
+negative result, not tuned or reframed to look better**: the example-based
+predictor as built should not replace the existing rule-based engine for
+plain resizes.
+
+The wide-panel rule's own comparison in that same report is **not a valid
+measurement yet**: `leave_one_out.py` computes each wide board's "ground
+truth" entities using the *same* generic nearest-relative-height matcher
+that's already been shown to mis-identify the enlarged badge - so the
+100% "repeat count mismatch" / "present mismatch" figures reported for
+wide boards reflect comparing a correct hand-verified prediction against
+an incorrectly-extracted ground truth, not a real accuracy number. Fixing
+this needs the wide boards' ground truth extracted the same
+hand-verified way as the prediction (or, more robustly, an actual
+colour/content signal so the *general* matcher stops needing a per-brand
+override at all) - not yet done.
+
+**Not yet integrated**: none of this is wired into `CorelEngine` or the
+website - `compute_layout`/`load_brand_rule` are still what actually runs
+a job. Given the negative plain-board result above, integrating the
+example engine as-is would be a regression; the wide-panel rule's
+*findings* (which entity is which, which one repeats) are worth folding
+into `layout.py`'s existing brand-rule mechanism directly - a targeted,
+rule-based fix - in preference to shipping the general example-interpolation
+approach that this validation shows underperforms.
+
 ## Engine split (`backend/app/engines.py`)
 
 `get_engine(kind)` returns one of:
@@ -707,6 +803,15 @@ tuple — any `(9, 49)` (optional `VT_DISPATCH`) argument needs an explicit
   board); see "Metrics suite" above for the results table. No CorelDRAW -
   works from one already-generated "ours" PNG plus PIL-synthesized
   perturbations of it.
+- **`build_examples.py <brand> [--exclude <substr>] [--out <path>]`** —
+  builds `backend/brand_data/<brand>/examples.json` from cached master +
+  real dumps (see "Example-based layout engine" above). `--exclude`
+  skips a matching source filename (leave-one-out); `--out` writes
+  elsewhere instead of the brand's real `examples.json` for that. Offline,
+  no CorelDRAW.
+- **`leave_one_out.py <brand>`** — the Phase 2 honest-accuracy harness (see
+  "Example-based layout engine" above); writes
+  `dataset_analysis/leave_one_out/<brand>/report.{md,json}`. Offline.
 
 ## Batch import (`backend/app/batch_import.py`)
 
@@ -928,17 +1033,20 @@ tuning image-similarity weights.
 `backend/tests/test_layout.py` (27 tests: the original 7, tiling, shop-name
 replacement, the footer-text-not-tiled fix, brand-rule tiling, and per-shop
 contact-info replacement - `find_contact_ids`/`_contact_replacement`),
-`backend/tests/test_batch_import.py` (8 tests) and `backend/tests/test_metrics.py`
+`backend/tests/test_batch_import.py` (8 tests), `backend/tests/test_metrics.py`
 (19 tests: dhash/edge math, cluster matching, counts, and every layout
 check including the full-bleed margin exemption and text_overlap, all on
 small synthetic shape lists/images - no CorelDRAW, no real dataset files)
-cover pure logic. `backend/tests/test_corel_supervisor.py` (5 tests) covers
-the worker/supervisor timeout, progress-callback and kill logic using a
-fake worker (`tests/fake_hanging_worker.py`) that hangs, partially
-completes, or finishes normally on command - no real CorelDRAW needed, but
-Windows-only (uses `taskkill`; skipped elsewhere). Run with `pytest` from
-`backend/` — 59 passed as of this writing. There's no automated test for
-`CorelEngine` itself (including the new `_fit_text` shrink/wrap logic)
-beyond that — it needs a live CorelDRAW on Windows, so it's verified by
-hand against real master files
+and `backend/tests/test_example_engine.py` (7 tests: entity classification,
+the shopname-by-relative-height matching fix, example transform recording,
+nearest/interpolated prediction, and the brand-override hook, all on small
+synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
+(5 tests) covers the worker/supervisor timeout, progress-callback and kill
+logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
+partially completes, or finishes normally on command - no real CorelDRAW
+needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
+`pytest` from `backend/` — 66 passed as of this writing. There's no
+automated test for `CorelEngine` itself (including the new `_fit_text`
+shrink/wrap logic) beyond that — it needs a live CorelDRAW on Windows, so
+it's verified by hand against real master files
 (`validate_all.py`, and see notes above and `backend/dataset_analysis/`).
