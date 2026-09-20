@@ -1,0 +1,200 @@
+import pytest
+from app.layout import Obj, compute_layout, detect_role, find_shopname_ids, is_tamil, to_mm
+
+PAGE = (3000, 1000)
+OBJS = [
+    Obj("0", "bg_wall", "shape", 0, 0, 3000, 1000),
+    Obj("1", "frame", "shape", 50, 50, 2900, 900),
+    Obj("2", "logo_main", "group", 150, 300, 700, 400),
+    Obj("3", "Shop name", "text", 1000, 400, 1500, 200),
+    Obj("4", "fixed_phone", "text", 2400, 80, 500, 60),
+]
+
+
+def by_id(res):
+    return {p.id: p for p in res}
+
+
+def test_units():
+    assert to_mm(10, "ft") == pytest.approx(3048)
+    assert to_mm(2, "in") == pytest.approx(50.8)
+
+
+def test_role_heuristics():
+    assert detect_role(Obj("a", "Rectangle 1", "shape", 0, 0, 3000, 1000), 3000, 1000) == "bg"
+    assert detect_role(Obj("a", "Text 1", "text", 10, 10, 50, 20), 3000, 1000) == "text"
+    assert detect_role(Obj("a", "Group 1", "group", 10, 10, 50, 20), 3000, 1000) == "logo"
+
+
+def test_bg_fills_new_page_and_frame_keeps_margin():
+    r = by_id(compute_layout(OBJS, *PAGE, 4500, 1500))
+    assert (r["0"].w, r["0"].h) == (4500, 1500)
+    assert r["1"].x == 50 and r["1"].w == pytest.approx(4500 - 100)
+    assert r["1"].h == pytest.approx(1500 - 100)
+
+
+def test_logo_scales_uniformly_and_stays_proportional():
+    r = by_id(compute_layout(OBJS, *PAGE, 1500, 500))  # half size
+    logo = r["2"]
+    assert logo.w / logo.h == pytest.approx(700 / 400)
+    assert logo.w == pytest.approx(350)
+    assert (logo.x + logo.w / 2) / 1500 == pytest.approx((150 + 350) / 3000)
+
+
+def test_fixed_keeps_size_and_edge_distance():
+    r = by_id(compute_layout(OBJS, *PAGE, 4000, 1000))
+    phone = r["4"]
+    assert (phone.w, phone.h) == (500, 60)
+    assert 4000 - (phone.x + phone.w) == pytest.approx(100)  # right gap kept
+
+
+def test_objects_clamped_and_warned():
+    r = by_id(compute_layout(OBJS, *PAGE, 3000, 200))  # very short page
+    assert all(0 <= p.y and p.y + p.h <= 200 + 1e-6 for p in r.values() if p.role in ("logo", "text"))
+    assert r["2"].warnings
+
+
+def test_bad_size():
+    with pytest.raises(ValueError):
+        compute_layout(OBJS, *PAGE, 0, 100)
+
+
+# -- tiling: a bg + one "panel" logo + an untagged shop-name text, on a wide page --
+TILE_PAGE = (1000, 200)
+TILE_OBJS = [
+    Obj("bg", "bg", "shape", 0, 0, 1000, 200),
+    Obj("logo", "logo_panel", "group", 400, 50, 200, 100),
+    Obj("name", "Shop name", "text", 350, 20, 300, 20, text="OLD SHOP"),
+]
+
+
+def test_tile_off_by_default_matches_untiled_output():
+    # tile=False (the default) must ignore aspect ratio entirely, same as before
+    r = by_id(compute_layout(TILE_OBJS, *TILE_PAGE, 3000, 200))
+    assert set(r) == {"bg", "logo", "name"}  # no _tileN ids appear
+
+
+def test_tile_horizontal_repeats_panel_with_even_gaps():
+    # exclude "name" from the panel via shopname_ids, isolating "logo" as the panel
+    r = by_id(compute_layout(TILE_OBJS, *TILE_PAGE, 3000, 200, tile=True, shopname_ids={"name"}))
+    tiles = [r[f"logo_tile{i}"] for i in range(3)]
+    assert "logo" not in r  # replaced by 3 tile copies
+    for t in tiles:
+        assert (t.w, t.h) == pytest.approx((400, 200))
+    xs = [t.x for t in tiles]
+    assert xs == sorted(xs)
+    gaps = [xs[i + 1] - (xs[i] + tiles[i].w) for i in range(2)]
+    assert gaps[0] == pytest.approx(gaps[1])  # even gaps between copies
+    assert tiles[0].x >= 0 and tiles[-1].x + tiles[-1].w <= 3000 + 1e-6
+
+
+def test_tile_vertical_stacks_panel():
+    r = by_id(compute_layout(TILE_OBJS, *TILE_PAGE, 200, 1000, tile=True, shopname_ids={"name"}))
+    tiles = [r[f"logo_tile{i}"] for i in range(3)]
+    ys = sorted(t.y for t in tiles)  # tile0 is placed at the top (reading order), not the bottom
+    gaps = [ys[i + 1] - ys[i] - tiles[0].h for i in range(2)]
+    assert gaps[0] == pytest.approx(gaps[1])
+    assert ys[0] >= 0 and ys[-1] + tiles[0].h <= 1000 + 1e-6
+
+
+def test_tile_does_not_duplicate_standalone_footer_text():
+    # a small-print footer line (not the shop name) sits alongside the logo;
+    # real designer files never duplicate it even when the logo gets tiled
+    objs = TILE_OBJS + [Obj("footer", "Authorized Dealer", "text", 10, 5, 80, 10, text="Authorized Dealer")]
+    r = by_id(compute_layout(objs, *TILE_PAGE, 3000, 200, tile=True, shopname_ids={"name"}))
+    assert "footer" in r  # single instance, not "footer_tile0"/"footer_tile1"...
+    assert "footer_tile0" not in r
+    assert r["footer"].role == "text"
+    assert "logo_tile0" in r and "logo_tile1" in r and "logo_tile2" in r  # the logo still tiles
+
+
+def test_tile_moves_shopname_into_the_gap_and_replaces_text():
+    r = by_id(compute_layout(
+        TILE_OBJS, *TILE_PAGE, 3000, 200, tile=True,
+        shop_name="NEW SHOP", shopname_ids={"name"},
+    ))
+    name = r["name"]
+    assert name.role == "shopname"
+    assert name.text == "NEW SHOP"
+    assert name.font is None  # plain ASCII text keeps the original font
+    # centred on the page, in the gap between panel copies
+    assert name.x + name.w / 2 == pytest.approx(1500, abs=1)
+    assert name.y + name.h / 2 == pytest.approx(100, abs=1)
+
+
+def test_shopname_tamil_text_gets_tamil_font():
+    r = by_id(compute_layout(
+        TILE_OBJS, *TILE_PAGE, 3000, 200, tile=True,
+        shop_name_local="புதிய கடை", shopname_ids={"name"},
+    ))
+    assert r["name"].text == "புதிய கடை"
+    assert r["name"].font == "Nirmala UI"
+
+
+def test_find_shopname_ids_matches_by_content():
+    assert find_shopname_ids(TILE_OBJS, "Old Shop") == {"name"}
+    assert find_shopname_ids(TILE_OBJS, "Nonexistent") == set()
+
+
+def test_is_tamil():
+    assert is_tamil("ஸ்ரீ கவி ஸ்டீல்ஸ்")
+    assert not is_tamil("SRI KAVI STEELS")
+    assert not is_tamil(None)
+
+
+# -- brand_rule tiling: two named logo groups instead of one rigid panel --
+BRAND_PAGE = (1000, 400)
+BRAND_OBJS = [
+    Obj("bg", "bg", "shape", 0, 0, 1000, 400),
+    Obj("big", "big_logo", "group", 100, 100, 200, 200),  # repeats per the rule below
+    Obj("small", "small_logo", "group", 700, 150, 100, 100),  # never repeats
+    Obj("name", "Shop name", "text", 400, 350, 200, 30, text="OLD SHOP"),
+]
+BRAND_RULE = {
+    "brand": "test",
+    "groups": [
+        {"cluster_id": 0, "bbox_mm": {"x": 100, "y": 100, "w": 200, "h": 200},
+         "repeat": "by_aspect", "repeat_table": [{"aspect": 2.5, "count": 1}, {"aspect": 5.0, "count": 2}]},
+        {"cluster_id": 1, "bbox_mm": {"x": 700, "y": 150, "w": 100, "h": 100}, "repeat": "never"},
+    ],
+}
+
+
+def test_brand_rule_repeats_only_the_matched_group():
+    r = by_id(compute_layout(
+        BRAND_OBJS, *BRAND_PAGE, 5000, 400, tile=True,
+        shopname_ids={"name"}, brand_rule=BRAND_RULE,
+    ))
+    big_ids = [k for k in r if k.startswith("big_tile")]
+    small_ids = [k for k in r if k.startswith("small_tile")]
+    assert len(big_ids) == 2  # nearest-aspect lookup: target aspect 12.5 -> nearest table entry is 5.0 -> count 2
+    assert len(small_ids) == 1  # "never" group always gets exactly one copy
+    assert "big" not in r and "small" not in r  # replaced by their _tileN copies
+
+
+def test_brand_rule_groups_ordered_left_to_right_by_master_position():
+    r = by_id(compute_layout(
+        BRAND_OBJS, *BRAND_PAGE, 5000, 400, tile=True,
+        shopname_ids={"name"}, brand_rule=BRAND_RULE,
+    ))
+    big_xs = [r[k].x for k in r if k.startswith("big_tile")]
+    small_xs = [r[k].x for k in r if k.startswith("small_tile")]
+    # "big" sits left of "small" in the master (centre x=200 vs 750), so its
+    # copies must occupy the leftmost cells regardless of repeat count
+    assert max(big_xs) < min(small_xs)
+
+
+def test_brand_rule_falls_back_to_generic_panel_without_a_rule():
+    # same objects/target, but no brand_rule -> old single-rigid-panel behaviour:
+    # "big" and "small" tile together as one panel, same count for both
+    r = by_id(compute_layout(BRAND_OBJS, *BRAND_PAGE, 5000, 400, tile=True, shopname_ids={"name"}))
+    big_n = len([k for k in r if k.startswith("big_tile")])
+    small_n = len([k for k in r if k.startswith("small_tile")])
+    assert big_n == small_n  # no per-group distinction without brand_rule
+    assert big_n > 1
+
+
+def test_load_brand_rule_missing_brand_returns_none():
+    from app.layout import load_brand_rule
+    assert load_brand_rule(None) is None
+    assert load_brand_rule("no_such_brand_xyz") is None

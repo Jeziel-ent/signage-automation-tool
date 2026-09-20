@@ -1,0 +1,81 @@
+"""Parse pasted designer filename lines into shop rows.
+
+Real master filenames (and the designer's own naming convention for
+per-shop resizes) look like:
+
+    16 - 12 X 4 Feet - Nonlit - AL MADEENA POOJA STORE
+    02 - 120 X 48 Inch - 2 Nos Double Side GSB - SRI KAVI STEELS
+    66 - 8 X 4 Feet - Nonlit - VASANTHAM ENTERPRISES - Copy
+
+i.e. "<code> - <W> X <H> <unit> - <type> - <shop name>", where the type is
+free text (seen: "Nonlit", "GSB", "2 Nos Double Side GSB", even the typo
+"Nonlt") and the shop name may itself contain " - " (e.g. a "- Copy"
+suffix) or commas, so it's everything after the third segment, not just
+the fourth.
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+_SEGMENT_SPLIT = re.compile(r"\s+-\s+")
+_SIZE_RE = re.compile(r"^([\d.]+)\s*[xX]\s*([\d.]+)\s*([A-Za-z]+)\.?$")
+
+_UNIT_ALIASES = {
+    "feet": "ft", "ft": "ft",
+    "inch": "in", "inches": "in", "in": "in",
+    "mm": "mm", "cm": "cm", "m": "m",
+}
+
+
+@dataclass
+class ParsedShop:
+    name: str
+    width: float
+    height: float
+    unit: str
+    type: str
+    line: str
+
+
+@dataclass
+class ParseResult:
+    shops: list[ParsedShop] = field(default_factory=list)
+    errors: list[dict] = field(default_factory=list)  # {"line": ..., "reason": ...}
+
+
+def parse_shop_lines(text: str) -> ParseResult:
+    result = ParseResult()
+    for raw_line in text.splitlines():
+        line = raw_line.strip().strip(",")
+        if not line:
+            continue
+        shop = _parse_line(line)
+        if shop is None:
+            result.errors.append({"line": raw_line, "reason": "expected '<code> - <W> X <H> <unit> - <type> - <name>'"})
+        else:
+            result.shops.append(shop)
+    return result
+
+
+def _parse_line(line: str) -> ParsedShop | None:
+    parts = _SEGMENT_SPLIT.split(line)
+    if len(parts) < 4:
+        return None
+
+    size_match = _SIZE_RE.match(parts[1].strip())
+    if not size_match:
+        return None
+    width_s, height_s, unit_raw = size_match.groups()
+    unit = _UNIT_ALIASES.get(unit_raw.strip().lower())
+    if unit is None:
+        return None
+
+    shop_type = parts[2].strip()
+    name = " - ".join(p.strip() for p in parts[3:]).strip()
+    if not name:
+        return None
+
+    return ParsedShop(
+        name=name, width=float(width_s), height=float(height_s), unit=unit, type=shop_type, line=line,
+    )

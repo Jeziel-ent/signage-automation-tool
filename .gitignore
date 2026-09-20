@@ -1,0 +1,18 @@
+node_modules
+dist
+data
+__pycache__
+.pytest_cache
+
+# client dataset - never commit, see CLAUDE.md "Layout rules" / rules of engagement
+/signage_dataset/
+
+# generated analysis/validation/report output (regenerable from signage_dataset + tools)
+/backend/dataset_analysis/
+
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.env
+.DS_Store

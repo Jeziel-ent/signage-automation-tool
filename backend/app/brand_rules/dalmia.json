@@ -1,0 +1,96 @@
+{
+  "brand": "dalmia",
+  "master_file": "02 - 120 X 48 Inch - 2 Nos Double Side GSB - SRI KAVI STEELS.cdr",
+  "master_page_mm": {
+    "w": 3048.0,
+    "h": 1219.2
+  },
+  "derived_from": [
+    "dalmia_02_180x48.json",
+    "dalmia_06_180x60.json",
+    "dalmia_11_216x48.json",
+    "dalmia_11_240x60.json"
+  ],
+  "note": "Derived from backend/tools/derive_brand_rules.py against real designer files, not hand-tuned. groups[].bbox_mm is in the MASTER's own mm coordinates and is used to re-match a master's top-level logo shapes to a group at layout time (nearest bbox centre) - there is no stable shape id/name in these untagged files.",
+  "groups": [
+    {
+      "cluster_id": 0,
+      "shape_count_in_master": 58,
+      "bbox_mm": {
+        "x": 1937.9174,
+        "y": 405.9946,
+        "w": 723.1551000000002,
+        "h": 597.4089
+      },
+      "repeat": "by_aspect",
+      "repeat_table": [
+        {
+          "aspect": 2.5,
+          "count": 1
+        },
+        {
+          "aspect": 3.0,
+          "count": 1
+        },
+        {
+          "aspect": 3.75,
+          "count": 1
+        },
+        {
+          "aspect": 4.0,
+          "count": 1
+        },
+        {
+          "aspect": 4.5,
+          "count": 2
+        }
+      ],
+      "repeat_table_note": "count = how many copies of this cluster's bounding-box size were found (size-matched, tolerance 35%) in the real designer file at that new_w/new_h aspect ratio, plus the master itself at its own aspect (always count=1). Derived from backend/dataset_analysis/dumps, not a formula - interpolate/extrapolate by nearest aspect at layout time."
+    },
+    {
+      "cluster_id": 1,
+      "shape_count_in_master": 50,
+      "bbox_mm": {
+        "x": 386.9266,
+        "y": 242.1056,
+        "w": 1284.2668,
+        "h": 814.9427
+      },
+      "repeat": "by_aspect",
+      "repeat_table": [
+        {
+          "aspect": 2.5,
+          "count": 1
+        },
+        {
+          "aspect": 3.0,
+          "count": 2
+        },
+        {
+          "aspect": 3.75,
+          "count": 2
+        },
+        {
+          "aspect": 4.0,
+          "count": 2
+        },
+        {
+          "aspect": 4.5,
+          "count": 2
+        }
+      ],
+      "repeat_table_note": "count = how many copies of this cluster's bounding-box size were found (size-matched, tolerance 35%) in the real designer file at that new_w/new_h aspect ratio, plus the master itself at its own aspect (always count=1). Derived from backend/dataset_analysis/dumps, not a formula - interpolate/extrapolate by nearest aspect at layout time."
+    },
+    {
+      "cluster_id": 2,
+      "shape_count_in_master": 24,
+      "bbox_mm": {
+        "x": 2607.3269,
+        "y": 975.9158,
+        "w": 392.9034999999999,
+        "h": 199.9416000000001
+      },
+      "repeat": "never"
+    }
+  ]
+}

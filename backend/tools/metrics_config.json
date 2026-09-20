@@ -1,0 +1,24 @@
+{
+  "_note": "Single source of truth for every metrics.py threshold. Calibrate visual.pass_threshold by eye against backend/dataset_analysis/metrics_report/<brand>/index.html - see CLAUDE.md 'Metrics' and GATE 1. Never tune a threshold just to make the pass rate look better; change the underlying metric or say the number is what it is.",
+
+  "visual": {
+    "ssim_weight": 0.4,
+    "phash_weight": 0.3,
+    "edge_weight": 0.3,
+    "pass_threshold": 0.75,
+    "pass_threshold_note": "UNCALIBRATED DEFAULT - a starting guess, not yet confirmed by eye. See GATE 1."
+  },
+
+  "cluster": {
+    "cluster_margin_mm": 15.0,
+    "cluster_margin_note": "bbox-proximity union-find margin for grouping nearby leaf shapes into one logical cluster - same technique as derive_brand_rules.cluster(), tuned there against dalmia's real logos (see CLAUDE.md 'Designer dataset analysis').",
+    "size_similar_factor": 2.0
+  },
+
+  "layout": {
+    "page_tolerance_mm": 0.5,
+    "min_margin_mm": 5.0,
+    "max_overlap_ratio": 0.3,
+    "min_text_pt": 6.0
+  }
+}

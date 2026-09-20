@@ -1,0 +1,12 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+python-multipart>=0.0.9
+pywin32>=306; sys_platform == "win32"
+pytest>=8
+httpx>=0.27
+
+# backend/tools/ analysis scripts only (validate_all.py, image_compare.py,
+# corel_watchdog.py screenshots) - not used by the FastAPI app itself
+Pillow>=10
+numpy>=1.26
+scipy>=1.11
