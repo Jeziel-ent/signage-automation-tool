@@ -64,8 +64,9 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
   function zoneFor(e, row) {
     const rect = e.currentTarget.getBoundingClientRect();
     const y = (e.clientY - rect.top) / rect.height;
+    const draggingLayer = dragId.current && idx.get(dragId.current) && idx.get(dragId.current).isLayer;
     const container = row.isLayer || row.node.kind === "group";
-    if (container && y > 0.25 && y < 0.75) return "into";
+    if (container && !draggingLayer && y > 0.25 && y < 0.75) return "into";
     return y < 0.5 ? "above" : "below";
   }
 
@@ -90,7 +91,7 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
               data-row={row.id}
               className={`ed-row${selected ? " selected" : ""}${row.isLayer ? " layer" : ""}${n.visible === false ? " hidden" : ""}${inCtx ? " ctx" : ""}${dropCls}`}
               style={{ paddingLeft: 6 + row.depth * 16 }}
-              draggable={!row.isLayer && !row.locked}
+              draggable={row.isLayer || !row.locked}
               onClick={(e) => clickRow(e, row)}
               onDragStart={(e) => { dragId.current = row.id; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", row.id); }}
               onDragOver={(e) => {
@@ -130,7 +131,7 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
           );
         })}
       </div>
-      <div className="ed-hint">Drag rows to reorder or move into a group. Ctrl+click selects several.</div>
+      <div className="ed-hint">Drag rows to reorder or move into a group; drag a layer to change the layer order. Ctrl+click selects several.</div>
     </section>
   );
 }

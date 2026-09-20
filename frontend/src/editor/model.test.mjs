@@ -4,11 +4,12 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { applyOps, buildIndex } from "./ops.js";
-import { flattenLeaves, resolveTarget, hitTest, buildRows, planDrop, marqueeSelect, cloneWithNewIds, unionBox } from "./model.js";
+import { flattenLeaves, resolveTarget, hitTest, buildRows, planDrop, marqueeSelect, cloneWithNewIds, unionBox, snapTargets, snapMove, snapResize, nearest } from "./model.js";
 import { fmt, toUnit, fromUnit, niceStep, rulerTicks } from "./units.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const BASE = JSON.parse(readFileSync(resolve(here, "../../../backend/tests/fixtures/ops_golden.json"), "utf8")).base;
+const GOLDEN = JSON.parse(readFileSync(resolve(here, "../../../backend/tests/fixtures/ops_golden.json"), "utf8"));
+const BASE = GOLDEN.base;
 
 test("flattenLeaves: draw order, PowerClip is one leaf, hidden things are skipped", () => {
   assert.deepEqual(flattenLeaves(BASE).map((n) => n.id), ["a", "b", "c", "t", "pc"]);
@@ -128,4 +129,47 @@ test("rulerTicks: labelled majors at nice steps, minors only when there is room"
   const fine = rulerTicks(0, 100, 20, "mm");
   assert.ok(fine.some((k) => !k.major), "minor ticks appear once zoomed in");
   assert.ok(rulerTicks(0, 3048, 0.05, "mm").length < 100, "zoomed-out rulers stay sparse");
+});
+
+test("planDrop for layers: only above/below another layer, index semantics match layer_order", () => {
+  const S = GOLDEN.base2; // L1 (bottom), L2 (top)
+  let plan = planDrop(S, "L1", "L2", "above"); // L1 dropped above L2 -> becomes the top layer
+  assert.deepEqual(plan, { op: "layer_order", id: "L1", index: 1 });
+  assert.deepEqual(applyOps(S, [plan]).layers.map((l) => l.id), ["L2", "L1"]);
+  plan = planDrop(S, "L2", "L1", "below");
+  assert.deepEqual(applyOps(S, [plan]).layers.map((l) => l.id), ["L2", "L1"]);
+  assert.equal(planDrop(S, "L1", "L2", "into"), null);
+  assert.equal(planDrop(S, "L1", "b", "above"), null); // a layer cannot be dropped among objects
+  assert.equal(planDrop(S, "b", "L1", "above"), null); // objects go INTO layers, not next to them
+  assert.deepEqual(planDrop(S, "b", "L1", "into"), { op: "reorder", id: "b", parent: "L1", index: 1 });
+});
+
+test("snapTargets / nearest / snapMove", () => {
+  const t = snapTargets({ width: 200, height: 100 }, [{ x: 50, y: 20, w: 10, h: 10 }, { x: 5, y: 5, w: 1, h: 1, visible: false }]);
+  assert.deepEqual(t.xs, [0, 100, 200, 50, 55, 60]); // hidden objects are not snap targets
+  assert.deepEqual(nearest([10, 20], [12, 40], 3), { d: 2, line: 12 });
+  assert.equal(nearest([10], [30], 3), null);
+  let s = snapMove({ x: 48.5, y: 70, w: 10, h: 10 }, t, 3); // left edge 1.5 short of x=50
+  assert.equal(s.dx, 1.5);
+  assert.equal(s.guideX, 50);
+  s = snapMove({ x: 94, y: 40, w: 10, h: 20 }, t, 3); // centre 99 -> page centre 100
+  assert.equal(s.dx, 1);
+  assert.equal(s.guideX, 100);
+  s = snapMove({ x: 120, y: 60, w: 10, h: 10 }, t, 2); // nothing close
+  assert.deepEqual([s.dx, s.dy, s.guideX, s.guideY], [0, 0, null, null]);
+});
+
+test("snapResize moves only the dragged edges and leaves the opposite side fixed", () => {
+  const t = { xs: [0, 100, 200], ys: [0, 50, 100] };
+  let r = snapResize({ x: 20, y: 10, w: 77, h: 30 }, "e", t, 5); // right edge 97 -> 100
+  assert.deepEqual(r.box, { x: 20, y: 10, w: 80, h: 30 });
+  assert.equal(r.guideX, 100);
+  r = snapResize({ x: 3, y: 10, w: 50, h: 30 }, "w", t, 5); // left edge 3 -> 0, right edge stays at 53
+  assert.deepEqual(r.box, { x: 0, y: 10, w: 53, h: 30 });
+  r = snapResize({ x: 20, y: 10, w: 50, h: 38 }, "n", t, 5); // top edge 48 -> 50
+  assert.deepEqual(r.box, { x: 20, y: 10, w: 50, h: 40 });
+  r = snapResize({ x: 20, y: 2, w: 50, h: 30 }, "s", t, 5); // bottom edge 2 -> 0, top stays at 32
+  assert.deepEqual(r.box, { x: 20, y: 0, w: 50, h: 32 });
+  r = snapResize({ x: 20, y: 10, w: 50, h: 30 }, "e", t, 1); // nothing in range
+  assert.deepEqual([r.box.w, r.guideX], [50, null]);
 });

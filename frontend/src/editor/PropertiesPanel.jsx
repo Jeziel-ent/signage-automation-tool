@@ -11,7 +11,7 @@ const fmtField = (mm, unit) => {
 };
 
 /** Right panel 1: size/position of the selection (centre reference point, like CorelDRAW's default), stacking order, text. */
-export default function PropertiesPanel({ scene, sel, unit, onCommit }) {
+export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts }) {
   const idx = useMemo(() => buildIndex(scene), [scene]);
   const nodes = useMemo(() => sel.map((id) => idx.get(id)?.node).filter(Boolean), [sel, idx]);
   const box = useMemo(() => unionBox(nodes), [nodes]);
@@ -115,13 +115,16 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit }) {
         </div>
       )}
 
-      {single && single.text && <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} />}
+      {single && single.text && <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} fonts={fonts} />}
       {single && single.rotation ? <div className="ed-hint">Rotation {single.rotation}° (already in the rendered image)</div> : null}
     </section>
   );
 }
 
-function TextFields({ node, locked, onCommit }) {
+function TextFields({ node, locked, onCommit, fonts }) {
+  const known = fonts && fonts.available ? new Set(fonts.fonts.map((f) => f.toLowerCase())) : null;
+  const installed = (name) => !known || known.has(name.toLowerCase());
+  const [fontError, setFontError] = useState("");
   const t = node.text;
   const [content, setContent] = useState(t.content ?? "");
   const [font, setFont] = useState(t.font ?? "");
@@ -143,14 +146,26 @@ function TextFields({ node, locked, onCommit }) {
       <div className="ed-grid2">
         <label className="ed-field">
           <span>Font</span>
-          <input list="ed-fonts" value={font} disabled={locked} onChange={(e) => setFont(e.target.value)} onBlur={() => font && font !== t.font && push({ font })} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
-          <datalist id="ed-fonts">{FONTS.map((n) => <option key={n} value={n} />)}</datalist>
+          <input list="ed-fonts" value={font} disabled={locked} onChange={(e) => setFont(e.target.value)} onBlur={() => {
+            if (!font || font === t.font) return setFontError("");
+            if (!installed(font)) {
+              setFontError(`"${font}" is not installed on this machine - CorelDRAW would silently ignore it and keep the old font. Pick an installed font.`);
+              return;
+            }
+            setFontError("");
+            push({ font });
+          }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+          <datalist id="ed-fonts">{(fonts && fonts.available ? fonts.fonts : FONTS).map((n) => <option key={n} value={n} />)}</datalist>
         </label>
         <label className="ed-field">
           <span>Size pt</span>
           <input value={size} disabled={locked} inputMode="decimal" onChange={(e) => setSize(e.target.value)} onBlur={() => { const v = parseFloat(size); if (v > 0 && v !== t.size_pt) push({ size_pt: v }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
         </label>
       </div>
+      {fontError && <div className="ed-warn ed-warn-error">{fontError}</div>}
+      {!fontError && t.font && !installed(t.font) && (
+        <div className="ed-warn">This board's font "{t.font}" is not installed here - CorelDRAW is substituting another one.</div>
+      )}
       {node.stale && <div className="ed-warn">Text changed - the canvas keeps showing CorelDRAW's original render until Save and Generate.</div>}
     </div>
   );

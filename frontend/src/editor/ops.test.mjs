@@ -88,3 +88,20 @@ test("locked objects reject edits; missing fields are OpErrors", () => {
   assert.throws(() => applyOp(s, { op: "move", ids: ["a"], dx: 1, dy: 1 }), /locked/);
   assert.throws(() => applyOps(GOLDEN.base, [{ op: "move", ids: ["a"] }]), /missing field/);
 });
+
+for (const c of GOLDEN.layer_cases) {
+  test(`golden layers: ${c.name}`, () => {
+    const out = applyOps(GOLDEN.base2, c.ops);
+    assert.deepEqual(out.layers.map((l) => l.id), c.expect_layers);
+    for (const [id, box] of Object.entries(c.expect_boxes || {})) {
+      const n = findNode(out, id);
+      assert.deepEqual([n.x, n.y, n.w, n.h], box);
+    }
+  });
+}
+
+for (const c of GOLDEN.layer_errors) {
+  test(`golden layer error: ${c.name}`, () => {
+    assert.throws(() => applyOps(GOLDEN.base2, c.ops), (e) => e instanceof OpError && e.message.includes(c.error));
+  });
+}

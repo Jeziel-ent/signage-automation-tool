@@ -110,3 +110,18 @@ def test_locked_objects_and_layers_reject_edits():
 def test_missing_field_is_an_operror_not_a_keyerror():
     with pytest.raises(OpError, match="missing field"):
         apply_ops(GOLDEN["base"], [{"op": "move", "ids": ["a"]}])
+
+
+@pytest.mark.parametrize("case", GOLDEN["layer_cases"], ids=lambda c: c["name"])
+def test_golden_layer_order(case):
+    out = apply_ops(GOLDEN["base2"], case["ops"])
+    assert [l["id"] for l in out["layers"]] == case["expect_layers"]
+    for nid, box in case.get("expect_boxes", {}).items():
+        n = scene_ops.find_node(out, nid)
+        assert [n["x"], n["y"], n["w"], n["h"]] == box
+
+
+@pytest.mark.parametrize("case", GOLDEN["layer_errors"], ids=lambda c: c["name"])
+def test_golden_layer_errors(case):
+    with pytest.raises(OpError, match=case["error"]):
+        apply_ops(GOLDEN["base2"], case["ops"])

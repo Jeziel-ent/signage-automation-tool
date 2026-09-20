@@ -31,6 +31,7 @@ Operations (`op` key; every op is JSON and self-contained):
     delete      {ids}
     paste       {parent, nodes: [subtree, ...]}        also used for duplicate
     page        {width, height}                        page size only, objects stay
+    layer_order {id, index}                            move a layer (index in the bottom -> top list)
 """
 from __future__ import annotations
 
@@ -237,7 +238,7 @@ def _op_reorder(s, op):
     idx = _index(s)
     e = _need(idx, op["id"])
     if e.get("is_layer"):
-        raise OpError("layers cannot be reordered in v1")
+        raise OpError("layers are reordered with 'layer_order'")
     _check_editable(idx, op["id"])
     dest = _need(idx, op["parent"])
     dn = dest["node"]
@@ -383,10 +384,21 @@ def _op_page(s, op):
     s["page"]["width"], s["page"]["height"] = _r(w), _r(h)
 
 
+def _op_layer_order(s, op):
+    idx = _index(s)
+    e = _need(idx, op["id"])
+    if not e.get("is_layer"):
+        raise OpError(f"{op['id']!r} is not a layer")
+    layers = s["layers"]
+    layers.remove(e["node"])
+    layers.insert(max(0, min(int(op["index"]), len(layers))), e["node"])
+
+
 _APPLY = {
     "move": _op_move, "resize": _op_resize, "order": _op_order, "reorder": _op_reorder,
     "visibility": _op_visibility, "group": _op_group, "ungroup": _op_ungroup,
     "text": _op_text, "delete": _op_delete, "paste": _op_paste, "page": _op_page,
+    "layer_order": _op_layer_order,
 }
 
 

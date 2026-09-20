@@ -121,7 +121,14 @@ export function planDrop(scene, dragId, overId, zone) {
   const idx = buildIndex(scene);
   const drag = idx.get(dragId);
   const over = idx.get(overId);
-  if (!drag || !over || drag.isLayer || dragId === overId) return null;
+  if (!drag || !over || dragId === overId) return null;
+  if (drag.isLayer) {
+    // a layer can only be dropped above/below another layer (rows are top-first, the list is bottom-first)
+    if (!over.isLayer || zone === "into") return null;
+    const others = scene.layers.filter((l) => l.id !== dragId);
+    const j = others.findIndex((l) => l.id === overId);
+    return { op: "layer_order", id: dragId, index: zone === "above" ? j + 1 : j };
+  }
   if (drag.node.locked || drag.layer.locked) return null;
 
   let parentEntry;
@@ -165,4 +172,66 @@ export function shiftNode(node, dx, dy) {
   node.x += dx;
   node.y += dy;
   (node.children || []).forEach((c) => shiftNode(c, dx, dy));
+}
+
+// ---------------------------------------------------------------- snapping
+
+/**
+ * Snap lines: the page edges and centre, plus the edges and centre of every
+ * object in `nodes` (callers pass the other objects in the current context,
+ * excluding whatever is being dragged).
+ */
+export function snapTargets(page, nodes) {
+  const xs = [0, page.width / 2, page.width];
+  const ys = [0, page.height / 2, page.height];
+  for (const n of nodes) {
+    if (n.visible === false) continue;
+    xs.push(n.x, n.x + n.w / 2, n.x + n.w);
+    ys.push(n.y, n.y + n.h / 2, n.y + n.h);
+  }
+  return { xs, ys };
+}
+
+/** Smallest correction (in mm) that puts one of `values` on one of `lines`, or null if none is within `tol`. */
+export function nearest(values, lines, tol) {
+  let best = null;
+  for (const v of values) {
+    for (const l of lines) {
+      const d = l - v;
+      if (Math.abs(d) <= tol && (best === null || Math.abs(d) < Math.abs(best.d))) best = { d, line: l };
+    }
+  }
+  return best;
+}
+
+/** Snap a box being moved: its left/centre/right and bottom/middle/top against the targets. */
+export function snapMove(box, targets, tol) {
+  const sx = nearest([box.x, box.x + box.w / 2, box.x + box.w], targets.xs, tol);
+  const sy = nearest([box.y, box.y + box.h / 2, box.y + box.h], targets.ys, tol);
+  return { dx: sx ? sx.d : 0, dy: sy ? sy.d : 0, guideX: sx ? sx.line : null, guideY: sy ? sy.line : null };
+}
+
+/**
+ * Snap only the edges a resize handle is moving. Returns the adjusted box; edges
+ * that are not being dragged never move, so the opposite side stays put.
+ */
+export function snapResize(box, handle, targets, tol) {
+  let { x, y, w, h } = box;
+  let guideX = null;
+  let guideY = null;
+  if (handle.includes("e")) {
+    const s = nearest([x + w], targets.xs, tol);
+    if (s) { w += s.d; guideX = s.line; }
+  } else if (handle.includes("w")) {
+    const s = nearest([x], targets.xs, tol);
+    if (s) { x += s.d; w -= s.d; guideX = s.line; }
+  }
+  if (handle.includes("n")) {
+    const s = nearest([y + h], targets.ys, tol);
+    if (s) { h += s.d; guideY = s.line; }
+  } else if (handle.includes("s")) {
+    const s = nearest([y], targets.ys, tol);
+    if (s) { y += s.d; h -= s.d; guideY = s.line; }
+  }
+  return { box: { x, y, w, h }, guideX, guideY };
 }

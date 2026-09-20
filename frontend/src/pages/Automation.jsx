@@ -310,9 +310,15 @@ function ConvertCell({ shop, onConvert, stepEstimates }) {
   if (shop.status === "done") return <span className="pill done">Done</span>;
   if (shop.status === "failed") {
     return (
-      <span className="pill error" title={shop.error}>
-        Failed
-      </span>
+      <div>
+        <span className="pill error" title={shop.error}>
+          Failed
+        </span>{" "}
+        <button className="btn small" onClick={onConvert}>
+          Retry
+        </button>
+        {shop.error && <div className="err small-text" style={{ maxWidth: 260 }}>{shop.error}</div>}
+      </div>
     );
   }
   return null;

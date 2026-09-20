@@ -4,6 +4,7 @@ import "../editor/editor.css";
 import Canvas from "../editor/Canvas.jsx";
 import LayersPanel from "../editor/LayersPanel.jsx";
 import PropertiesPanel from "../editor/PropertiesPanel.jsx";
+import PageResizeDialog from "../editor/PageResizeDialog.jsx";
 import { DIM, LeftDimension, LeftRuler, RULER, TopDimension, TopRuler } from "../editor/Rulers.jsx";
 import { Fit, Redo, Undo, ZoomIn, ZoomOut } from "../editor/icons.jsx";
 import { AlphaMaps } from "../editor/alphaMaps.js";
@@ -31,6 +32,12 @@ export default function EditorPage() {
   const [saveState, setSaveState] = useState("saved");
   const [toast, setToast] = useState("");
   const [pointer, setPointer] = useState(null);
+  const [snap, setSnap] = useState(true);
+  const [fonts, setFonts] = useState({ available: false, fonts: [] });
+  const [shop, setShop] = useState(null);
+  const [pageChange, setPageChange] = useState(null); // {w, h} in mm while the page-size dialog is open
+  const [pageKey, setPageKey] = useState(0);
+  const lastNudge = useRef({ at: 0 });
   const alphaMaps = useMemo(() => new AlphaMaps(), []);
   const clip = useRef(null);
   const idCounter = useRef(0);
@@ -46,6 +53,11 @@ export default function EditorPage() {
     clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(""), 4500);
   }, []);
+
+  useEffect(() => {
+    fetch("/api/fonts").then((r) => r.json()).then(setFonts).catch(() => {});
+    fetch(`/api/v2/shops/${shopId}/status`).then((r) => r.json()).then(setShop).catch(() => {});
+  }, [shopId]);
 
   // ------------------------------------------------------------------ load
   useEffect(() => {
@@ -132,7 +144,7 @@ export default function EditorPage() {
   const nextId = useCallback(() => `n${Date.now().toString(36)}${++idCounter.current}`, []);
 
   const commit = useCallback(
-    (op) => {
+    (op, opts = {}) => {
       if (!scene) return false;
       let result;
       try {
@@ -141,6 +153,17 @@ export default function EditorPage() {
         say(e.message.replace(/^op #0 \(\w+\): /, ""));
         return false;
       }
+      const now = Date.now();
+      const prev = ops[cursor - 1];
+      // Holding an arrow key must not create one undo step per repeat: merge consecutive nudges of the same objects.
+      if (opts.coalesce && cursor === ops.length && prev && prev.op === "move" && now - lastNudge.current.at < 800 &&
+          prev.ids.length === op.ids.length && prev.ids.every((i, k) => i === op.ids[k])) {
+        const merged = { ...prev, dx: Math.round((prev.dx + op.dx) * 1e4) / 1e4, dy: Math.round((prev.dy + op.dy) * 1e4) / 1e4 };
+        setOps((o) => [...o.slice(0, cursor - 1), merged]);
+        lastNudge.current.at = now;
+        return true;
+      }
+      lastNudge.current.at = opts.coalesce ? now : 0;
       setOps((o) => [...o.slice(0, cursor), op]);
       setCursor((c) => c + 1);
       if (op.op === "group") {
@@ -157,7 +180,7 @@ export default function EditorPage() {
       }
       return true;
     },
-    [scene, cursor, say],
+    [scene, cursor, ops, say],
   );
 
   const undo = useCallback(() => setCursor((c) => Math.max(0, c - 1)), []);
@@ -240,7 +263,7 @@ export default function EditorPage() {
 
   // ------------------------------------------------------------- shortcuts
   const keys = useRef({});
-  keys.current = { undo, redo, copySelection, paste, selectAll, commit, sel, ctx, scene };
+  keys.current = { undo, redo, copySelection, paste, selectAll, commit, sel, ctx, scene, unit };
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -273,6 +296,14 @@ export default function EditorPage() {
         e.preventDefault();
         const n = k.sel.length === 1 && k.scene ? buildIndex(k.scene).get(k.sel[0])?.node : null;
         if (n && n.kind === "group") k.commit({ op: "ungroup", id: n.id });
+      } else if (e.key.startsWith("Arrow") && k.sel.length) {
+        // nudge: 0.1 in (2.54 mm) like CorelDRAW; 1 mm when working in mm/cm. Shift = x10, Ctrl = x0.1.
+        e.preventDefault();
+        const base = k.unit === "mm" || k.unit === "cm" ? 1 : 2.54;
+        const step = base * (e.shiftKey ? 10 : 1) * (mod ? 0.1 : 1);
+        const dx = e.key === "ArrowLeft" ? -step : e.key === "ArrowRight" ? step : 0;
+        const dy = e.key === "ArrowDown" ? -step : e.key === "ArrowUp" ? step : 0;
+        k.commit({ op: "move", ids: k.sel, dx, dy }, { coalesce: true });
       } else if (e.key === "Delete" || e.key === "Backspace") {
         if (k.sel.length) {
           e.preventDefault();
@@ -358,11 +389,14 @@ export default function EditorPage() {
         <button className="ed-icon-btn" title="Zoom in" onClick={() => zoomBy(1.25)}><ZoomIn /></button>
         <button className="ed-icon-btn" title="Fit page" onClick={() => setView(fitView(size, scene.page))}><Fit /> Fit</button>
         <span className="ed-sep" />
-        <PageSize pageW={pageW} pageH={pageH} unit={unit} onCommit={(w, h) => commit({ op: "page", width: w, height: h })} />
+        <PageSize key={pageKey} pageW={pageW} pageH={pageH} unit={unit} onCommit={(w, h) => setPageChange({ w, h })} />
         <select className="ed-select" value={unit} onChange={(e) => setUnit(e.target.value)} aria-label="Units">
           {UNIT_NAMES.map((u) => <option key={u}>{u}</option>)}
         </select>
         <span className="ed-sep" />
+        <label className="ed-check" title="Snap to page edges/centre and other objects while dragging (hold Alt to bypass)">
+          <input type="checkbox" checked={snap} onChange={(ev) => setSnap(ev.target.checked)} /> Snap
+        </label>
         <label className="ed-check" title="Show CorelDRAW's own full-page render of the converted board instead of the per-object images (edits are hidden while on)">
           <input type="checkbox" checked={showRender} onChange={(e) => setShowRender(e.target.checked)} /> Corel page render
         </label>
@@ -394,6 +428,7 @@ export default function EditorPage() {
               view={view}
               setView={setView}
               showRender={showRender}
+              snap={snap}
               alphaMaps={alphaMaps}
               onSelect={select}
               onCommit={commit}
@@ -404,7 +439,7 @@ export default function EditorPage() {
           </div>
         </div>
         <aside className="ed-side">
-          <PropertiesPanel scene={scene} sel={sel} unit={unit} onCommit={commit} />
+          <PropertiesPanel scene={scene} sel={sel} unit={unit} onCommit={commit} fonts={fonts} />
           <LayersPanel scene={scene} sel={sel} ctx={ctx} onSelect={select} onCommit={commit} nextId={() => `n${Date.now().toString(36)}g${++idCounter.current}`} />
         </aside>
       </div>
@@ -420,6 +455,18 @@ export default function EditorPage() {
         <span>{ops.length ? `${cursor}/${ops.length} operations` : "No edits"}</span>
         <span>{scene.stats && scene.stats.mock ? "Mock scene (no CorelDRAW)" : `${scene.stats?.leaves ?? "?"} rendered objects`}</span>
       </footer>
+
+      {pageChange && (
+        <PageResizeDialog
+          current={{ w: pageW, h: pageH }}
+          next={pageChange}
+          unit={unit}
+          shop={shop || { name: "Board" }}
+          jobId={jobId}
+          onPageOnly={() => { commit({ op: "page", width: Math.round(pageChange.w * 1e4) / 1e4, height: Math.round(pageChange.h * 1e4) / 1e4 }); setPageChange(null); }}
+          onCancel={() => { setPageChange(null); setPageKey((k) => k + 1); }}
+        />
+      )}
 
       {toast && <div className="ed-toast" role="status">{toast}</div>}
     </div>

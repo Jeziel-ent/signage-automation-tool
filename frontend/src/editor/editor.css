@@ -129,3 +129,12 @@ body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 .ed-splash { min-height: 100vh; display: flex; align-items: center; justify-content: center; background: var(--color-black); }
 .ed-splash-card { background: var(--color-white); border-radius: var(--radius-lg); padding: var(--space-6); width: 460px; max-width: 92vw; box-shadow: var(--shadow-md); }
 .ed-splash-card h1 { margin-bottom: var(--space-3); }
+
+.ed-warn-error { background: var(--color-error-bg); color: var(--color-error); }
+
+.ed-modal-back { position: fixed; inset: 0; background: rgba(18, 18, 18, 0.55); display: flex; align-items: center; justify-content: center; z-index: 20; }
+.ed-modal { background: var(--color-white); border-radius: var(--radius-lg); padding: var(--space-5); width: 520px; max-width: 92vw; box-shadow: var(--shadow-md); }
+.ed-modal h2 { margin-bottom: var(--space-2); }
+.ed-choice { margin: var(--space-4) 0; }
+.ed-choice .ed-hint { margin-top: var(--space-2); }
+.ed-modal-actions { display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4); }

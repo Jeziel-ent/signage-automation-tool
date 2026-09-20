@@ -274,13 +274,46 @@ fail a real export. `_write_json` now retries for up to ~3 s and
   **text change** the canvas keeps showing Corel's original render and
   marks the object "edited" until Phase D regenerates it; rotated shapes
   keep their rotation baked into the image and are resized by bounding box.
-- Not implemented: editing **inside** a PowerClip (its contents are listed
-  in the tree but read-only - move/resize applies to the clipped result as
-  one object); locked objects/layers are shown but not editable; layers
-  cannot be reordered; the page-size field changes the page only (it does
-  not re-lay-out the content - that is the layout engine's job, not the
-  editor's); no snapping/guides/arrow-key nudging; the font list is a
-  suggestion list, not a check that the font is installed (Phase D).
+- Not implemented: editing **inside** a PowerClip (deliberately deferred:
+  none of the exported dalmia boards contains one, and doing it right needs
+  unclipped per-child renders plus the clip outline; its contents are
+  listed in the tree but read-only - move/resize applies to the clipped
+  result as one object); locked objects/layers are shown but not editable.
+
+**Follow-up round (built after the first review):**
+- **Arrow-key nudge**: 0.1 in (1 mm when the unit is mm/cm), Shift x10,
+  Ctrl x0.1. A held key or quick burst is merged into ONE `move` op (800 ms
+  window, same objects) so undo is not one step per key repeat.
+- **Snapping** (toolbar checkbox, on by default; Alt bypasses it): while
+  moving, the selection's left/centre/right and bottom/middle/top snap to the
+  page edges/centre and to the edges/centres of the other objects in the same
+  context within 6 screen px, with dashed red guide lines; while resizing,
+  only the edges being dragged snap. Proportional corner drags are not
+  snapped (snapping one edge would break the aspect ratio; hold Shift on a
+  corner to free it and snap). Logic is pure and tested (`snapMove`,
+  `snapResize`, `snapTargets` in `model.js`).
+- **Layer reordering**: new `layer_order` op {id, index} (Python + JS +
+  golden `base2`/`layer_cases`); layer rows in the tree drag above/below
+  each other; objects can also be dropped INTO a layer row. Verified live
+  against CorelDRAW that `Page.Layers.Item(i)` lists layers top-first (a
+  layer created above another appears earlier), so `walk_page`'s reversal
+  to bottom -> top is right. The mock scene now has two layers so this is
+  exercisable without Corel; real dalmia masters have a single layer.
+- **Font-installed check**: `GET /api/fonts` (`app/fonts.py`) lists installed
+  families via GDI `InstalledFontCollection` (PowerShell, cached; registry
+  fallback; `available:false` on other OSes, where the check is skipped
+  rather than blocking edits). The Font field's suggestions are that list,
+  and naming an uninstalled font is refused with an explanation (CorelDRAW
+  silently ignores it) - no op is created. A board's existing font that is
+  not installed is flagged too. Font-linking cases like Arial-for-Tamil are
+  fine because the check is by family name of what CorelDRAW is asked to use.
+- **Page W/H**: changing the fields opens a dialog with two choices - "Re-convert
+  at this size" (creates a new shop on the same job at the new size, runs
+  the real layout engine on the ORIGINAL master, shows the usual convert
+  progress and opens that board's editor; the current board and its edits
+  are left untouched and NOT carried over) or "Change the page only" (the
+  old `page` op, undoable). A "scale everything" option was deliberately not
+  built: it would be a second, worse layout engine inside the editor.
 - "Save and Generate" saves the operation list and says so; the export
   popup (cdr/pdf/png/jpeg) is Phase D.
 - Real dalmia masters are ungrouped curves, so the layers tree of a real
@@ -1621,10 +1654,10 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 153 passed as of this writing (that includes
+`pytest` from `backend/` — 164 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
-`test_corel_worker_io.py`); `npm test` from `frontend/` runs 46 more
+`test_corel_worker_io.py`, `test_fonts.py`); `npm test` from `frontend/` runs 56 more
 (`ops.test.mjs` against the shared golden cases, `model.test.mjs`). Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only

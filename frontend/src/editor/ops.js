@@ -202,7 +202,7 @@ const APPLY = {
   reorder(s, op) {
     const idx = buildIndex(s);
     const e = need(idx, field(op, "id"));
-    if (e.isLayer) throw new OpError("layers cannot be reordered in v1");
+    if (e.isLayer) throw new OpError("layers are reordered with 'layer_order'");
     checkEditable(idx, op.id);
     const dest = need(idx, field(op, "parent"));
     const dn = dest.node;
@@ -318,6 +318,15 @@ const APPLY = {
     }
     nodes.forEach((n) => dn.children.push(structuredClone(n)));
     refreshChain(s, dest.isLayer ? null : dn);
+  },
+
+  layer_order(s, op) {
+    const idx = buildIndex(s);
+    const e = need(idx, field(op, "id"));
+    if (!e.isLayer) throw new OpError(`'${op.id}' is not a layer`);
+    const layers = s.layers;
+    layers.splice(layers.indexOf(e.node), 1);
+    layers.splice(Math.max(0, Math.min(Math.trunc(Number(field(op, "index"))), layers.length)), 0, e.node);
   },
 
   page(s, op) {

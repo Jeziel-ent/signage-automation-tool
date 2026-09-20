@@ -96,8 +96,8 @@ def test_ops_save_load_and_server_side_replay(client):
     assert _scene(client, job, shop)["ops"] == ops  # survives a reload of the scene
 
     replayed = client.get(f"/api/editor/{job}/{shop}/replayed").json()
-    ids = [n["id"] for n in replayed["layers"][0]["children"]]
-    assert "s5" not in ids and ids[-1] == "s3"
+    top = [n["id"] for n in replayed["layers"][1]["children"]]   # mock scene: L1 = bg+card, L2 = logo group+name
+    assert "s5" not in top and top[-1] == "s3"
     moved = next(n for n in replayed["layers"][0]["children"] if n["id"] == "s2")
     orig = next(n for n in scene["layers"][0]["children"] if n["id"] == "s2")
     assert moved["x"] == pytest.approx(orig["x"] + 100)

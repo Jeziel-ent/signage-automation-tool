@@ -336,8 +336,10 @@ def mock_scene(out_dir: Path, page_w: float, page_h: float) -> dict:
                 text={"content": "SHOP NAME", "font": "Arial", "size_pt": 120.0})
     scene = {
         "version": 1, "unit": "mm", "page": {"width": pw, "height": ph}, "page_image": None,
-        "layers": [{"id": "L2", "name": "Layer 1", "visible": True, "locked": False,
-                    "children": [bg, card, grp, shop]}],
+        "layers": [
+            {"id": "L1", "name": "Layer 1", "visible": True, "locked": False, "children": [bg, card]},
+            {"id": "L2", "name": "Layer 2", "visible": True, "locked": False, "children": [grp, shop]},
+        ],
         "stats": {"leaves": 5, "leaf_images": 5, "image_failures": [], "seconds": 0.0, "mock": True},
     }
     (out_dir / "scene.json").write_text(json.dumps(scene), encoding="utf-8")

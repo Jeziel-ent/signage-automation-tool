@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { buildIndex, mapBox } from "./ops.js";
-import { flattenLeaves, hitTest, leavesOf, marqueeSelect, resolveTarget, unionBox } from "./model.js";
+import { flattenLeaves, hitTest, leavesOf, marqueeSelect, resolveTarget, snapMove, snapResize, snapTargets, unionBox } from "./model.js";
 import { toScene, zoomAt } from "./view.js";
 
 const HANDLES = [
@@ -11,6 +11,7 @@ const CURSORS = { nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "
 const MIN_MM = 0.5;
 const DRAG_PX = 3;
 const HANDLE_PX = 9;
+const SNAP_PX = 6;
 const r4 = (v) => Math.round(v * 1e4) / 1e4;
 
 /** New selection box when `handle` is dragged by (dx, dy) mm (dy up). Corners keep the aspect ratio unless `free`. */
@@ -58,7 +59,7 @@ const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRef
   );
 });
 
-export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, alphaMaps, onSelect, onCommit, onToast, onCursor, onSize }) {
+export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
   const imgRefs = useRef(new Map());
@@ -145,6 +146,13 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   // Re-derive every image's box from the newest scene (after a commit, or to undo a cancelled preview).
   const syncImages = () => latest.current.leaves.forEach((n) => setImg(n.id, n));
 
+  // Snap lines for a drag: page edges/centre + edges/centres of the other objects in the same context.
+  const buildTargets = (ids, c) => {
+    const { scene: sc, idx: ix } = latest.current;
+    const pool = c ? ix.get(c).node.children : sc.layers.filter((l) => l.visible !== false).flatMap((l) => l.children);
+    return snapTargets(sc.page, pool.filter((n) => !ids.includes(n.id)));
+  };
+
   const sameParent = (a, b) => (idx.get(a)?.parent?.id ?? idx.get(a)?.layer.id) === (idx.get(b)?.parent?.id ?? idx.get(b)?.layer.id);
 
   function onPointerDown(e) {
@@ -178,14 +186,14 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
     const nodes = next.map((id) => idx.get(id)?.node).filter(Boolean);
     const locked = nodes.some((n) => n.locked || idx.get(n.id).layer.locked);
     if (!nodes.length || locked) return;
-    drag.current = { type: "move", startP: p, ids: next, nodes, leaves: nodes.flatMap(leavesOf), startBox: unionBox(nodes), started: false };
+    drag.current = { type: "move", startP: p, ids: next, nodes, leaves: nodes.flatMap(leavesOf), startBox: unionBox(nodes), targets: snap ? buildTargets(next, nextCtx) : null, started: false };
   }
 
   function onHandleDown(e, handle) {
     e.stopPropagation();
     if (e.button !== 0 || !selBox || selLocked) return;
     svgRef.current.setPointerCapture(e.pointerId);
-    drag.current = { type: "resize", handle, startP: local(e), startBox: selBox, ids: sel.slice(), leaves: selNodes.flatMap(leavesOf), started: false };
+    drag.current = { type: "resize", handle, startP: local(e), startBox: selBox, ids: sel.slice(), leaves: selNodes.flatMap(leavesOf), targets: snap ? buildTargets(sel, ctx) : null, started: false };
   }
 
   function onPointerMove(e) {
@@ -214,15 +222,29 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
         if (Math.abs(dx) > Math.abs(dy)) dy = 0;
         else dx = 0;
       }
+      let gx = null;
+      let gy = null;
+      if (d.targets && !e.altKey) {
+        const s = snapMove({ ...d.startBox, x: d.startBox.x + dx, y: d.startBox.y + dy }, d.targets, SNAP_PX / z);
+        if (!(e.shiftKey && dx === 0)) { dx += s.dx; gx = s.guideX; }
+        if (!(e.shiftKey && dy === 0)) { dy += s.dy; gy = s.guideY; }
+      }
       d.dx = dx;
       d.dy = dy;
       d.leaves.forEach((n) => setImg(n.id, { x: n.x + dx, y: n.y + dy, w: n.w, h: n.h }));
-      setOverlay({ box: { ...d.startBox, x: d.startBox.x + dx, y: d.startBox.y + dy } });
+      setOverlay({ box: { ...d.startBox, x: d.startBox.x + dx, y: d.startBox.y + dy }, guideX: gx, guideY: gy });
     } else if (d.type === "resize") {
-      const box = resizeBox(d.handle, d.startBox, dxPx / z, -dyPx / z, e.shiftKey);
+      let box = resizeBox(d.handle, d.startBox, dxPx / z, -dyPx / z, e.shiftKey);
+      let gx = null;
+      let gy = null;
+      // proportional corner drags are not snapped (snapping one edge would break the aspect ratio)
+      if (d.targets && !e.altKey && (d.handle.length === 1 || e.shiftKey)) {
+        const s = snapResize(box, d.handle, d.targets, SNAP_PX / z);
+        if (s.box.w >= MIN_MM && s.box.h >= MIN_MM) { box = s.box; gx = s.guideX; gy = s.guideY; }
+      }
       d.newBox = box;
       d.leaves.forEach((n) => setImg(n.id, mapBox(n, d.startBox, box)));
-      setOverlay({ box });
+      setOverlay({ box, guideX: gx, guideY: gy });
     } else if (d.type === "marquee") {
       d.p = p;
       setOverlay({ marquee: { x: Math.min(p.x, d.startP.x), y: Math.min(p.y, d.startP.y), w: Math.abs(dxPx), h: Math.abs(dyPx) } });
@@ -370,6 +392,13 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
                 />
               ))}
           </g>
+        )}
+
+        {overlay && overlay.guideX != null && (
+          <line pointerEvents="none" x1={sx(overlay.guideX)} x2={sx(overlay.guideX)} y1="0" y2={size.h} stroke="var(--color-red)" strokeWidth="1" strokeDasharray="4 3" />
+        )}
+        {overlay && overlay.guideY != null && (
+          <line pointerEvents="none" y1={sy(overlay.guideY)} y2={sy(overlay.guideY)} x1="0" x2={size.w} stroke="var(--color-red)" strokeWidth="1" strokeDasharray="4 3" />
         )}
 
         {overlay && overlay.marquee && (

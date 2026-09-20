@@ -261,8 +261,12 @@ def test_exported_scene_is_replayable(tmp_path):
 def test_mock_scene_is_valid_and_replayable(tmp_path):
     scene = scene_export.mock_scene(tmp_path, 3000, 1200)
     assert scene["page"] == {"width": 3000.0, "height": 1200.0}
-    for n in scene["layers"][0]["children"]:
-        if n["kind"] == "shape":
-            assert (tmp_path / "img" / n["image"]["file"]).is_file()
+    assert [l["id"] for l in scene["layers"]] == ["L1", "L2"]
+    for layer in scene["layers"]:
+        for n in layer["children"]:
+            if n["kind"] == "shape":
+                assert (tmp_path / "img" / n["image"]["file"]).is_file()
     out = apply_ops(scene, [{"op": "ungroup", "id": "s5"}])
-    assert [n["id"] for n in out["layers"][0]["children"]] == ["s1", "s2", "s3", "s4", "s6"]
+    assert [n["id"] for n in out["layers"][1]["children"]] == ["s3", "s4", "s6"]
+    swapped = apply_ops(scene, [{"op": "layer_order", "id": "L2", "index": 0}])
+    assert [l["id"] for l in swapped["layers"]] == ["L2", "L1"]

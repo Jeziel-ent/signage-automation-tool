@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import corel_supervisor, db, scene_export, scene_ops
+from . import corel_supervisor, db, fonts, scene_export, scene_ops
 from .batch_import import parse_shop_lines
 from .engines import get_engine
 from .layout import to_mm
@@ -594,3 +594,9 @@ def editor_replayed(job_id: str, shop_id: str):
         return scene_ops.apply_ops(scene, db.get_editor_ops(shop_id))
     except scene_ops.OpError as e:
         raise HTTPException(422, str(e))
+
+
+@app.get("/api/fonts")
+def api_fonts(refresh: bool = False):
+    """Installed font families (the editor refuses to name a font CorelDRAW would silently ignore)."""
+    return fonts.installed_fonts(refresh)
