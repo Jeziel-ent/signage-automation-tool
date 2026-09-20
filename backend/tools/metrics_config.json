@@ -25,5 +25,10 @@
     "full_bleed_note": "A cluster is exempted from the min_margin check (only that check - it still counts for within_page/overlap) if its bbox spans (within page_tolerance_mm of) the full page width or height, or its area is >= this fraction of the page - both signal a deliberate edge-to-edge design element (e.g. a full-width accent rule line, or the true background), not a misplaced object. Found via GATE 1 feedback: every dalmia board flagged a spurious 0.0mm margin from exactly this kind of full-width strip.",
     "bottom_bar_margin_mm": 30.0,
     "bottom_bar_margin_note": "shopname_in_bottom_bar check: how far the shop-name text's vertical centre may sit outside the y-range spanned by the other fixed text (footer, phone/GST) and still count as 'in the bottom bar'. Added after a wide/tiled board's gap-centring shopname placement put it near the page's vertical centre instead of the bottom bar every real design uses - see CLAUDE.md 'Wide-board panel sequence'."
+  },
+
+  "geometric": {
+    "area_match_tolerances_mm": [2.0, 5.0, 10.0],
+    "area_match_tolerances_note": "Step 2: for each matched cluster pair, 'matched within Xmm' means BOTH its centre-to-centre position error and its width/height size error (Euclidean, mm) are <= X. area_matched_pct is the % of the real file's total non-bg/frame cluster area that belongs to clusters matched within that tolerance - an area-weighted 'how much of the board's actual content is correctly placed' number, not a plain count of clusters (a big misplaced logo should count for more than a tiny misplaced accent mark)."
   }
 }

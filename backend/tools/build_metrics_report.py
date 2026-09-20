@@ -53,14 +53,19 @@ def _resize_to_width(src: Path, dst: Path, width: int = DISPLAY_WIDTH) -> None:
     img.resize((width, new_h), Image.LANCZOS).save(dst)
 
 
-def build(brand: str) -> Path:
+def build_cards(brand: str, out_root: Path | None = None, want_images: bool = True) -> tuple[list[dict], dict]:
+    """The per-board metric computation shared by the HTML report (`build`,
+    below) and `calibrate_threshold.py` (Step 3 - which only needs the
+    numbers, not the resized thumbnail files `want_images` controls).
+    Returns (cards, config).
+    """
     report = json.loads((VALIDATION_ROOT / brand / "validation_report.json").read_text(encoding="utf-8"))
     cfg = BRAND_MASTER[brand]
     shopname_hints = [cfg["shop_name"], cfg["shop_name_local"]]
     config = metrics.load_config()
-
-    out_root = REPORT_ROOT / brand
-    out_root.mkdir(parents=True, exist_ok=True)
+    out_root = out_root or (REPORT_ROOT / brand)
+    if want_images:
+        out_root.mkdir(parents=True, exist_ok=True)
 
     cards = []
     for b in report["boards"]:
@@ -75,17 +80,19 @@ def build(brand: str) -> Path:
             "target": f"{b['target_mm']['w']:.0f}x{b['target_mm']['h']:.0f}mm",
             "tile": f"{b['our_tile']['axis']},{b['our_tile']['n']}",
             "geometry_max_diff_pct": b["diff_pct"]["max"],
+            "content_check": b.get("content_check"),
         }
         page_w, page_h = b["target_mm"]["w"], b["target_mm"]["h"]
 
         ours_png_path, real_png_path = ROOT / b["ours_png"], ROOT / b["real_png"]
-        card_dir = out_root / safe
-        card_dir.mkdir(parents=True, exist_ok=True)
         if ours_png_path.exists() and real_png_path.exists():
             try:
-                _resize_to_width(ours_png_path, card_dir / "ours.png")
-                _resize_to_width(real_png_path, card_dir / "real.png")
-                card["ours_rel"], card["real_rel"] = f"{safe}/ours.png", f"{safe}/real.png"
+                if want_images:
+                    card_dir = out_root / safe
+                    card_dir.mkdir(parents=True, exist_ok=True)
+                    _resize_to_width(ours_png_path, card_dir / "ours.png")
+                    _resize_to_width(real_png_path, card_dir / "real.png")
+                    card["ours_rel"], card["real_rel"] = f"{safe}/ours.png", f"{safe}/real.png"
                 card["visual"] = metrics.visual_similarity(ours_png_path, real_png_path, config)
             except Exception as e:
                 card["visual_error"] = str(e)
@@ -100,6 +107,7 @@ def build(brand: str) -> Path:
             ours_shapes = _bucket_role(_flatten_leaves(ours_dump), page_w, page_h, shopname_hints)
             real_shapes = _bucket_role(_flatten_leaves(real_dump), page_w, page_h, shopname_hints)
             card["clusters"] = metrics.cluster_compare(ours_shapes, real_shapes, page_w, page_h, config)
+            card["geometric"] = metrics.geometric_accuracy(ours_shapes, real_shapes, config)
             card["counts"] = metrics.counts_compare(ours_shapes, real_shapes)
             card["layout_checks"] = metrics.layout_checks(ours_shapes, page_w, page_h, config)
         else:
@@ -107,6 +115,12 @@ def build(brand: str) -> Path:
 
         cards.append(card)
 
+    return cards, config
+
+
+def build(brand: str) -> Path:
+    out_root = REPORT_ROOT / brand
+    cards, config = build_cards(brand, out_root, want_images=True)
     (out_root / "index.html").write_text(_render_html(brand, cards, config), encoding="utf-8")
     n_visual = sum(1 for c in cards if "visual" in c)
     n_cluster = sum(1 for c in cards if "clusters" in c)
@@ -120,18 +134,60 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
 
     vc = config["visual"]
 
+    def _content_failed(c):
+        cc = c.get("content_check")
+        return bool(cc and cc["overall"] == "CONTENT_FAIL")
+
     def _passes(c):
         if any(chk["status"] == "fail" for chk in c.get("layout_checks", [])):
+            return False
+        if _content_failed(c):
             return False
         return bool(c.get("visual", {}).get("pass"))
 
     n_pass = sum(1 for c in cards if "visual" in c and _passes(c))
     n_scored = sum(1 for c in cards if "visual" in c)
+    n_content_fail = sum(1 for c in cards if _content_failed(c))
+    n_content_checked = sum(1 for c in cards if c.get("content_check") and c["content_check"]["overall"] != "NOT_CHECKED")
+
+    tolerances = config.get("geometric", {}).get("area_match_tolerances_mm", [2.0, 5.0, 10.0])
+    summary_rows = []
+    for c in cards:
+        geo = c.get("geometric")
+        cc = c.get("content_check")
+        area_cells = "".join(
+            "<td>-</td>" if not geo else
+            f"<td>{'-' if r['pct'] is None else format(r['pct'], '.0f') + '%'}</td>"
+            for r in ((geo["area_matched_pct"] if geo else [{"pct": None}] * len(tolerances)))
+        )
+        content_cell = esc(cc["overall"]) if cc else "-"
+        content_cls = {"CONTENT_OK": "check-pass", "CONTENT_FAIL": "check-fail", "NOT_CHECKED": "check-warn"}.get(
+            cc["overall"] if cc else "", "")
+        summary_rows.append(f"""
+        <tr>
+          <td><a href="#{esc(c['safe'])}">{esc(c['shop'])}</a></td>
+          <td>{esc(c['target'])}</td>
+          <td>{'-' if 'visual' not in c else f"{c['visual']['combined']:.3f}"}</td>
+          <td>{'-' if not geo else f"{geo['position_error_mm']['max']:.1f}"}</td>
+          <td>{'-' if not geo else f"{geo['size_error_mm']['max']:.1f}"}</td>
+          {area_cells}
+          <td class="{content_cls}">{content_cell}</td>
+        </tr>""")
+    summary_table_html = f"""
+    <table class="metric-table summary-table">
+      <tr>
+        <th>shop</th><th>target</th><th>visual combined</th>
+        <th>max position error (mm)</th><th>max size error (mm)</th>
+        {"".join(f"<th>area within {t:g}mm</th>" for t in tolerances)}
+        <th>content check</th>
+      </tr>
+      {"".join(summary_rows)}
+    </table>"""
 
     card_html = []
     for c in cards:
         visual = c.get("visual")
-        hard_fail = any(chk["status"] == "fail" for chk in c.get("layout_checks", []))
+        hard_fail = any(chk["status"] == "fail" for chk in c.get("layout_checks", [])) or _content_failed(c)
         if hard_fail:
             badge = "fail"
         elif visual:
@@ -154,6 +210,25 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
             </table>"""
         else:
             visual_html = f'<p class="err">{esc(c.get("visual_error"))}</p>'
+
+        geo = c.get("geometric")
+        if geo:
+            area_cells = "".join(f"<th>within {row['tolerance_mm']:g}mm</th>" for row in geo["area_matched_pct"])
+            area_vals = "".join(
+                f"<td>{'-' if row['pct'] is None else format(row['pct'], '.0f') + '%'}</td>"
+                for row in geo["area_matched_pct"]
+            )
+            geo_html = f"""
+            <table class="metric-table">
+              <tr><th>position error (mm)</th><td>max {geo['position_error_mm']['max']:.1f}, mean {geo['position_error_mm']['mean']:.1f}</td>
+                  <th>size error (mm)</th><td>max {geo['size_error_mm']['max']:.1f}, mean {geo['size_error_mm']['mean']:.1f}</td></tr>
+              <tr>{area_cells}</tr>
+              <tr>{area_vals}</tr>
+            </table>
+            <p class="meta">area matched % = share of the real file's total cluster area whose matched cluster has
+            BOTH position and size error within that tolerance (metrics_config.json's "geometric" section).</p>"""
+        else:
+            geo_html = '<p class="err">no geometric accuracy data (needs both shape dumps)</p>'
 
         if "clusters" in c:
             cl, ct = c["clusters"], c["counts"]
@@ -182,6 +257,24 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
         else:
             cluster_html = f'<p class="err">{esc(c.get("cluster_error"))}</p>'
 
+        cc = c.get("content_check")
+        if cc:
+            def _row(label, f):
+                cls = {"CONTENT_OK": "check-pass", "CONTENT_FAIL": "check-fail", "NOT_CHECKED": "check-warn"}[f["status"]]
+                return (f'<tr class="{cls}"><td>{esc(label)}</td><td>{esc(f["status"])}</td>'
+                        f'<td>{esc(f["expected"])}</td><td>{esc(f["found"])}</td></tr>')
+
+            content_html = f"""
+            <table class="metric-table">
+              <tr><th>field</th><th>status</th><th>expected</th><th>found</th></tr>
+              {_row("shop name", cc["shop_name"])}
+              {_row("phone", cc["phone"])}
+              {_row("gst", cc["gst"])}
+            </table>
+            <p class="meta">overall: <span class="badge {'pass' if cc['overall'] == 'CONTENT_OK' else 'fail' if cc['overall'] == 'CONTENT_FAIL' else 'unscored'}">{esc(cc['overall'])}</span></p>"""
+        else:
+            content_html = '<p class="err">no content check recorded for this board</p>'
+
         images_html = ""
         if "ours_rel" in c:
             images_html = f"""
@@ -191,13 +284,15 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
             </div>"""
 
         card_html.append(f"""
-        <section class="card {badge}">
+        <section class="card {badge}" id="{esc(c['safe'])}">
           <h2>{esc(c['file'])}</h2>
           {header}
           <div class="grid">
             <div class="col">{images_html}</div>
             <div class="col">
               <h3>visual similarity</h3>{visual_html}
+              <h3>geometric accuracy (mm)</h3>{geo_html}
+              <h3>content check</h3>{content_html}
               <h3>cluster / count / layout</h3>{cluster_html}
             </div>
           </div>
@@ -239,6 +334,9 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
   .check-warn {{ color: #fd6; }}
   .check-fail {{ color: #f88; }}
   .err {{ color: #d9a; font-size: 12px; }}
+  .summary-table {{ margin-bottom: 24px; }}
+  .summary-table th, .summary-table td {{ padding: 4px 10px; border-bottom: 1px solid #333; }}
+  .summary-table a {{ color: #9cf; text-decoration: none; }}
 </style>
 </head>
 <body>
@@ -248,7 +346,12 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
   score &ge; {vc['pass_threshold']}, weights {vc['ssim_weight']}/{vc['phash_weight']}/{vc['edge_weight']}) is an
   <b>uncalibrated default</b> in backend/tools/metrics_config.json - not yet confirmed by eye.
   {n_pass}/{n_scored} boards currently pass it. Master-as-its-own-target sanity check is omitted.
+  Content check (does the generated text actually say what was requested - shop name / phone / GST):
+  {n_content_fail} board(s) CONTENT_FAIL out of {n_content_checked} with at least one field actually checked;
+  a CONTENT_FAIL also flips that board's overall badge to FAIL regardless of its visual score.
 </p>
+<h2>Summary: all {len(cards)} boards</h2>
+{summary_table_html}
 {''.join(card_html)}
 </body>
 </html>

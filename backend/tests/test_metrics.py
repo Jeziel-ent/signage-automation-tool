@@ -2,6 +2,8 @@
 matching, counts, layout checks, dhash/edge math) - no CorelDRAW, no real
 PNGs beyond tiny in-memory synthetic ones the tests draw themselves.
 """
+import math
+
 import numpy as np
 import pytest
 from PIL import Image
@@ -102,6 +104,69 @@ def test_cluster_compare_excludes_bg_and_frame_from_clustering():
     ]
     result = metrics.cluster_compare(shapes, shapes, 1000, 1000, CONFIG)
     assert result["ours_clusters"] == 1  # only the logo, bg/frame never enter clustering
+
+
+# --------------------------------------------- Step 2: geometric_accuracy (mm)
+
+def test_geometric_accuracy_identical_layout_is_zero_error_full_area_matched():
+    shapes = [_shape("logo_a", "logo", 0, 0, 100, 60), _shape("shopname", "shopname", 0, 200, 300, 50)]
+    r = metrics.geometric_accuracy(shapes, shapes, CONFIG)
+    assert r["matched"] == 2 and r["unmatched_ours"] == 0 and r["unmatched_real"] == 0
+    assert r["position_error_mm"] == {"max": pytest.approx(0.0), "mean": pytest.approx(0.0)}
+    assert r["size_error_mm"] == {"max": pytest.approx(0.0), "mean": pytest.approx(0.0)}
+    for row in r["area_matched_pct"]:
+        assert row["pct"] == pytest.approx(100.0)
+
+
+def test_geometric_accuracy_reports_mm_not_percent_of_page():
+    # a 30mm shift is 30mm regardless of page size - cluster_compare's %-of-page number
+    # would differ between a 300mm-wide and a 3000mm-wide page; this must not.
+    ours = [_shape("logo_a", "logo", 30, 0, 100, 100)]
+    real = [_shape("logo_a", "logo", 0, 0, 100, 100)]
+    small_page = metrics.geometric_accuracy(ours, real, CONFIG)
+    assert small_page["position_error_mm"]["max"] == pytest.approx(30.0)
+    assert small_page["size_error_mm"]["max"] == pytest.approx(0.0)
+
+
+def test_geometric_accuracy_area_weighted_tolerance_buckets():
+    # a big, accurately-placed logo (90% of the real content's area) and a small,
+    # badly-placed one (10%) - area_matched_pct should read close to 90%, not 50%
+    # (a plain per-cluster count would say "1 of 2 clusters matched", i.e. 50%).
+    ours = [_shape("big", "logo", 0, 0, 300, 300), _shape("small", "logo", 500, 500, 30, 30)]
+    real = [_shape("big", "logo", 0, 0, 300, 300), _shape("small", "logo", 550, 500, 30, 30)]  # small shifted 50mm
+    r = metrics.geometric_accuracy(ours, real, CONFIG)
+    assert r["matched"] == 2
+    tight = next(row for row in r["area_matched_pct"] if row["tolerance_mm"] == 2.0)
+    loose = next(row for row in r["area_matched_pct"] if row["tolerance_mm"] == 10.0)
+    big_area, small_area = 300 * 300, 30 * 30
+    assert tight["pct"] == pytest.approx(big_area / (big_area + small_area) * 100, abs=0.5)  # only the big one qualifies
+    # the shift is 50mm, bigger than every configured default tolerance (2/5/10mm) - the
+    # small cluster never qualifies at any of them, so the loosest bucket matches the tightest
+    assert loose["pct"] == pytest.approx(tight["pct"], abs=0.01)
+
+
+def test_geometric_accuracy_unmatched_clusters_are_excluded_but_still_reduce_area_matched_pct():
+    ours = [_shape("logo_a", "logo", 0, 0, 100, 100)]
+    real = [_shape("logo_a", "logo", 0, 0, 100, 100), _shape("logo_b", "logo", 500, 500, 100, 100)]
+    r = metrics.geometric_accuracy(ours, real, CONFIG)
+    assert r["matched"] == 1 and r["unmatched_real"] == 1
+    # only half the real content's area was even matched, let alone within tolerance
+    for row in r["area_matched_pct"]:
+        assert row["pct"] == pytest.approx(50.0, abs=0.1)
+
+
+def test_geometric_accuracy_per_cluster_rows_carry_role_and_signed_mm_diffs():
+    ours = [_shape("logo_a", "logo", 10, 5, 100, 100)]
+    real = [_shape("logo_a", "logo", 0, 0, 90, 80)]
+    r = metrics.geometric_accuracy(ours, real, CONFIG)
+    row = r["per_cluster"][0]
+    assert row["role"] == "logo"
+    assert row["dx_mm"] == pytest.approx(10.0) and row["dy_mm"] == pytest.approx(5.0)
+    assert row["dw_mm"] == pytest.approx(10.0) and row["dh_mm"] == pytest.approx(20.0)
+    # position error is centre-to-centre, not corner-to-corner: ours' centre is (60, 55),
+    # real's is (45, 40) - the sizes differ too, so this is NOT hypot(dx_mm, dy_mm).
+    assert row["position_error_mm"] == pytest.approx(math.hypot(60 - 45, 55 - 40))
+    assert row["size_error_mm"] == pytest.approx(math.hypot(10, 20))
 
 
 def test_counts_compare_counts_text_and_shopname_together():

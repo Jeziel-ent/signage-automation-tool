@@ -1668,6 +1668,54 @@ machine."
 a `CONTENT_FAIL` now flips that board's overall PASS/FAIL badge regardless
 of its visual score - the whole reason this exists.
 
+### Step 2: geometric accuracy in millimetres (`metrics.geometric_accuracy`)
+
+`cluster_compare`'s diffs were always %-of-target-page, which isn't
+comparable across boards of different target sizes (30mm on a 300mm board
+and 30mm on a 3000mm board report very differently). `geometric_accuracy`
+reuses the exact same cluster matching (so a cluster gets both a % and an mm
+figure from one matching pass) and reports, per matched cluster,
+`position_error_mm` (centre-to-centre Euclidean distance) and
+`size_error_mm` (Euclidean distance between (w, h) pairs), plus per-board
+max/mean of each. It also reports `area_matched_pct[t]` for t in
+{2, 5, 10}mm - the % of the real file's *total* non-bg/frame cluster area
+belonging to a cluster matched within t mm on BOTH axes - deliberately
+area-weighted (a misplaced full logo should count for more than a misplaced
+accent mark; a plain per-cluster count would not distinguish them). 5 unit
+tests, including one that specifically checks this is mm, not %-of-page.
+Wired into `build_metrics_report.py` next to the visual similarity table,
+plus a new summary table at the top of the report listing all 12 boards at
+once (shop, target, visual combined, max position/size error mm, area
+matched at each tolerance, content check) - anchored links jump to each
+board's full card.
+
+**All 12 dalmia boards**, live this session (the visual `combined` column
+matches the numbers already recorded in "Wide-board panel sequence" above,
+confirming today's regeneration/caching didn't regress anything):
+
+| Board | Target | Tile | Visual | Max pos err (mm) | Max size err (mm) | Area matched @5mm | Content |
+|---|---|---|---|---|---|---|---|
+| 02 (180x48) | 4572x1219 | x,2 | 0.785 | 191.9 | 1524.0 | 16.0% | OK |
+| 06 (180x60) | 4572x1524 | x,2 | 0.727 | 837.7 | 762.0 | 16.2% | OK |
+| 03 (120x48) | 3048x1219 | none | 0.976 | 97.0 | 115.6 | 93.8% | OK |
+| 05 (120x48) | 3048x1219 | none | 0.972 | 201.6 | 108.1 | 96.5% | OK |
+| 09 (144x60) | 3658x1524 | none | 0.853 | 533.0 | 1073.0 | 57.9% | OK |
+| 10 (144x60) | 3658x1524 | none | 0.870 | 115.7 | 153.4 | 62.3% | OK |
+| 11 (216x48) | 5486x1219 | x,2 | 0.625 | 510.9 | 2438.4 | 0.0% | OK |
+| 11 (240x60) | 6096x1524 | x,2 | 0.821 | 344.0 | 2286.0 | 16.1% | OK |
+| 12 (120x60, outlier) | 3048x1524 | none | 0.663 | 241.0 | 211.7 | 1.0% | OK |
+| 13 (144x60) x2 | 3658x1524 | none | 0.864 | 88.7 | 139.4 | 62.3% | OK |
+| 14 (120x48) | 3048x1219 | none | 0.954 | 322.7 | 22.9 | 88.7% | OK |
+
+The mm numbers tell a sharper story than the %-of-page numbers did: a
+"good" board (03, 05, 14) has 88-97% of its content area matched within
+5mm, while the four tiled/wide boards (02, 06, 11-216, 11-240) sit at
+0-16% - the geometric gap documented since "Validation: all 13 dalmia
+files" is concentrated almost entirely in tiling/wide-format boards, not
+spread evenly across the set. Content check is a clean 12/12 OK, confirming
+(again, independently of the geometric numbers) that the text-correctness
+axis and the layout-correctness axis really are independent.
+
 ## Metrics suite (Phase 1: `backend/tools/metrics.py`)
 
 A second, independent scoring layer on top of `validate_all.py`'s

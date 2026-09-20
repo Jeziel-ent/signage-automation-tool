@@ -39,6 +39,8 @@ by tuning against the pass rate.
 from __future__ import annotations
 
 import json
+import math
+import statistics
 import sys
 from pathlib import Path
 
@@ -196,6 +198,67 @@ def cluster_compare(ours_shapes: list[dict], real_shapes: list[dict], page_w: fl
     }
 
 
+# --------------------------------------------- (b2) geometric accuracy, in mm
+
+def geometric_accuracy(ours_shapes: list[dict], real_shapes: list[dict], config: dict | None = None) -> dict:
+    """Step 2: per-cluster position/size error IN MILLIMETRES (not % of page,
+    unlike `cluster_compare` - a mm number is comparable across boards of
+    different target sizes, which a %-of-page number is not), using the same
+    cluster matching as `cluster_compare` (so a cluster either has both a %
+    and an mm figure, from one matching pass, or neither).
+
+    `position_error_mm` = Euclidean distance between the matched clusters'
+    centres. `size_error_mm` = Euclidean distance between their (w, h) pairs.
+    `area_matched_pct[t]` = % of the real file's total non-bg/frame cluster
+    area that belongs to a cluster matched with both errors <= t mm - see
+    metrics_config.json's `geometric` note for why this is area-weighted
+    rather than a plain count.
+    """
+    config = config or load_config()
+    cc, gc = config["cluster"], config.get("geometric", {"area_match_tolerances_mm": [2.0, 5.0, 10.0]})
+    ours_clusters = _bbox_clusters(ours_shapes, cc["cluster_margin_mm"])
+    real_clusters = _bbox_clusters(real_shapes, cc["cluster_margin_mm"])
+    pairs, unmatched_ours, unmatched_real = _match_clusters(ours_clusters, real_clusters, cc["size_similar_factor"])
+
+    per_cluster = []
+    for o, r in pairs:
+        ob, rb = o["bbox"], r["bbox"]
+        ocx, ocy = ob["x"] + ob["w"] / 2, ob["y"] + ob["h"] / 2
+        rcx, rcy = rb["x"] + rb["w"] / 2, rb["y"] + rb["h"] / 2
+        position_error_mm = math.hypot(ocx - rcx, ocy - rcy)
+        size_error_mm = math.hypot(ob["w"] - rb["w"], ob["h"] - rb["h"])
+        per_cluster.append({
+            "role": o["role"],
+            "dx_mm": ob["x"] - rb["x"], "dy_mm": ob["y"] - rb["y"],
+            "dw_mm": ob["w"] - rb["w"], "dh_mm": ob["h"] - rb["h"],
+            "position_error_mm": position_error_mm, "size_error_mm": size_error_mm,
+            "real_area_mm2": rb["w"] * rb["h"],
+        })
+
+    total_real_area = sum(r["bbox"]["w"] * r["bbox"]["h"] for r in real_clusters)
+    area_matched_pct = []
+    for t in gc["area_match_tolerances_mm"]:
+        matched_area = sum(c["real_area_mm2"] for c in per_cluster
+                          if max(c["position_error_mm"], c["size_error_mm"]) <= t)
+        area_matched_pct.append({
+            "tolerance_mm": t,
+            "pct": (matched_area / total_real_area * 100) if total_real_area > 0 else None,
+        })
+
+    pos_errs = [c["position_error_mm"] for c in per_cluster]
+    size_errs = [c["size_error_mm"] for c in per_cluster]
+    return {
+        "per_cluster": per_cluster,
+        "matched": len(pairs), "unmatched_ours": len(unmatched_ours), "unmatched_real": len(unmatched_real),
+        "position_error_mm": {"max": max(pos_errs) if pos_errs else None,
+                              "mean": statistics.mean(pos_errs) if pos_errs else None},
+        "size_error_mm": {"max": max(size_errs) if size_errs else None,
+                          "mean": statistics.mean(size_errs) if size_errs else None},
+        "area_matched_pct": area_matched_pct,
+        "total_real_area_mm2": total_real_area,
+    }
+
+
 # ---------------------------------------------------------------- (c) counts
 
 def counts_compare(ours_shapes: list[dict], real_shapes: list[dict]) -> dict:
@@ -343,6 +406,7 @@ def score_board(ours_png, real_png, ours_dump: dict, real_dump: dict, page_w: fl
     return {
         "visual": visual_similarity(ours_png, real_png, config),
         "clusters": cluster_compare(ours_shapes, real_shapes, page_w, page_h, config),
+        "geometric": geometric_accuracy(ours_shapes, real_shapes, config),
         "counts": counts_compare(ours_shapes, real_shapes),
         "layout_checks": layout_checks(ours_shapes, page_w, page_h, config),
     }
