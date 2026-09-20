@@ -20,6 +20,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts }) {
 
   const [f, setF] = useState({ w: "", h: "", x: "", y: "" });
   const [lockRatio, setLockRatio] = useState(true);
+  const [tab, setTab] = useState("dimensions");
   useEffect(() => {
     if (!box) return;
     setF({
@@ -83,9 +84,16 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts }) {
   );
 
   const order = (mode) => onCommit({ op: "order", id: single.id, mode });
+  const hasText = !!(single && single.text);
+  const active = tab === "text" && !hasText ? "dimensions" : tab;
+  const tabs = [
+    ["dimensions", "Dimensions"],
+    ["position", "Position"],
+    ["text", "Text"],
+  ];
 
   return (
-    <section className="ed-panel">
+    <section className="ed-panel ed-props">
       <h3>
         Properties <span className="ed-unit-tag">{unit}</span>
       </h3>
@@ -94,29 +102,60 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts }) {
         {single && <span className="ed-prop-sub"> · {single.kind === "shape" ? single.type : single.kind}</span>}
         {locked && <span className="ed-prop-sub"> · locked</span>}
       </div>
-      <div className="ed-grid2">
-        {input("x", "X")}
-        {input("y", "Y")}
-        {input("w", "W")}
-        {input("h", "H")}
+
+      <div className="ed-tabs" role="tablist">
+        {tabs.map(([id, label]) => (
+          <button
+            key={id}
+            role="tab"
+            aria-selected={active === id}
+            className={`ed-tab${active === id ? " active" : ""}`}
+            disabled={id === "text" && !hasText}
+            title={id === "text" && !hasText ? "Select a text object to edit its text" : undefined}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
-      <label className="ed-check">
-        <input type="checkbox" checked={lockRatio} onChange={(e) => setLockRatio(e.target.checked)} /> Keep proportions (W/H)
-      </label>
-      <div className="ed-hint">X / Y are the centre of the selection; origin is the page's bottom-left corner.</div>
 
-      {single && (
-        <div className="ed-order">
-          <span>Order</span>
-          <button className="ed-btn" disabled={locked} onClick={() => order("front")}>To front</button>
-          <button className="ed-btn" disabled={locked} onClick={() => order("forward")}>Forward</button>
-          <button className="ed-btn" disabled={locked} onClick={() => order("backward")}>Backward</button>
-          <button className="ed-btn" disabled={locked} onClick={() => order("back")}>To back</button>
-        </div>
-      )}
+      <div className="ed-tabbody">
+        {active === "dimensions" && (
+          <>
+            <div className="ed-grid2">
+              {input("w", "Width")}
+              {input("h", "Height")}
+            </div>
+            <label className="ed-check">
+              <input type="checkbox" checked={lockRatio} onChange={(e) => setLockRatio(e.target.checked)} /> Keep proportions
+            </label>
+            {single && single.rotation ? <div className="ed-hint">Rotation {single.rotation}° (already in the rendered image)</div> : null}
+          </>
+        )}
 
-      {single && single.text && <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} fonts={fonts} />}
-      {single && single.rotation ? <div className="ed-hint">Rotation {single.rotation}° (already in the rendered image)</div> : null}
+        {active === "position" && (
+          <>
+            <div className="ed-grid2">
+              {input("x", "X")}
+              {input("y", "Y")}
+            </div>
+            <div className="ed-hint">Centre of the selection; origin is the page's bottom-left corner.</div>
+            {single ? (
+              <div className="ed-order">
+                <span>Order</span>
+                <button className="ed-btn" disabled={locked} onClick={() => order("front")}>To front</button>
+                <button className="ed-btn" disabled={locked} onClick={() => order("forward")}>Forward</button>
+                <button className="ed-btn" disabled={locked} onClick={() => order("backward")}>Backward</button>
+                <button className="ed-btn" disabled={locked} onClick={() => order("back")}>To back</button>
+              </div>
+            ) : (
+              <div className="ed-hint">Select a single object to change its stacking order.</div>
+            )}
+          </>
+        )}
+
+        {active === "text" && hasText && <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} fonts={fonts} />}
+      </div>
     </section>
   );
 }
@@ -138,7 +177,6 @@ function TextFields({ node, locked, onCommit, fonts }) {
   const push = (patch) => onCommit({ op: "text", id: node.id, ...patch });
   return (
     <div className="ed-text">
-      <div className="ed-sub">Text</div>
       <label className="ed-field wide">
         <span>Text</span>
         <textarea rows={2} value={content} disabled={locked} onChange={(e) => setContent(e.target.value)} onBlur={() => content !== t.content && push({ content })} />

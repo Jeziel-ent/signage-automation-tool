@@ -138,3 +138,17 @@ body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 .ed-choice { margin: var(--space-4) 0; }
 .ed-choice .ed-hint { margin-top: var(--space-2); }
 .ed-modal-actions { display: flex; gap: var(--space-2); justify-content: flex-end; margin-top: var(--space-4); }
+
+/* Properties: compact tabbed panel so the layers tree keeps the rest of the column. */
+.ed-props { flex: none; max-height: 300px; overflow: auto; padding-bottom: var(--space-2); }
+.ed-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--color-gray-200); margin-bottom: var(--space-2); }
+.ed-tab {
+  font: inherit; font-size: 12px; padding: 5px 10px; background: transparent; border: none; cursor: pointer;
+  color: var(--color-gray-600); border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+.ed-tab:hover:not(:disabled) { color: var(--color-black); }
+.ed-tab.active { color: var(--color-red); border-bottom-color: var(--color-red); font-weight: 600; }
+.ed-tab:disabled { opacity: 0.35; cursor: not-allowed; }
+.ed-tabbody { min-height: 92px; }
+.ed-tabbody .ed-text { margin-top: 0; border-top: none; padding-top: 0; }
+.ed-tabbody .ed-order { margin-top: var(--space-2); }

@@ -37,14 +37,14 @@ class Story:
 
 class Shape:
     def __init__(self, type_, x=0, y=0, w=10, h=10, name="", children=None, powerclip=None, story=None,
-                 visible=True, locked=False):
+                 visible=True, locked=False, text_type=0):
         self.Type = type_
         self.StaticID = next(_next_id)
         self.LeftX, self.BottomY, self.SizeWidth, self.SizeHeight = x, y, w, h
         self.Name, self.RotationAngle, self.Visible, self.Locked = name, 0.0, visible, locked
         self.Shapes = Coll(children or [])
         self.PowerClip = type("PC", (), {"Shapes": Coll(powerclip)})() if powerclip is not None else None
-        self.Text = type("T", (), {"Story": story})() if story is not None else None
+        self.Text = type("T", (), {"Story": story, "Type": text_type})() if story is not None else None
 
 
 CURVE, RECT, TEXT, GROUP = 3, 1, 6, 7
@@ -164,7 +164,7 @@ def test_walk_page_structure_kinds_and_leaves():
     clip = by_id[f"s{s['clip'].StaticID}"]
     assert clip["kind"] == "powerclip" and len(clip["children"]) == 1
     text = by_id[f"s{s['top_text'].StaticID}"]
-    assert text["text"] == {"content": "SHOP NAME", "font": "Nirmala UI", "size_pt": 120.0}
+    assert text["text"] == {"kind": "artistic", "content": "SHOP NAME", "font": "Nirmala UI", "size_pt": 120.0}
     leaf_ids = {n["id"] for n, _ in leaves}
     # group is structure only; the powerclip is one image; its content is not a separate leaf
     assert f"s{s['group'].StaticID}" not in leaf_ids
@@ -270,3 +270,10 @@ def test_mock_scene_is_valid_and_replayable(tmp_path):
     assert [n["id"] for n in out["layers"][1]["children"]] == ["s3", "s4", "s6"]
     swapped = apply_ops(scene, [{"op": "layer_order", "id": "L2", "index": 0}])
     assert [l["id"] for l in swapped["layers"]] == ["L2", "L1"]
+
+
+def test_paragraph_text_is_labelled_as_such():
+    shape = Shape(TEXT, story=Story("Some paragraph", "Arial", 12.0), text_type=1)
+    leaves = []
+    node = scene_export.walk_shape(shape, leaves)
+    assert node["text"]["kind"] == "paragraph"

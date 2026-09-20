@@ -307,6 +307,18 @@ fail a real export. `_write_json` now retries for up to ~3 s and
   silently ignores it) - no op is created. A board's existing font that is
   not installed is flagged too. Font-linking cases like Arial-for-Tamil are
   fine because the check is by family name of what CorelDRAW is asked to use.
+- **Layers tree wording + properties tabs**: the layers tree already mirrored
+  the file's real structure (checked against the cached master dump: 133
+  curves, 4 groups, 3 texts, 2 bitmaps, one layer - identical counts), so
+  the ~130 flat "Curve" rows of a dalmia board are what CorelDRAW's Object
+  Manager shows too. Row wording now follows the Object Manager ("Group of 3
+  Objects", "Artistic Text: ...", "Paragraph Text: ...", "Bitmap", a name the
+  designer set in Corel wins); the scene export records `text.kind` from
+  `Shape.Text.Type` for this (scenes cached before this change show
+  "Artistic Text" for every text). The properties panel is tabbed -
+  Dimensions (W/H, keep proportions), Position (X/Y, stacking order), Text
+  (enabled only for a single text object) - and capped in height so the
+  layers tree keeps the rest of the column.
 - **Page W/H**: changing the fields opens a dialog with two choices - "Re-convert
   at this size" (creates a new shop on the same job at the new size, runs
   the real layout engine on the ORIGINAL master, shows the usual convert

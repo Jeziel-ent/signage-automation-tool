@@ -3,13 +3,19 @@ import { buildIndex } from "./ops.js";
 import { buildRows, planDrop } from "./model.js";
 import { Caret, Eye, EyeOff, GroupIcon, KindIcon, Lock, UngroupIcon } from "./icons.jsx";
 
-const TYPE_LABEL = { curve: "Curve", text: "Text", bitmap: "Bitmap", rectangle: "Rectangle", ellipse: "Ellipse", polygon: "Polygon", group: "Group", perfect_shape: "Shape" };
+const TYPE_LABEL = { curve: "Curve", text: "Text", bitmap: "Bitmap", rectangle: "Rectangle", ellipse: "Ellipse", polygon: "Polygon", group: "Group", perfect_shape: "Perfect Shape", ole_object: "OLE Object", symbol: "Symbol", eps: "EPS" };
 
+// Wording follows CorelDRAW's Object Manager: "Group of 3 Objects", "Artistic Text: ...", "Curve", "Bitmap" ...
+// A name the designer gave the object in Corel wins over the generated label.
 function rowLabel(node) {
-  if (node.kind === "group") return `${node.name || "Group"} (${node.children.length})`;
   if (node.name) return node.name;
-  if (node.kind === "powerclip") return "PowerClip";
-  if (node.text && node.text.content) return `Text: ${node.text.content.replace(/\s+/g, " ").slice(0, 28)}`;
+  if (node.kind === "group") return `Group of ${node.children.length} Object${node.children.length === 1 ? "" : "s"}`;
+  if (node.kind === "powerclip") return `PowerClip (${node.children.length} Object${node.children.length === 1 ? "" : "s"})`;
+  if (node.text) {
+    const kind = node.text.kind === "paragraph" ? "Paragraph Text" : "Artistic Text";
+    const body = (node.text.content || "").replace(/\s+/g, " ").trim().slice(0, 28);
+    return body ? `${kind}: ${body}` : kind;
+  }
   return TYPE_LABEL[node.type] || node.type;
 }
 

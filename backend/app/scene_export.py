@@ -76,6 +76,8 @@ def _children(container) -> list:
 def _text_info(shape) -> dict:
     story = shape.Text.Story
     return {
+        # cdrTextType: 0 artistic, 1 paragraph, 2 artistic fitted, 3 paragraph fitted
+        "kind": {0: "artistic", 1: "paragraph", 2: "artistic", 3: "paragraph"}.get(_safe(lambda: int(shape.Text.Type)), "artistic"),
         "content": _safe(lambda: story.Text, ""),
         "font": _safe(lambda: story.Font),       # None when a run mixes fonts
         "size_pt": _safe(lambda: float(story.Size)),
