@@ -37,8 +37,9 @@ before the next starts:
   (opened in a new browser tab) - a CorelDRAW-rendered scene, select/move/
   resize, layers tree, undo/redo, every edit stored as a replayable
   operation list. See "Phase C: editor v1" below.
-- **Phase D (not started)**: "Save and Generate" - replay the editor's
-  recorded operations through COM and export the chosen output formats.
+- **Phase D (done)**: "Save and Generate" - replays the editor's operation
+  list through COM on the converted .cdr and exports CDR/PDF/PNG/JPEG, with
+  a real progress bar; double-click text editing. See "Phase D" below.
 
 ### A real discovery: `.cdr` files (X4+) are ZIP archives
 
@@ -338,6 +339,79 @@ Free RAM was 1.8-4.0 GB on this machine during the work; conversions
 took 15 s in Phase A but 75 s once while memory was tight. The browser side
 is light (138 images = 420 KB; largest decoded leaf capped at 2048x2048).
 Do not run a scene build while a validation batch is running.
+
+### Phase D: Save and Generate (`backend/app/export_replay.py`, `frontend/src/editor/ExportDialog.jsx`)
+
+**Flow.** The toolbar button flushes the saved edits, opens a popup (formats
+CDR/PDF/PNG/JPEG, multi-select, plus options), and `POST
+/api/editor/{job}/{shop}/export` queues a job on the shared single-worker
+pool. It runs in the corel_worker subprocess (`export_replay` job kind, via
+`corel_supervisor.run_batch`: RAM floor, watchdog, orphan cleanup). Progress
+is the worker heartbeat (`launch, open, replay i/n, verify, cdr, pdf, png,
+jpeg`); the server returns a `plan` whose step widths follow measured
+durations of earlier exports (`db.get_export_step_estimates`), and the popup
+drives `useSteppedProgress` with it - the same hook as the convert bar.
+Results: `exports` table, files under `<out>/exports/<id>/`, downloadable, the
+original converted .cdr is opened, replayed, `SaveAs`'d elsewhere and closed
+with `Dirty=False` (never saved over). **Every output file is written by
+CorelDRAW**; the mock engine writes clearly-flagged placeholders.
+
+**Replay = shadow scene + COM.** `Replayer` applies each op to a shadow scene
+with `scene_ops.apply_op` (so an op that cannot apply raises the same error as
+in the editor), then does the matching CorelDRAW call: `Move`, `SetSize` +
+assignable `LeftX/BottomY`, `Order*`, `Visible`, `Text.Story`, `Delete`,
+`Duplicate` (paste), `Group` via `CreateShapeRangeFromArray`, `Ungroup`,
+`MoveToLayer`, `Layer.MoveAbove/MoveBelow`, `Page.SetSize`. Verified live and
+relied on: `Shapes.Item(1)` is topmost; forward/backward are plain
+one-step swaps; `MoveToLayer` also pulls a shape OUT of a group; there is no
+API to add a shape to an existing group (done by ungroup + regroup, the group
+keeps its editor id); `Shape.Ungroup()` returns nothing. z-order is settled
+against the shadow scene after structural ops. Objects a later `paste`
+copies (cut + paste) are hidden, not deleted, until the end.
+After the last op the real document is re-walked and compared with the
+shadow scene (structure, z-order, positions, visibility, text) -
+`report.verification` ({ok, compared, mismatches}) and a warning if it differs.
+Edited text is compared by anchor (left/centre/right) with a few-mm tolerance,
+because new content changes glyph metrics. **Live result** on a real
+generated dalmia board: 14 mixed operations (move, resize, order, hide,
+group, ungroup, text edit, paste, delete, cut+paste, reorder into and out of a
+group, move) applied, 142 objects compared, and through the UI a 3-op session
+verified "all 142 objects match". Unit tests use a fake CorelDRAW document
+modelling exactly those verified behaviours (`test_export_replay.py`).
+
+**Options (only ones CorelDRAW honours - each checked live).** PDF: colour
+(keep/RGB/CMYK), embed fonts vs convert text to curves, image dpi. PNG/JPEG:
+size by longest side (1600/4000/8000 px) or dpi, PNG background
+transparent/white, anti-aliasing. Sizes are passed as explicit pixel
+width/height because CorelDRAW rounds a dpi to a whole number (600 px
+requested came out 539 px until this was fixed; now exact, verified up to
+13500 x 4500). Hard limits, enforced in the popup AND the API (422): 20000 px
+on the long side, 200 MP - the earlier documented 28800 x 10800 export shows
+why. A large raster also needs more free RAM than the 1.5 GB floor (503 with
+the reason). **JPEG quality is deliberately not offered**: probing showed
+`ExportBitmap`'s compression argument and `StructExportOptions.Compression`
+do not change a JPEG's size, i.e. COM cannot control it, and re-encoding
+outside CorelDRAW would break "output always from Corel".
+
+**Text editing.** Double-click a text object (or F2 on a selected one): an
+overlay textarea opens (Enter = new line, Ctrl+Enter or click away = apply,
+Esc = cancel) and applying creates a `text` op. Double-clicking a group still
+enters it first. The canvas cannot re-typeset Corel text, so the object shows
+an "edited" badge until the export - whose result is shown in the popup. Font
+warnings: the editor warns when the text's font is not installed on this
+machine, and the export popup lists edited text in uninstalled fonts before
+generating; at replay `Story.Font` is read back and a warning recorded if
+CorelDRAW ignored it. Setting `Story.Text` replaces the run, so per-character
+formatting inside one text object is not preserved.
+
+**Approximate / not covered:** a rotated shape resized in the editor is
+resized by bounding box in Corel too (verification tolerance applies);
+editing inside PowerClips and text-frame refitting after a long edit are not
+done (a long name can run past its slot - check the popup's preview);
+cross-machine font differences are only warned about, not fixed.
+**RAM/time (measured):** launch about 4 s, replay of 14 ops about 6 s, PDF 1-18 s
+(driven by embedded bitmaps), PNG/JPEG 1-3 s at 4000 px; one CorelDRAW
+instance per export, same free-RAM floor as everything else.
 
 ### Frontend: `frontend/src/` structure
 
@@ -1666,10 +1740,10 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 164 passed as of this writing (that includes
+`pytest` from `backend/` — 190 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
-`test_corel_worker_io.py`, `test_fonts.py`); `npm test` from `frontend/` runs 56 more
+`test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`); `npm test` from `frontend/` runs 58 more
 (`ops.test.mjs` against the shared golden cases, `model.test.mjs`). Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only

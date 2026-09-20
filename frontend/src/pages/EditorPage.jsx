@@ -5,6 +5,7 @@ import Canvas from "../editor/Canvas.jsx";
 import LayersPanel from "../editor/LayersPanel.jsx";
 import PropertiesPanel from "../editor/PropertiesPanel.jsx";
 import PageResizeDialog from "../editor/PageResizeDialog.jsx";
+import ExportDialog from "../editor/ExportDialog.jsx";
 import { DIM, LeftDimension, LeftRuler, RULER, TopDimension, TopRuler } from "../editor/Rulers.jsx";
 import { Fit, Redo, Undo, ZoomIn, ZoomOut } from "../editor/icons.jsx";
 import { AlphaMaps } from "../editor/alphaMaps.js";
@@ -37,6 +38,8 @@ export default function EditorPage() {
   const [shop, setShop] = useState(null);
   const [pageChange, setPageChange] = useState(null); // {w, h} in mm while the page-size dialog is open
   const [pageKey, setPageKey] = useState(0);
+  const [showExport, setShowExport] = useState(false);
+  const [editing, setEditing] = useState(null); // id of the text object being typed into
   const lastNudge = useRef({ at: 0 });
   const alphaMaps = useMemo(() => new AlphaMaps(), []);
   const clip = useRef(null);
@@ -261,9 +264,28 @@ export default function EditorPage() {
     setCtx(nextCtx);
   }, [scene, ctx, sel]);
 
+  // ---------------------------------------------------------- text editing
+  const startEdit = useCallback(
+    (id) => {
+      const n = scene && buildIndex(scene).get(id);
+      if (!n || !n.node.text) return;
+      if (n.node.locked || n.layer.locked) return say("This text is locked and cannot be edited.");
+      setSel([id]);
+      setEditing(id);
+    },
+    [scene, say],
+  );
+  const applyText = useCallback(
+    (id, content) => {
+      commit({ op: "text", id, content });
+      setEditing(null);
+    },
+    [commit],
+  );
+
   // ------------------------------------------------------------- shortcuts
   const keys = useRef({});
-  keys.current = { undo, redo, copySelection, paste, selectAll, commit, sel, ctx, scene, unit };
+  keys.current = { undo, redo, copySelection, paste, selectAll, commit, sel, ctx, scene, unit, startEdit };
   useEffect(() => {
     const onKey = (e) => {
       const tag = (e.target.tagName || "").toLowerCase();
@@ -296,6 +318,9 @@ export default function EditorPage() {
         e.preventDefault();
         const n = k.sel.length === 1 && k.scene ? buildIndex(k.scene).get(k.sel[0])?.node : null;
         if (n && n.kind === "group") k.commit({ op: "ungroup", id: n.id });
+      } else if (e.key === "F2") {
+        e.preventDefault();
+        if (k.sel.length === 1) k.startEdit(k.sel[0]);
       } else if (e.key.startsWith("Arrow") && k.sel.length) {
         // nudge: 0.1 in (2.54 mm) like CorelDRAW; 1 mm when working in mm/cm. Shift = x10, Ctrl = x0.1.
         e.preventDefault();
@@ -401,13 +426,7 @@ export default function EditorPage() {
           <input type="checkbox" checked={showRender} onChange={(e) => setShowRender(e.target.checked)} /> Corel page render
         </label>
         <span className="ed-top-spacer" />
-        <button
-          className="btn"
-          onClick={async () => {
-            const ok = await flush();
-            if (ok) say(`${cursor} edit${cursor === 1 ? "" : "s"} saved. Exporting to CDR / PDF / PNG / JPEG arrives in Phase D.`);
-          }}
-        >
+        <button className="btn" onClick={() => setShowExport(true)}>
           Save and Generate
         </button>
       </div>
@@ -429,6 +448,11 @@ export default function EditorPage() {
               setView={setView}
               showRender={showRender}
               snap={snap}
+              fonts={fonts}
+              editingId={editing}
+              onEditText={startEdit}
+              onTextApply={applyText}
+              onEditEnd={() => setEditing(null)}
               alphaMaps={alphaMaps}
               onSelect={select}
               onCommit={commit}
@@ -455,6 +479,18 @@ export default function EditorPage() {
         <span>{ops.length ? `${cursor}/${ops.length} operations` : "No edits"}</span>
         <span>{scene.stats && scene.stats.mock ? "Mock scene (no CorelDRAW)" : `${scene.stats?.leaves ?? "?"} rendered objects`}</span>
       </footer>
+
+      {showExport && (
+        <ExportDialog
+          jobId={jobId}
+          shopId={shopId}
+          scene={scene}
+          opsCount={cursor}
+          fonts={fonts}
+          flush={flush}
+          onClose={() => setShowExport(false)}
+        />
+      )}
 
       {pageChange && (
         <PageResizeDialog

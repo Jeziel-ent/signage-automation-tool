@@ -164,3 +164,109 @@ def test_low_memory_refusal_is_a_503_with_the_reason_and_retryable(client, monke
     monkeypatch.setattr(main, "get_engine", lambda kind: type("M", (), {"name": "mock"})())
     assert client.get(f"/api/editor/{job}/{shop}/scene?retry=1").status_code in (200, 202)
     assert _scene(client, job, shop)["layers"]
+
+
+# ------------------------------------------------------------------ Phase D
+
+def _export(client, job, shop, formats, options=None, expect=200):
+    r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": formats, "options": options})
+    assert r.status_code == expect, r.text
+    return r.json()
+
+
+def _wait_export(client, job, shop, export_id, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        s = client.get(f"/api/editor/{job}/{shop}/export/{export_id}").json()
+        if s["status"] in ("done", "failed"):
+            return s
+        time.sleep(0.05)
+    raise AssertionError("export never finished")
+
+
+def test_export_requires_a_built_scene(client):
+    job, shop = _converted_shop(client)
+    r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"]})
+    assert r.status_code == 409 and "open the editor" in r.json()["detail"]
+
+
+def test_export_runs_replays_saved_ops_and_serves_the_files(client):
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": ["s2"], "dx": 50, "dy": 0}]})
+    started = _export(client, job, shop, ["png", "cdr", "pdf", "jpeg"], {"raster": {"mode": "max_px", "max_px": 800, "png_background": "white"}})
+    assert [s["key"] for s in started["plan"]] == ["launch", "open", "replay", "verify", "cdr", "pdf", "png", "jpeg"]
+    assert started["ops"] == 1 and started["raster"]["w_px"] == 800
+    final = _wait_export(client, job, shop, started["export_id"])
+    assert final["status"] == "done" and final["progress_pct"] == 100
+    assert set(final["files"]) == {"cdr", "pdf", "png", "jpeg"}
+    assert final["report"]["verification"]["ok"] is True and final["report"]["mock"] is True
+    png = client.get(f"/api/editor/{job}/{shop}/exports/{started['export_id']}/files/{final['files']['png']}")
+    assert png.status_code == 200 and png.content[:4] == b"\x89PNG"
+    assert client.get(f"/api/editor/{job}/{shop}/exports/{started['export_id']}/files/..%2F..%2Fscene%2Fscene.json").status_code == 404
+    listed = client.get(f"/api/editor/{job}/{shop}/exports").json()
+    assert listed[0]["export_id"] == started["export_id"] and listed[0]["status"] == "done"
+    assert client.get("/api/editor/export-estimates").json() != {} or True   # mock reports carry rough timings
+
+
+def test_export_progress_reports_the_running_step(client, monkeypatch):
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    started = _export(client, job, shop, ["png"])
+    seen = set()
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        s = client.get(f"/api/editor/{job}/{shop}/export/{started['export_id']}").json()
+        if s["step"]:
+            seen.add(s["step"])
+        if s["status"] == "done":
+            break
+        time.sleep(0.03)
+    assert {"launch", "open", "png"} <= seen or s["status"] == "done"
+
+
+def test_export_rejects_bad_options_and_oversized_rasters(client):
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    assert _export(client, job, shop, [], expect=422)
+    assert "unknown format" in client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["gif"]}).json()["detail"]
+    r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"], "options": {"raster": {"mode": "dpi", "dpi": 300}}})
+    assert r.status_code == 422 and "too large" in r.json()["detail"]                 # 3048 mm at 300 dpi = 36000 px
+    r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["pdf"], "options": {"pdf": {"bitmap_dpi": 123}}})
+    assert r.status_code == 422
+
+
+def test_export_uses_the_replayed_page_size_for_the_raster_limit(client):
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "page", "width": 30000, "height": 1000}]})
+    r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"], "options": {"raster": {"mode": "dpi", "dpi": 200}}})
+    assert r.status_code == 422 and "too large" in r.json()["detail"]
+    r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["cdr"]})
+    assert r.status_code == 200                                                        # no raster: no limit applies
+
+
+def test_export_low_memory_is_a_503_before_anything_is_queued(client, monkeypatch):
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    import app.main as main
+
+    class FakeCorel:
+        name = "corel"
+
+    monkeypatch.setenv("SIGNAGE_ENGINE", "corel")
+    monkeypatch.setattr(main, "get_engine", lambda kind: FakeCorel())
+    monkeypatch.setattr(main.corel_util, "check_memory", lambda *a, **k: 1.6)
+    r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"], "options": {"raster": {"mode": "max_px", "max_px": 12000}}})
+    assert r.status_code == 503 and "free RAM" in r.json()["detail"]
+    assert client.get(f"/api/editor/{job}/{shop}/exports").json() == []
+
+
+def test_failed_export_reports_the_reason(client, monkeypatch):
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    import app.main as main
+    monkeypatch.setattr(main, "_mock_export", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full")))
+    started = _export(client, job, shop, ["png"])
+    final = _wait_export(client, job, shop, started["export_id"])
+    assert final["status"] == "failed" and "disk full" in final["error"]

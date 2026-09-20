@@ -2,6 +2,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { buildIndex, mapBox } from "./ops.js";
 import { flattenLeaves, hitTest, leavesOf, marqueeSelect, resolveTarget, snapMove, snapResize, snapTargets, unionBox } from "./model.js";
 import { toScene, zoomAt } from "./view.js";
+import TextEditor from "./TextEditor.jsx";
 
 const HANDLES = [
   ["nw", 0, 0], ["n", 0.5, 0], ["ne", 1, 0], ["e", 1, 0.5],
@@ -59,7 +60,7 @@ const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRef
   );
 });
 
-export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, onSelect, onCommit, onToast, onCursor, onSize }) {
+export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
   const imgRefs = useRef(new Map());
@@ -295,6 +296,8 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
       onSelect([inner.targetId], top.id);
     } else if (top.kind === "powerclip") {
       onToast("PowerClip contents are read-only in this version - the clipped result moves and resizes as one object.");
+    } else if (top.text) {
+      onEditText(top.id);
     }
   }
 
@@ -306,6 +309,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   const lb = liveBox ? sbox(liveBox) : null;
   const showHandles = lb && selNodes.length > 0 && !selLocked && !(overlay && overlay.marquee);
   const ctxNode = ctx ? idx.get(ctx)?.node : null;
+  const editNode = editingId ? idx.get(editingId)?.node : null;
   const hoverNode = hover && !sel.includes(hover) ? idx.get(hover)?.node : null;
 
   return (
@@ -405,6 +409,16 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
           <rect pointerEvents="none" x={overlay.marquee.x} y={overlay.marquee.y} width={overlay.marquee.w} height={overlay.marquee.h} fill="rgba(224,24,47,0.08)" stroke="var(--color-red)" strokeDasharray="4 3" />
         )}
       </svg>
+      {editNode && editNode.text && (
+        <TextEditor
+          key={editNode.id}
+          node={editNode}
+          box={sbox(editNode)}
+          fonts={fonts}
+          onApply={(content) => onTextApply(editNode.id, content)}
+          onCancel={onEditEnd}
+        />
+      )}
     </div>
   );
 }

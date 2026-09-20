@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import corel_supervisor, db, fonts, scene_export, scene_ops
+from . import corel_supervisor, corel_util, db, export_replay, fonts, scene_export, scene_ops
 from .batch_import import parse_shop_lines
 from .engines import get_engine
 from .layout import to_mm
@@ -600,3 +600,207 @@ def editor_replayed(job_id: str, shop_id: str):
 def api_fonts(refresh: bool = False):
     """Installed font families (the editor refuses to name a font CorelDRAW would silently ignore)."""
     return fonts.installed_fonts(refresh)
+
+
+# ------------------------------------------------------ export (Phase D)
+#
+# "Save and Generate": POST .../export replays the SAVED operation list on the
+# converted .cdr through CorelDRAW (export_replay.py) and exports the chosen
+# formats. The job is queued on the same single-worker pool as everything else
+# that needs CorelDRAW and runs via corel_supervisor (RAM floor, hang
+# watchdog, orphan cleanup). Progress comes from the worker's heartbeat file.
+
+class ExportRequest(BaseModel):
+    formats: list[str]
+    options: dict | None = None
+
+
+def _export_dir(job_id: str, shop_id: str, export_id: str) -> Path:
+    return JOBS_V2 / job_id / "out" / shop_id / "exports" / export_id
+
+
+def _mock_export(expected: dict, formats: list[str], opts: dict, out_dir: Path, base: str, heartbeat: Path) -> dict:
+    """MockEngine stand-in (no CorelDRAW): simple placeholder files so the whole flow is testable anywhere.
+    Clearly flagged in the report - real output only ever comes from CorelDRAW."""
+    import zipfile
+
+    from PIL import Image, ImageDraw
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    files: dict[str, str] = {}
+    timings: dict[str, float] = {}
+    size = export_replay.resolve_raster(expected["page"]["width"], expected["page"]["height"], opts["raster"])
+    scale = min(1.0, 1200 / max(size["w_px"], size["h_px"]))
+    w, h = max(1, round(size["w_px"] * scale)), max(1, round(size["h_px"] * scale))
+
+    def beat(step: str) -> None:
+        heartbeat.write_text(json.dumps({"step": step}), encoding="utf-8")
+        time.sleep(0.25)
+
+    for step in ["launch", "open"]:
+        beat(step)
+    for fmt in export_replay.ALL_FORMATS:
+        if fmt not in formats:
+            continue
+        beat(fmt)
+        p = out_dir / f"{base}.{export_replay.EXTENSION[fmt]}"
+        if fmt == "cdr":
+            with zipfile.ZipFile(p, "w") as z:
+                z.writestr("mimetype", "application/x-cdr")
+        else:
+            im = Image.new("RGB" if fmt != "png" or opts["raster"]["png_background"] == "white" else "RGBA", (w, h),
+                           (255, 255, 255) if fmt != "png" or opts["raster"]["png_background"] == "white" else (255, 255, 255, 0))
+            d = ImageDraw.Draw(im)
+            for layer in expected["layers"]:
+                for n in layer["children"]:
+                    x0, y0 = n["x"] / expected["page"]["width"] * w, h - (n["y"] + n["h"]) / expected["page"]["height"] * h
+                    d.rectangle([x0, y0, x0 + n["w"] / expected["page"]["width"] * w, y0 + n["h"] / expected["page"]["height"] * h],
+                                outline=(224, 24, 47))
+            d.text((10, 10), f"MOCK EXPORT - not from CorelDRAW ({base})", fill=(0, 0, 0))
+            im.save(p, "PDF" if fmt == "pdf" else "PNG" if fmt == "png" else "JPEG")
+        files[fmt] = p.name
+        timings[fmt] = 0.25
+    return {
+        "mock": True, "formats": formats, "options": opts, "files": files, "timings_s": timings,
+        "file_bytes": {k: (out_dir / v).stat().st_size for k, v in files.items()},
+        "verification": {"ok": True, "compared": 0, "mismatches": []}, "warnings": ["Mock engine: placeholder files, not a CorelDRAW export."],
+    }
+
+
+def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
+    row = db.get_export(export_id)
+    shop_row = db.get_shop(shop_id)
+    files = json.loads(shop_row["files_json"]) if shop_row["files_json"] else {}
+    out_dir = _export_dir(job_id, shop_id, export_id)
+    formats, options, ops = json.loads(row["formats_json"]), json.loads(row["options_json"]), json.loads(row["ops_json"])
+    results_path = CONVERT_RUNS / f"export_{export_id}.json"
+    db.set_export_status(export_id, "running")
+    try:
+        engine = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto"))
+        if engine.name == "corel":
+            spec = {
+                "cdr": str(JOBS_V2 / job_id / "out" / shop_id / files["cdr"]),
+                "scene": str(_scene_dir(job_id, shop_id) / "scene.json"),
+                "ops": ops, "formats": formats, "options": options,
+                "out_dir": str(out_dir), "base_name": shop_row["name"],
+            }
+            entry = corel_supervisor.run_batch([{"export_replay": spec}], results_path)[0]
+            if entry.get("status") != "done":
+                raise RuntimeError(entry.get("error", "export failed"))
+            report = entry["report"]
+        else:
+            scene = _load_scene(job_id, shop_id)
+            report = _mock_export(scene_ops.apply_ops(scene, ops), formats, options, out_dir,
+                                  export_replay.safe_name(shop_row["name"]), results_path.with_suffix(".heartbeat"))
+        db.set_export_result(export_id, report["files"], report)
+    except corel_supervisor.RefusedToStart as e:
+        db.set_export_status(export_id, "failed", str(e))
+    except Exception as e:
+        db.set_export_status(export_id, "failed", str(e))
+    finally:
+        for p in (results_path, results_path.with_suffix(".heartbeat"), results_path.with_suffix(".done"),
+                  results_path.with_suffix(".jobs.json"), results_path.with_suffix(".json.tmp"),
+                  results_path.with_suffix(".heartbeat.tmp")):
+            p.unlink(missing_ok=True)
+
+
+@app.get("/api/editor/export-estimates")
+def editor_export_estimates():
+    return db.get_export_step_estimates()
+
+
+@app.post("/api/editor/{job_id}/{shop_id}/export")
+def editor_export(job_id: str, shop_id: str, body: ExportRequest):
+    _editor_shop(job_id, shop_id)
+    scene = _load_scene(job_id, shop_id)
+    if scene is None:
+        raise HTTPException(409, "scene has not been built yet - open the editor first")
+    ops = db.get_editor_ops(shop_id)
+    try:
+        expected = scene_ops.apply_ops(scene, ops) if ops else scene
+    except scene_ops.OpError as e:
+        raise HTTPException(422, f"the saved edits cannot be replayed: {e}")
+    unknown = [f for f in body.formats if f not in export_replay.ALL_FORMATS]
+    if unknown:
+        raise HTTPException(422, f"unknown format(s): {', '.join(unknown)}")
+    formats = [f for f in export_replay.ALL_FORMATS if f in body.formats]
+    try:
+        opts = export_replay.normalize_options(formats, body.options)
+        size = (export_replay.resolve_raster(expected["page"]["width"], expected["page"]["height"], opts["raster"])
+                if ("png" in formats or "jpeg" in formats) else None)
+    except (export_replay.ExportOptionError, ValueError, TypeError) as e:
+        raise HTTPException(422, str(e))
+    if os.environ.get("SIGNAGE_ENGINE", "auto") != "mock" and get_engine(os.environ.get("SIGNAGE_ENGINE", "auto")).name == "corel":
+        free = corel_util.check_memory()
+        need = corel_supervisor.MIN_FREE_RAM_GB + (size["megapixels"] * 0.012 if size else 0)
+        if free < need:
+            raise HTTPException(503, f"not enough free RAM for this export: {free:.2f} GB free, about {need:.2f} GB needed"
+                                     + (f" ({size['w_px']} x {size['h_px']} px images)" if size else "") + ". Close other programs or lower the image size.")
+    plan = export_replay.plan_steps(formats, len(ops), db.get_export_step_estimates())
+    export_id = uuid.uuid4().hex[:12]
+    db.create_export(export_id, shop_id, formats, opts, ops, plan)
+    _pool.submit(_export_worker, job_id, shop_id, export_id)
+    return {"export_id": export_id, "plan": plan, "raster": size, "ops": len(ops)}
+
+
+def _export_row(job_id: str, shop_id: str, export_id: str) -> dict:
+    _editor_shop(job_id, shop_id)
+    row = db.get_export(export_id)
+    if not row or row["shop_id"] != shop_id:
+        raise HTTPException(404, "export not found")
+    return row
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/export/{export_id}")
+def editor_export_status(job_id: str, shop_id: str, export_id: str):
+    row = _export_row(job_id, shop_id, export_id)
+    plan = json.loads(row["plan_json"])
+    step, sub = None, None
+    if row["status"] == "running":
+        step = "launch"
+        hb = CONVERT_RUNS / f"export_{export_id}.heartbeat"
+        if hb.exists():
+            try:
+                raw = json.loads(hb.read_text(encoding="utf-8")).get("step", step)
+                parts = raw.split()
+                step = parts[0]
+                if len(parts) > 1 and "/" in parts[1]:
+                    done, total = (int(v) for v in parts[1].split("/"))
+                    sub = {"done": done, "total": total}
+            except Exception:
+                pass
+    pct = 0
+    if row["status"] == "done":
+        pct = 100
+    elif step:
+        i = next((k for k, s in enumerate(plan) if s["key"] == step), None)
+        if i is not None:
+            start = plan[i - 1]["endPct"] if i else 0
+            frac = (sub["done"] - 1) / sub["total"] if sub and sub["total"] else 0
+            pct = int(start + (plan[i]["endPct"] - 1 - start) * frac)
+    report = json.loads(row["report_json"]) if row["report_json"] else None
+    return {
+        "export_id": export_id, "status": row["status"], "error": row["error"], "step": step, "sub": sub,
+        "progress_pct": pct, "plan": plan, "formats": json.loads(row["formats_json"]),
+        "files": json.loads(row["files_json"]) if row["files_json"] else None,
+        "report": report,
+    }
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/exports")
+def editor_export_list(job_id: str, shop_id: str):
+    _editor_shop(job_id, shop_id)
+    return [{"export_id": r["id"], "status": r["status"], "formats": json.loads(r["formats_json"]),
+             "files": json.loads(r["files_json"]) if r["files_json"] else None,
+             "error": r["error"], "created_at": r["created_at"], "completed_at": r["completed_at"]}
+            for r in db.list_exports(shop_id)]
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/files/{filename}")
+def editor_export_file(job_id: str, shop_id: str, export_id: str, filename: str):
+    _export_row(job_id, shop_id, export_id)
+    base = _export_dir(job_id, shop_id, export_id).resolve()
+    p = (base / filename).resolve()
+    if base not in p.parents or not p.is_file():
+        raise HTTPException(404)
+    return FileResponse(p, filename=p.name)

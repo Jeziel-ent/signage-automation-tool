@@ -173,3 +173,29 @@ test("snapResize moves only the dragged edges and leaves the opposite side fixed
   r = snapResize({ x: 20, y: 10, w: 50, h: 30 }, "e", t, 1); // nothing in range
   assert.deepEqual([r.box.w, r.guideX], [50, null]);
 });
+
+import { resolveRaster, missingFonts, fmtBytes } from "./exportMath.js";
+
+test("export size preview matches the server's limits (same cases as test_export_replay.py)", () => {
+  let r = resolveRaster(3048, 1219.2, { mode: "max_px", max_px: 4000 });
+  assert.deepEqual([r.w_px, r.h_px, r.megapixels, r.error], [4000, 1600, 6.4, undefined]);
+  assert.equal(resolveRaster(3048, 1219.2, { mode: "dpi", dpi: 150 }).w_px, 18000);
+  assert.match(resolveRaster(3048, 1219.2, { mode: "dpi", dpi: 300 }).error, /too large/);       // 36000 px
+  assert.match(resolveRaster(2000, 2000, { mode: "dpi", dpi: 250 }).error, /megapixels/);
+  assert.match(resolveRaster(100, 100, { mode: "max_px", max_px: 8 }).error, /at least 16/);
+  r = resolveRaster(2286, 762, { mode: "max_px", max_px: 600 });                                // the low-dpi case checked live
+  assert.deepEqual([r.w_px, r.h_px], [600, 200]);
+});
+
+test("missingFonts lists only edited text in fonts that are not installed", () => {
+  const scene = { layers: [{ children: [
+    { id: "a", stale: true, text: { font: "Noto Sans Tamil" } },
+    { id: "b", stale: true, text: { font: "arial" } },                       // installed (case-insensitive)
+    { id: "c", text: { font: "Noto Sans Tamil" } },                          // not edited: not this export's problem
+    { id: "g", children: [{ id: "d", stale: true, text: { font: "Noto Sans Tamil" } }] },
+  ] }] };
+  assert.deepEqual(missingFonts(scene, { available: true, fonts: ["Arial"] }), [{ font: "Noto Sans Tamil", count: 2 }]);
+  assert.deepEqual(missingFonts(scene, { available: false, fonts: [] }), []);      // no list: no false alarms
+  assert.equal(fmtBytes(121267), "121 KB");
+  assert.equal(fmtBytes(13607467), "13.6 MB");
+});

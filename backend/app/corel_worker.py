@@ -33,6 +33,11 @@ export (scene_export.py): opens the file read-only, renders every leaf shape
 plus a full-page reference image into `scene_out`, writes scene.json there.
 The heartbeat step is "images N/M" while leaf images render.
 
+Or {"export_replay": {"cdr", "scene", "ops", "formats", "options", "out_dir", "base_name"}} -
+Phase D's "Save and Generate" (export_replay.py): replays the editor's operation
+list on the converted .cdr, verifies the result and exports the chosen formats.
+Heartbeat steps: launch, open, replay i/n, verify, cdr, pdf, png, jpeg.
+
 Or {"render_only": "<path.cdr>", "render_out": "<path.png>"} - a read-only
 PNG render of an already-existing file (real designer file or ours), no
 CorelEngine.process() call. Used by cache_real_renders.py.
@@ -50,6 +55,7 @@ os.environ.setdefault("SIGNAGE_COREL_RECYCLE_N", "5")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from app.engines import CorelEngine  # noqa: E402
 from tools.dump_objects import dump as com_dump  # noqa: E402
+from app.export_replay import export_from_file  # noqa: E402
 from app.scene_export import export_scene_from_file  # noqa: E402
 from tools.render_real_preview import render as com_render  # noqa: E402
 
@@ -114,6 +120,29 @@ def main() -> None:
             except Exception as e:
                 entry["status"] = "error"
                 entry["error"] = str(e)
+            entry["seconds"] = round(time.time() - t0, 1)
+            results.append(entry)
+            _write_json(results_path, results)
+            continue
+
+        if job.get("export_replay"):
+            spec = job["export_replay"]
+
+            def _heartbeat(step_name, _i=i):
+                _write_json(heartbeat_path, {"job_index": _i, "shop_name": spec["cdr"], "step": step_name, "at": time.time()})
+
+            _heartbeat("launch")
+            t0 = time.time()
+            entry = {"export_replay": spec["cdr"]}
+            try:
+                entry["report"] = export_from_file(
+                    Path(spec["cdr"]), Path(spec["scene"]), spec["ops"], spec["formats"], spec["options"],
+                    Path(spec["out_dir"]), spec["base_name"], on_step=_heartbeat,
+                )
+                entry["status"] = "done"
+            except Exception as e:
+                entry["status"] = "error"
+                entry["error"] = f"{type(e).__name__}: {e}"
             entry["seconds"] = round(time.time() - t0, 1)
             results.append(entry)
             _write_json(results_path, results)

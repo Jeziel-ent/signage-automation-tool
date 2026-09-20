@@ -34,6 +34,22 @@ CREATE TABLE IF NOT EXISTS editor_ops (
     updated_at REAL NOT NULL
 );
 
+-- Phase D exports ("Save and Generate"): one row per export request.
+CREATE TABLE IF NOT EXISTS exports (
+    id TEXT PRIMARY KEY,
+    shop_id TEXT NOT NULL,
+    status TEXT NOT NULL,            -- queued | running | done | failed
+    formats_json TEXT NOT NULL,
+    options_json TEXT NOT NULL,
+    ops_json TEXT NOT NULL,          -- the exact operation list that was replayed
+    plan_json TEXT NOT NULL,
+    error TEXT,
+    files_json TEXT,
+    report_json TEXT,
+    created_at REAL NOT NULL,
+    completed_at REAL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     brand TEXT NOT NULL,
@@ -243,3 +259,60 @@ def set_editor_ops(shop_id: str, ops: list[dict]) -> None:
                ON CONFLICT(shop_id) DO UPDATE SET ops_json = excluded.ops_json, updated_at = excluded.updated_at""",
             (shop_id, json.dumps(ops), time.time()),
         )
+
+
+# ---------------------------------------------------------------- exports
+
+def create_export(export_id: str, shop_id: str, formats: list, options: dict, ops: list, plan: list) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO exports (id, shop_id, status, formats_json, options_json, ops_json, plan_json, created_at)
+               VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)""",
+            (export_id, shop_id, json.dumps(formats), json.dumps(options), json.dumps(ops), json.dumps(plan), time.time()),
+        )
+
+
+def get_export(export_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM exports WHERE id = ?", (export_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_exports(shop_id: str, limit: int = 10) -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT id, status, formats_json, files_json, error, created_at, completed_at FROM exports "
+            "WHERE shop_id = ? ORDER BY created_at DESC LIMIT ?", (shop_id, limit)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def set_export_status(export_id: str, status: str, error: str | None = None) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE exports SET status = ?, error = ? WHERE id = ?", (status, error, export_id))
+        if status == "failed":
+            conn.execute("UPDATE exports SET completed_at = ? WHERE id = ?", (time.time(), export_id))
+
+
+def set_export_result(export_id: str, files: dict, report: dict) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE exports SET status = 'done', error = NULL, files_json = ?, report_json = ?, completed_at = ? WHERE id = ?",
+            (json.dumps(files), json.dumps(report), time.time(), export_id),
+        )
+
+
+def get_export_step_estimates() -> dict[str, float]:
+    """Average seconds per export step over finished exports (paces the export progress bar)."""
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    with _conn() as conn:
+        rows = conn.execute("SELECT report_json FROM exports WHERE status = 'done' AND report_json IS NOT NULL").fetchall()
+    for r in rows:
+        try:
+            timings = json.loads(r["report_json"]).get("timings_s") or {}
+        except Exception:
+            continue
+        for k, v in timings.items():
+            sums[k] = sums.get(k, 0.0) + float(v)
+            counts[k] = counts.get(k, 0) + 1
+    return {k: round(sums[k] / counts[k], 2) for k in sums}
