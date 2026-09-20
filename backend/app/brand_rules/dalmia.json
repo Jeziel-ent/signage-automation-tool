@@ -13,26 +13,38 @@
   ],
   "note": "SUPERSEDED by panel_sequence below (see CLAUDE.md 'Wide-board panel sequence' and 'Example-based layout engine' for why: derive_brand_rules.py's automatic cluster-size matching that produced this groups[] section mismatched the enlarged badge for a duplicate of cluster_id 1, an error independently reproduced by Phase 2's example engine - kept only because compute_layout still supports this schema as a fallback for a future brand that doesn't need panel_sequence's enlarge/substitute case). groups[].bbox_mm is in the MASTER's own mm coordinates and is used to re-match a master's top-level logo shapes to a group at layout time (nearest bbox centre) - there is no stable shape id/name in these untagged files.",
   "panel_sequence": {
-    "note": "Hand-verified against real rendered PNGs (dataset_analysis/compare/*/real.png for 02-180x48, 06-180x60, 11-216x48, 11-240x60), not derived by automatic matching - see CLAUDE.md 'Wide-board panel sequence'. tamil_card = the master's left Tamil-wordmark card (never repeats, kept near its master size). roof_graphic = the master's centre white house-silhouette graphic (the true repeat element, used as a spacer/filler). enlarged_badge_card = the master's small top-right English 'Dalmia Bharat Cement' badge, enlarged to roughly the Tamil card's height and substituted in as a second, equal-sized card (never repeats, never further enlarged). target_h_frac/target_cy_frac are fractions of the TARGET page height regardless of tiling axis (only validated for horizontal tiling - all 4 sampled wide boards tile on x), averaged from the 4 samples. aspect_split is bounded only to 'somewhere in (4.0, 4.5]' by the single sample at 4.5 that showed a 4th panel - not fitted further without more real wide files at intermediate aspects.",
+    "note": "Hand-verified against real rendered PNGs (dataset_analysis/compare/*/real.png for 02-180x48 aspect=3.75, 06-180x60 aspect=3.0, 11-216x48 aspect=4.5, 11-240x60 aspect=4.0), not derived by automatic matching - see CLAUDE.md 'Wide-board panel sequence'. tamil_card = the master's left Tamil-wordmark card (never repeats, kept near its master size). roof_graphic = the master's centre white house-silhouette graphic (the true repeat element, used as a spacer/filler). enlarged_badge_card = the master's small top-right English 'Dalmia Bharat Cement' badge, enlarged to roughly the Tamil card's height and substituted in as a second, equal-sized card (never repeats, never further enlarged). Each group's size_table gives (target_h_frac, target_w_frac, target_cy_frac) - fractions of the TARGET page height/width regardless of tiling axis (only validated for horizontal tiling - all 4 sampled wide boards tile on x) - AT EACH SAMPLED ASPECT, read directly off that board's own real render, not averaged: a flat average across all 4 was tried first and measurably didn't fit every board (06 180x60's enlarged badge overflowed its cell). target_w_frac is stored explicitly rather than derived from the group's master bbox aspect ratio: the real enlarged badge card's width/height ratio does NOT match the master badge shape's own ratio (it's redesigned to roughly match the Tamil card's proportions, not algebraically scaled up) - deriving width from height via the master aspect ratio also overflowed the cell. layout._interp_size_table linearly interpolates between the two nearest sampled aspects at layout time, clamping (not extrapolating) outside [3.0, 4.5]; layout._place_panel_sequence then scales by min(implied-scale-from-height, implied-scale-from-width) so a group whose real proportions don't match its master shape's own ratio still never overflows its cell. aspect_split is bounded only to 'somewhere in (4.0, 4.5]' by the single sample at 4.5 that showed a 4th panel - not fitted further without more real wide files at intermediate aspects.",
     "aspect_split": 4.25,
     "groups": [
       {
         "group_id": "tamil_card",
         "bbox_mm": {"x": 386.9266, "y": 242.1056, "w": 1284.2668, "h": 814.9427},
-        "target_h_frac": 0.64,
-        "target_cy_frac": 0.53
+        "size_table": [
+          {"aspect": 3.0, "target_h_frac": 0.564, "target_w_frac": 0.296, "target_cy_frac": 0.528},
+          {"aspect": 3.75, "target_h_frac": 0.626, "target_w_frac": 0.263, "target_cy_frac": 0.531},
+          {"aspect": 4.0, "target_h_frac": 0.683, "target_w_frac": 0.269, "target_cy_frac": 0.531},
+          {"aspect": 4.5, "target_h_frac": 0.602, "target_w_frac": 0.211, "target_cy_frac": 0.530}
+        ]
       },
       {
         "group_id": "roof_graphic",
         "bbox_mm": {"x": 1937.9174, "y": 405.9946, "w": 723.1551, "h": 597.4089},
-        "target_h_frac": 0.47,
-        "target_cy_frac": 0.57
+        "size_table": [
+          {"aspect": 3.0, "target_h_frac": 0.413, "target_w_frac": 0.167, "target_cy_frac": 0.566},
+          {"aspect": 3.75, "target_h_frac": 0.459, "target_w_frac": 0.148, "target_cy_frac": 0.573},
+          {"aspect": 4.0, "target_h_frac": 0.501, "target_w_frac": 0.152, "target_cy_frac": 0.577},
+          {"aspect": 4.5, "target_h_frac": 0.441, "target_w_frac": 0.119, "target_cy_frac": 0.570}
+        ]
       },
       {
         "group_id": "enlarged_badge_card",
         "bbox_mm": {"x": 2607.3269, "y": 975.9158, "w": 392.9035, "h": 199.9416},
-        "target_h_frac": 0.62,
-        "target_cy_frac": 0.53
+        "size_table": [
+          {"aspect": 3.0, "target_h_frac": 0.562, "target_w_frac": 0.298, "target_cy_frac": 0.527},
+          {"aspect": 3.75, "target_h_frac": 0.624, "target_w_frac": 0.265, "target_cy_frac": 0.530},
+          {"aspect": 4.0, "target_h_frac": 0.681, "target_w_frac": 0.271, "target_cy_frac": 0.530},
+          {"aspect": 4.5, "target_h_frac": 0.602, "target_w_frac": 0.211, "target_cy_frac": 0.529}
+        ]
       }
     ],
     "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],

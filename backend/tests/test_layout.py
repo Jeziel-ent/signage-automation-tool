@@ -273,11 +273,11 @@ SEQ_RULE = {
         "aspect_split": 4.25,
         "groups": [
             {"group_id": "tamil_card", "bbox_mm": {"x": 50, "y": 100, "w": 200, "h": 200},
-             "target_h_frac": 0.5, "target_cy_frac": 0.5},
+             "size_table": [{"aspect": 3.0, "target_h_frac": 0.5, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
             {"group_id": "roof_graphic", "bbox_mm": {"x": 400, "y": 150, "w": 100, "h": 100},
-             "target_h_frac": 0.3, "target_cy_frac": 0.5},
+             "size_table": [{"aspect": 3.0, "target_h_frac": 0.3, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
             {"group_id": "enlarged_badge_card", "bbox_mm": {"x": 850, "y": 350, "w": 40, "h": 20},
-             "target_h_frac": 0.5, "target_cy_frac": 0.5},
+             "size_table": [{"aspect": 3.0, "target_h_frac": 0.5, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
         ],
         "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
         "sequence_4": ["tamil_card", "roof_graphic", "enlarged_badge_card", "roof_graphic"],
@@ -329,6 +329,87 @@ def test_panel_sequence_wins_over_groups_schema_when_both_present():
     rule = {**SEQ_RULE, "groups": BRAND_RULE["groups"]}
     r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=rule))
     assert any(k.startswith("card_a_tile") for k in r)  # panel_sequence's own ids, not the groups schema's
+
+
+def test_interp_size_table_interpolates_between_two_nearest_aspects():
+    from app.layout import _interp_size_table
+    table = [
+        {"aspect": 3.0, "target_h_frac": 0.4, "target_w_frac": 0.2, "target_cy_frac": 0.5},
+        {"aspect": 5.0, "target_h_frac": 0.6, "target_w_frac": 0.4, "target_cy_frac": 0.7},
+    ]
+    h, w, cy = _interp_size_table(table, 4.0)  # exactly midway
+    assert h == pytest.approx(0.5)
+    assert w == pytest.approx(0.3)
+    assert cy == pytest.approx(0.6)
+
+
+def test_interp_size_table_clamps_outside_range_instead_of_extrapolating():
+    from app.layout import _interp_size_table
+    table = [
+        {"aspect": 3.0, "target_h_frac": 0.4, "target_w_frac": 0.2, "target_cy_frac": 0.5},
+        {"aspect": 4.5, "target_h_frac": 0.6, "target_w_frac": 0.3, "target_cy_frac": 0.53},
+    ]
+    assert _interp_size_table(table, 2.0) == (0.4, 0.2, 0.5)  # below range -> clamp to first
+    assert _interp_size_table(table, 6.0) == (0.6, 0.3, 0.53)  # above range -> clamp to last
+
+
+def test_panel_sequence_uses_per_aspect_size_not_a_flat_average():
+    # two aspects with different target sizes for the same group - the
+    # placed size at each target must match ITS OWN aspect's table entry,
+    # not an average of both
+    rule = {
+        "panel_sequence": {
+            "aspect_split": 100.0,  # keep both cases in sequence_3
+            "groups": [
+                {"group_id": "tamil_card", "bbox_mm": {"x": 50, "y": 100, "w": 200, "h": 200},
+                 "size_table": [{"aspect": 3.0, "target_h_frac": 0.4, "target_w_frac": 1.0, "target_cy_frac": 0.5},
+                                {"aspect": 4.0, "target_h_frac": 0.8, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
+                {"group_id": "roof_graphic", "bbox_mm": {"x": 400, "y": 150, "w": 100, "h": 100},
+                 "size_table": [{"aspect": 3.0, "target_h_frac": 0.3, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
+                {"group_id": "enlarged_badge_card", "bbox_mm": {"x": 850, "y": 350, "w": 40, "h": 20},
+                 "size_table": [{"aspect": 3.0, "target_h_frac": 0.2, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
+            ],
+            "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
+            "sequence_4": ["tamil_card", "roof_graphic", "enlarged_badge_card", "roof_graphic"],
+        },
+    }
+    r_at_3 = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=rule))
+    r_at_4 = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 4000, 1000, tile=True, shopname_ids={"name"}, brand_rule=rule))
+    card_at_3 = next(p for k, p in r_at_3.items() if k.startswith("card_a_tile"))
+    card_at_4 = next(p for k, p in r_at_4.items() if k.startswith("card_a_tile"))
+    assert card_at_3.h == pytest.approx(0.4 * 1000)
+    assert card_at_4.h == pytest.approx(0.8 * 1000)
+
+
+def test_panel_sequence_clamps_scale_by_width_when_it_is_the_tighter_constraint():
+    # a group whose master shape is much wider (relative to its height) than
+    # its measured target_w_frac allows must be scaled down to fit the
+    # width, not overflow the cell by scaling purely off target_h_frac -
+    # this is the real bug found on 06 (180x60): the enlarged badge card's
+    # real width/height ratio doesn't match its master shape's own ratio
+    rule = {
+        "panel_sequence": {
+            "aspect_split": 100.0,
+            "groups": [
+                {"group_id": "tamil_card", "bbox_mm": {"x": 50, "y": 100, "w": 200, "h": 200},
+                 "size_table": [{"aspect": 3.0, "target_h_frac": 0.5, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
+                {"group_id": "roof_graphic", "bbox_mm": {"x": 400, "y": 150, "w": 100, "h": 100},
+                 "size_table": [{"aspect": 3.0, "target_h_frac": 0.3, "target_w_frac": 1.0, "target_cy_frac": 0.5}]},
+                # master badge is 40x20 (aspect 2.0); a target_h_frac of 0.5 (500mm on a
+                # 1000mm-tall page) would naively scale it to 1000x500mm - way over a
+                # 1000mm-wide page split into 3 cells (333mm each) - target_w_frac=0.2
+                # (200mm) must be the binding constraint instead
+                {"group_id": "enlarged_badge_card", "bbox_mm": {"x": 850, "y": 350, "w": 40, "h": 20},
+                 "size_table": [{"aspect": 3.0, "target_h_frac": 0.5, "target_w_frac": 0.2, "target_cy_frac": 0.5}]},
+            ],
+            "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
+            "sequence_4": ["tamil_card", "roof_graphic", "enlarged_badge_card", "roof_graphic"],
+        },
+    }
+    r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=rule))
+    badge = next(p for k, p in r.items() if k.startswith("badge_tile"))
+    assert badge.w == pytest.approx(0.2 * 3000)  # width-constrained, not height-constrained
+    assert badge.h < 0.5 * 1000  # shorter than the naive height-only target, to preserve aspect
 
 
 def test_panel_sequence_keeps_unmatched_shape_at_its_own_proportional_position():

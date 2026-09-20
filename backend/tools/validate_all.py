@@ -227,15 +227,32 @@ def validate_brand(brand: str, limit: int | None = None, only: str | None = None
     if limit:
         files = files[:limit]
 
+    # Always start from whatever's already on disk, not just when --resume is
+    # passed - a bare `--only <substr>` run (e.g. to fix one board) used to
+    # start `boards` empty and overwrite validation_report.json with just
+    # that filtered subset, silently discarding every other board's entry.
+    # This actually happened more than once in practice (see CLAUDE.md
+    # "Wide-board panel sequence" and "Metrics suite") and was recovered by
+    # hand each time by rebuilding the missing entries offline from their
+    # still-valid cached dumps - annoying and easy to forget. Now: any
+    # previously-recorded board NOT about to be regenerated in this run is
+    # always kept; `--resume` additionally skips regenerating boards that
+    # already succeeded (rather than just keeping their old record).
     boards = []
-    if resume:
-        report_path = out_root / "validation_report.json"
-        if report_path.exists():
-            all_previous = json.loads(report_path.read_text(encoding="utf-8"))["boards"]
-            boards = [b for b in all_previous if "error" not in b]  # retry errored ones
+    report_path = out_root / "validation_report.json"
+    if report_path.exists():
+        boards = json.loads(report_path.read_text(encoding="utf-8"))["boards"]
+        if resume:
+            boards = [b for b in boards if "error" not in b]  # retry errored ones
             done_files = {b["file"] for b in boards}
             files = [f for f in files if f.name not in done_files]
             print(f"resume: {len(done_files)} already done, {len(files)} remaining (errored boards will be retried)")
+        else:
+            # not resuming: keep every prior board this run isn't about to
+            # regenerate, and drop stale entries for the ones it is (its
+            # own fresh result replaces them below)
+            regenerating = {f.name for f in files}
+            boards = [b for b in boards if b["file"] not in regenerating]
 
     jobs = []
     job_meta = []  # (file, shop_spec, safe, out_dir), same order as jobs

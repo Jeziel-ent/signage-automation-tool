@@ -412,6 +412,39 @@ def _place_brand_ruled_panel(panel_objs, roles, page_w, page_h, new_w, new_h, ax
     return out, (min(scales) if scales else 1.0)
 
 
+_SIZE_TABLE_KEYS = ("target_h_frac", "target_w_frac", "target_cy_frac")
+
+
+def _interp_size_table(table: list[dict], aspect: float) -> tuple[float, float, float]:
+    """Linearly interpolate (target_h_frac, target_w_frac, target_cy_frac)
+    between the two `size_table` entries nearest `aspect` - clamped to the
+    nearest entry if `aspect` falls outside the table's range, never
+    extrapolated past it. A flat average across every sample was tried
+    first and measurably didn't fit every sampled board (see CLAUDE.md
+    "Wide-board panel sequence" - 06 180x60's enlarged badge overflowed its
+    cell). `target_w_frac` is stored explicitly rather than derived from
+    the group's own master aspect ratio: real designer files show the
+    enlarged badge card's actual width/height ratio *doesn't* match the
+    master badge shape's own ratio (it's redesigned to roughly match the
+    other card's proportions, not algebraically scaled up) - deriving
+    width from height via the master aspect ratio overflowed the target
+    cell; using the real measured width directly does not.
+    """
+    rows = sorted(table, key=lambda r: r["aspect"])
+    if aspect <= rows[0]["aspect"]:
+        r = rows[0]
+    elif aspect >= rows[-1]["aspect"]:
+        r = rows[-1]
+    else:
+        r = None
+        for a, b in zip(rows, rows[1:]):
+            if a["aspect"] <= aspect <= b["aspect"]:
+                t = (aspect - a["aspect"]) / (b["aspect"] - a["aspect"])
+                return tuple(a[k] + (b[k] - a[k]) * t for k in _SIZE_TABLE_KEYS)
+        r = rows[-1]  # unreachable given the bounds checks above, kept as a safe fallback
+    return tuple(r[k] for k in _SIZE_TABLE_KEYS)
+
+
 def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis, seq_rule) -> tuple[list[Placed], float]:
     """Tile panel_objs as a SEQUENCE of named slots evenly spaced across the
     tiling axis, each with its own target size/vertical position - not a
@@ -436,12 +469,18 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
     looking at the images, so it's captured here as verified data instead.
 
     `seq_rule` (see `brand_rules/dalmia.json`'s `panel_sequence` key):
-    `{"aspect_split": float, "groups": [{"group_id", "bbox_mm", "target_h_frac",
-    "target_cy_frac"}, ...], "sequence_3": [group_id, ...], "sequence_4": [...]}`.
-    `target_h_frac`/`target_cy_frac` are fractions of `new_h` regardless of
-    tiling axis (matching how they were measured - see CLAUDE.md), so this
-    is currently only validated for horizontal tiling (all 4 sampled wide
-    boards tile on x); untested for vertical.
+    `{"aspect_split": float, "groups": [{"group_id", "bbox_mm", "size_table":
+    [{"aspect", "target_h_frac", "target_cy_frac"}, ...]}, ...], "sequence_3":
+    [group_id, ...], "sequence_4": [...]}`. `size_table` entries are fractions
+    of `new_h` regardless of tiling axis (matching how they were measured -
+    see CLAUDE.md), so this is currently only validated for horizontal
+    tiling (all 4 sampled wide boards tile on x); untested for vertical.
+    A group's size at the target aspect ratio is linearly interpolated
+    between its two nearest `size_table` aspects (clamped to the nearest
+    entry outside the table's range, never extrapolated past it) - not a
+    single flat average across every sample, which was tried first and
+    measurably didn't fit every sampled board (06 180x60's enlarged badge
+    overflowed its cell - see CLAUDE.md).
 
     A shape only joins a named group if its centre falls inside that
     group's master bbox (expanded by `GROUP_MEMBERSHIP_MARGIN`) - NOT
@@ -502,7 +541,16 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
         gw, gh = bx1 - bx0, by1 - by0
         if gh <= 0:
             continue
-        scale = (cfg["target_h_frac"] * new_h) / gh
+        target_h_frac, target_w_frac, target_cy_frac = _interp_size_table(cfg["size_table"], target_aspect)
+        if gw <= 0:
+            scale = (target_h_frac * new_h) / gh
+        else:
+            # constrained by whichever dimension is tighter, so a group whose
+            # own master aspect ratio doesn't match its real target width/height
+            # (the enlarged badge card - see _interp_size_table) never overflows
+            # its cell, even though it means its shape isn't scaled perfectly
+            # uniformly to the measured target in that case.
+            scale = min((target_h_frac * new_h) / gh, (target_w_frac * new_w) / gw)
         scales.append(scale)
         gw_s, gh_s = gw * scale, gh * scale
 
@@ -511,7 +559,7 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
             x_offset = cell_left + (cell_w - gw_s) / 2 - bx0 * scale
         else:
             x_offset = (new_w - gw_s) / 2 - bx0 * scale
-        y_offset = cfg["target_cy_frac"] * new_h - gh_s / 2 - by0 * scale
+        y_offset = target_cy_frac * new_h - gh_s / 2 - by0 * scale
         if axis == "y":
             cell_bottom = (n - 1 - i) * cell_h
             y_offset = cell_bottom + (cell_h - gh_s) / 2 - by0 * scale

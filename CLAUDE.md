@@ -397,28 +397,67 @@ live against 02 (180x48)'s actual rendered PNG, not just numbers:**
    shape, every subsequent placement of the *same* base_id duplicates -
    correct for every panel scheme, not just this one.
 
-**Result after both fixes, confirmed on 2 of the 4 wide boards (02 180x48,
-06 180x60) - regeneration of the other 2 (11-216, 11-240) deferred, see
-below**: 02's visual similarity `combined` score (see "Metrics suite")
-rose from 0.38 (original single-rigid-panel tiling) to **0.686** - a large,
-real improvement, though still below the 0.75 provisional pass threshold.
-06 rose more modestly, to 0.478, and its render shows a new, different
-problem: **the enlarged badge card overflows its cell and bleeds off the
-page edge** at this board's aspect ratio (3.0) - `target_h_frac`/
-`target_cy_frac` are simple averages across all 4 samples, not
-interpolated per-aspect, so they don't fit every sampled board precisely.
-`validate_all.py`'s leaf-shape geometry diff % barely moved for either
-board (77.1%→65.7%, 73.8%→66.2%) despite the large visual improvement -
-consistent with that metric's already-documented noise on ~130-fragment
-packed curve matching (see "Validation: all 13 dalmia files"); the visual
-score is the more trustworthy signal for judging this specific change.
-**11-216 and 11-240 were not regenerated** - free RAM dropped to ~1GB
-mid-session (below `corel_supervisor`'s 1.5GB refusal floor) before they
-could be run; regenerating them and re-running `build_metrics_report.py`
-is the immediate next step once free memory recovers (restarting the
-machine is the practical mitigation, per "Remaining limitations").
-Per-aspect interpolation of `target_h_frac`/`target_cy_frac` (rather than
-a flat average) is the next refinement once all 4 boards can be compared.
+**A third bug, found once all 4 boards could be compared**: the first fix
+used a *flat average* of `target_h_frac`/`target_cy_frac` across all 4
+samples. This visibly overflowed 06 (180x60)'s enlarged badge off the page
+edge, because that board's real proportions don't sit at the average.
+**Fixed** by replacing the flat average with a per-group `size_table`
+(one `{aspect, target_h_frac, target_w_frac, target_cy_frac}` row per
+sampled board, read directly off its own real render) and
+`layout._interp_size_table`, which linearly interpolates between the two
+nearest sampled aspects at layout time (clamped, never extrapolated,
+outside `[3.0, 4.5]`). A **fourth** bug surfaced fixing this: the enlarged
+badge card's real width/height ratio does not match its master shape's own
+ratio (it's redesigned to roughly match the Tamil card's proportions, not
+algebraically scaled up) - deriving width from height via the master
+bbox's aspect ratio *also* overflowed the cell even with per-aspect
+sizing. Fixed by storing `target_w_frac` explicitly (measured, not
+derived) and scaling by `min(implied-scale-from-height,
+implied-scale-from-width)` in `_place_panel_sequence`, so a group is never
+stretched past either constraint.
+
+**Final result, confirmed on all 4 wide boards** (visual `combined` score,
+see "Metrics suite"; `validate_all.py`'s leaf-shape geometry diff % kept
+alongside for reference, but see below for why it's the less trustworthy
+number here):
+
+| Board | Aspect | Before (single rigid panel) | After (panel_sequence) | Geometry diff % (after) | 0.75 pass? |
+|---|---|---|---|---|---|
+| 02 (180x48) | 3.75 | 0.380 | **0.730** | 65.4% | FAIL (just under) |
+| 06 (180x60) | 3.00 | 0.411 | **0.669** | 63.5% | FAIL |
+| 11 (216x48) | 4.50 | 0.347 | **0.538** | 84.0% | FAIL |
+| 11 (240x60) | 4.00 | 0.403 | **0.716** | 68.2% | FAIL |
+
+All 4 improved substantially (+0.10 to +0.35), none yet cross the
+provisional 0.75 threshold - 02 (180x48) is closest, 0.02 under. 11 (216x48)
+improved the least in absolute score, plausibly because it's the one board
+using `sequence_4` (4 panels, the least-evidenced regime - a single
+sample informed its `aspect_split`/sizing to begin with) and/or because its
+own real design has the most going on (4 distinct elements to place
+correctly instead of 3). None of the 4 pass yet; this remains an
+**honest partial improvement, not a fix** - the leaf-shape geometry diff %
+barely moved for any of them (77-85% before and after) despite the large
+visual gains, consistent with that metric's already-documented noise on
+~130-fragment packed curve matching (see "Validation: all 13 dalmia
+files") - the visual score is the more trustworthy signal for judging this
+specific change. **Net effect on the full dalmia set: still 7/12 pass at
+0.75** (unchanged - the 4 wide boards were already the only failures in
+the non-outlier set, and stay failures, just less badly wrong).
+
+**Fixed properly, not just worked around again**: several `--only <substr>`
+reruns during this work (without `--resume`) again truncated
+`validation_report.json` to just the filtered board(s), as originally
+documented above - it happened at least twice more in this round, each
+time recovered by hand (rebuilding the missing boards' entries offline
+from their still-valid cached dumps). Recurring often enough to be a real
+design flaw, not a one-off mistake, so `validate_all.py` now always seeds
+`boards` from the existing `validation_report.json` (if one exists)
+regardless of `--resume`: without `--resume`, every previously-recorded
+board *not* about to be regenerated this run is kept, and only the
+boards actually being rerun get their entries replaced; `--resume` keeps
+its existing behaviour (skip regenerating boards that already succeeded).
+A bare `--only <substr>` run can no longer silently discard the rest of
+the report.
 
 ## Per-shop content replacement (phone / GST / address)
 
@@ -836,8 +875,11 @@ tuple — any `(9, 49)` (optional `VT_DISPATCH`) argument needs an explicit
   incrementally as each job's result arrives (a long unattended COM batch
   can still fail partway on individual jobs, even though the *process*
   itself no longer hangs - `--resume` retries only the errored jobs, not
-  successful ones). Never touches `signage_dataset/`; all output goes under
-  `backend/dataset_analysis/`.
+  successful ones). Always seeds from the existing report first (see
+  "Wide-board panel sequence" above for why - `--only` used to silently
+  discard every other board's entry), so a filtered `--only` run only ever
+  replaces the board(s) it actually reran. Never touches `signage_dataset/`;
+  all output goes under `backend/dataset_analysis/`.
 - **`derive_brand_rules.py`** — clusters a master's `logo` shapes by
   bounding-box proximity and matches cluster sizes against real wide files
   to derive `backend/app/brand_rules/dalmia.json` (see "Per-brand tiling
@@ -1111,12 +1153,15 @@ tuning image-similarity weights.
 
 ## Tests
 
-`backend/tests/test_layout.py` (33 tests: the original 7, tiling, shop-name
+`backend/tests/test_layout.py` (37 tests: the original 7, tiling, shop-name
 replacement, the footer-text-not-tiled fix, brand-rule tiling, per-shop
 contact-info replacement - `find_contact_ids`/`_contact_replacement` - and
 `panel_sequence` tiling - slot count by aspect, badge enlargement, even
-spacing, schema precedence, and the unmatched-shape fallback that catches
-the accent-strip bug described above), `backend/tests/test_batch_import.py`
+spacing, schema precedence, the unmatched-shape fallback that catches the
+accent-strip bug, per-aspect `size_table` interpolation/clamping instead
+of a flat average, and width-constrained scaling for a group whose real
+proportions don't match its master shape's own aspect ratio - both
+described above), `backend/tests/test_batch_import.py`
 (8 tests), `backend/tests/test_metrics.py` (19 tests: dhash/edge math,
 cluster matching, counts, and every layout check including the full-bleed
 margin exemption and text_overlap, all on small synthetic shape
@@ -1129,7 +1174,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 72 passed as of this writing. Note that the
+`pytest` from `backend/` — 76 passed as of this writing. Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a
