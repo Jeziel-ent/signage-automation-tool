@@ -1716,6 +1716,39 @@ spread evenly across the set. Content check is a clean 12/12 OK, confirming
 (again, independently of the geometric numbers) that the text-correctness
 axis and the layout-correctness axis really are independent.
 
+### Step 3: threshold calibration tooling (`tools/calibrate_threshold.py`, `tools/build_label_page.py`)
+
+`metrics_config.json`'s `visual.pass_threshold` (0.75) has been an
+uncalibrated guess since it was introduced - this builds the tooling to
+replace the guess with a number backed by the user's own eye, **without
+this script ever writing to metrics_config.json itself** (project rule of
+engagement: never tune a threshold to raise a pass rate; a human decides
+whether/how to apply a proposal).
+
+- `build_label_page.py <brand>` generates a standalone, self-contained
+  `dataset_analysis/metrics_report/<brand>/label.html` - open it directly in
+  a browser (no server), click OK/NOT OK per board by eye against the two
+  images, click "Download labels.json", save it as
+  `dataset_analysis/labels/<brand>_labels.json`. Re-running the script after
+  labels exist preloads them (reads that same file back in), so labelling
+  can happen across more than one sitting.
+- `calibrate_threshold.py <brand>` reads that labels file plus every
+  candidate metric already computed for the report (`build_cards`, factored
+  out of `build_metrics_report.py` so both tools share one source of the
+  numbers - `want_images=False` skips the thumbnail work `calibrate` doesn't
+  need). For each candidate metric it finds the threshold that best
+  reproduces the user's OK/NOT_OK labels: every candidate is a midpoint
+  between two sorted board values (plus "always pass" / "always fail"), and
+  ties are broken toward the middle of the observed range so a proposal
+  doesn't happen to sit exactly on one board's own number. Candidates:
+  `visual_combined`, `geo_max_position_error_mm`, `geo_max_size_error_mm`,
+  `geo_mean_position_error_mm`, and `geo_area_matched_within_{2,5,10}mm_pct`
+  - plus a non-threshold reference row for the content check (already a
+  hard OK/FAIL). Writes `dataset_analysis/calibration/<brand>/proposal.{json,md}`.
+  10 unit tests on the search algorithm itself (perfect/imperfect
+  separability, tie-breaking, "everything passes" as a valid answer),
+  independent of any real board data.
+
 ## Metrics suite (Phase 1: `backend/tools/metrics.py`)
 
 A second, independent scoring layer on top of `validate_all.py`'s
