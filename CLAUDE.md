@@ -1749,6 +1749,59 @@ whether/how to apply a proposal).
   separability, tie-breaking, "everything passes" as a valid answer),
   independent of any real board data.
 
+### Step 4: wide-board scale gap - leave-one-out on the panel_sequence size_table (negative result, no rule changed)
+
+`tools/wide_board_loo.py` asks: given only 4 real wide dalmia boards, each
+one's `panel_sequence` `size_table` row IS a direct real-render measurement
+(see "Wide-board panel sequence" above) - if a board's own row were removed,
+how well would `layout._interp_size_table`'s per-aspect interpolation have
+predicted it from the other 3, and does any simple alternative do better?
+Pure Python, no CorelDRAW, no new dumps - it re-derives nothing from a real
+file that wasn't already measured and stored in `brand_rules/dalmia.json`.
+Only `tamil_card` and `roof_graphic` have their own `size_table`;
+`enlarged_badge_card` inherits `tamil_card`'s via `card_from` (see above),
+so its accuracy is entirely downstream of `tamil_card`'s.
+
+**Leave-one-out result (mm error on that board's own target page):**
+
+| Board | Sequence | tamil_card h err | tamil_card w err | roof_graphic h err | roof_graphic w err |
+|---|---|---|---|---|---|
+| 06 (180x60) | seq3 | +94.5mm | -150.9mm | +70.1mm | -86.9mm |
+| 02 (180x48) | seq3 | +33.2mm | +58.3mm | +24.4mm | +35.4mm |
+| 11-240 (240x60) | seq3 | -99.1mm | -142.2mm | -73.2mm | -83.3mm |
+| **11-216 (216x48)** | **seq4** | **+98.8mm** | **+318.2mm** | **+73.2mm** | **+181.1mm** |
+
+The 3 `sequence_3` boards land in a 24-150mm error band - real, but
+moderate. **11-216 is a different story**: it's the *only* sample above
+`aspect_split` (4.25), so leaving it out removes every `sequence_4`
+data point - `_interp_size_table` can then only clamp to the nearest
+`sequence_3` point (4.0), never truly interpolate, and its width error
+(181-318mm, roughly a quarter of the group's own real size) is 2-5x worse
+than any `sequence_3` fold. This is exactly the "one sample, don't force a
+fit" case flagged when `panel_sequence` was first built - leave-one-out
+now gives it a number instead of a hunch.
+
+`target_cy_frac` (vertical centring) is nearly constant across all 4
+boards regardless of aspect (0.528-0.531 for `tamil_card`, 0.566-0.577 for
+`roof_graphic`) - both the current per-aspect interpolation AND a tested
+flat-average alternative land within a few mm either way, with **no
+consistent winner** (the flat average wins 2 of 4 `tamil_card` folds and 1
+of 4 `roof_graphic` folds, all by single-digit mm) - not a real
+improvement, within noise.
+
+**Decision: no rule was changed.** The flat-average-cy alternative doesn't
+clearly beat the current scheme in leave-one-out (the bar this task set),
+and the dominant error is in size (h/w), which is non-monotonic in aspect
+across only 4 points - not enough, non-monotonic data to fit anything more
+sophisticated than the current linear interpolation without just fitting
+noise. `brand_rules/dalmia.json` and `layout.py` are unchanged.
+**11-216 stays flagged as a REVIEW case for insufficient evidence** (used
+directly by Step 5's confidence label, below), not folded into a rule that
+the data doesn't support. 5 unit tests on the analysis script's own
+mechanics (which board's row is held out, mm conversion uses that board's
+own page size, sequence_4 detection) - there is nothing to unit-test about
+"whether the proposed rule works" since the answer was no.
+
 ## Metrics suite (Phase 1: `backend/tools/metrics.py`)
 
 A second, independent scoring layer on top of `validate_all.py`'s
