@@ -1,0 +1,31 @@
+{
+  "dalmia": {
+    "master_mm": {
+      "w": 3048.0,
+      "h": 1219.2
+    },
+    "regimes": {
+      "tiled": {
+        "n_samples": 4,
+        "aspect_min": 3.0,
+        "aspect_max": 4.500410172272354,
+        "median_position_error_mm": 427.46688950739554,
+        "median_size_error_mm": 1905.0004164373763,
+        "max_position_error_mm": 837.6532795132631,
+        "max_size_error_mm": 2438.4000903251476
+      },
+      "untiled": {
+        "n_samples": 7,
+        "aspect_min": 2.400262467191601,
+        "aspect_max": 2.500410172272354,
+        "median_position_error_mm": 115.74890780141327,
+        "median_size_error_mm": 139.40605895975273,
+        "max_position_error_mm": 532.9903547852624,
+        "max_size_error_mm": 1073.0058912764873
+      }
+    },
+    "excluded_outliers": [
+      "12 - 120 X 60 Inch - 2 Nos Double Side GSB - TAMILNADU STEELS.cdr"
+    ]
+  }
+}

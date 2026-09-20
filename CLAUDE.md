@@ -1802,6 +1802,72 @@ mechanics (which board's row is held out, mm conversion uses that board's
 own page size, sequence_4 detection) - there is nothing to unit-test about
 "whether the proposed rule works" since the answer was no.
 
+### Step 5: confidence label (`app/confidence.py`) - GOOD / REVIEW / MANUAL, callable with no designer file
+
+`confidence_label(width_mm, height_mm, brand, content_check=None,
+layout_checks=None)` can be called **before generation even starts** with
+just the requested size and brand - no designer file needed, because the
+one thing it can know ahead of time (whether this aspect ratio has ever
+been validated) is looked up from `app/confidence_bounds.json`, a small
+table derived OFFLINE from past validation runs
+(`tools/derive_confidence_bounds.py <brand>`, excludes
+`validate_all.KNOWN_OUTLIERS`), not compared live against a real file for
+the new request - there isn't one yet. `content_check`
+(`content_check.check_content`) and `layout_checks` (`metrics.layout_checks`)
+are optional, only meaningful once a board has actually been generated, and
+can only ever make the label **worse**, never rescue one that's already bad
+- a request already outside every validated aspect range doesn't become
+trustworthy just because nothing else went wrong (a dedicated test locks
+this ordering in).
+
+**Rules** (in order, worst wins): MANUAL if the brand has no bounds file at
+all, or the aspect ratio (tiled or not - decided by `layout._tile_plan`,
+called directly so this can never drift from the real tiling decision) is
+outside every validated range for that regime, or a hard `layout_checks`
+failure, or `content_check.overall == "CONTENT_FAIL"`. REVIEW if the regime
+matched but its historical median position/size error exceeds
+`REVIEW_ERROR_MM` (200mm, calibrated by eye against the numbers below - the
+tiled bucket's ~430-1900mm median clears it easily, the untiled bucket's
+~116-139mm doesn't), or a `layout_checks` warning. GOOD otherwise.
+
+**Every validated dalmia board, real bounds** (`n=7` untiled samples,
+aspect range [2.40, 2.50]; `n=4` tiled samples, [3.00, 4.50] - both exclude
+board 12 as a known outlier):
+
+| Board | Target | Tile | Label | Why |
+|---|---|---|---|---|
+| 02 (180x48) | 4572x1219 | x,2 | REVIEW | tiled regime's historical median error (427/1905mm) |
+| 06 (180x60) | 4572x1524 | x,2 | REVIEW | same |
+| 03 (120x48) | 3048x1219 | none | GOOD | aspect 2.50 in validated untiled range, median 116/139mm |
+| 05 (120x48) | 3048x1219 | none | GOOD | same |
+| 09 (144x60) | 3658x1524 | none | GOOD | aspect 2.40 in range |
+| 10 (144x60) | 3658x1524 | none | GOOD | same |
+| 11 (216x48) | 5486x1219 | x,2 | REVIEW | tiled regime |
+| 11 (240x60) | 6096x1524 | x,2 | REVIEW | tiled regime |
+| **12 (120x60, outlier)** | 3048x1524 | none | **MANUAL** | **aspect 2.00 is outside [2.40, 2.50] - extrapolation** |
+| 13 (144x60) x2 | 3658x1524 | none | GOOD | aspect 2.40 in range |
+| 14 (120x48) | 3048x1219 | none | GOOD | aspect 2.50 in range |
+
+None of these 12 hit a content-check or layout-check downgrade (content
+check was 12/12 `CONTENT_OK`, per Step 1; no layout check warned or failed
+on any of them) - every label above comes purely from the aspect-range/
+regime lookup. **Board 12 landing on MANUAL, entirely from its aspect ratio
+being outside the validated range, is a real, useful confirmation**: it is
+independently already known (from `validate_all.KNOWN_OUTLIERS`, derived
+from a completely different signal - a large systematic geometric shift) to
+be the one board in this set that doesn't behave like the others. The
+confidence label reaches the same conclusion from aspect ratio alone,
+before any comparison to its real file.
+
+9 unit tests, all against synthetic `bounds` dicts (no real file, no
+CorelDRAW, no dependency on `confidence_bounds.json`'s current contents) -
+covering GOOD/REVIEW/MANUAL from the aspect-range check alone, the
+tiled-regime REVIEW, content/layout checks only ever making things worse,
+an unknown brand, non-positive sizes, and a regime with zero samples. A
+10th test DOES load the real `confidence_bounds.json` and checks every
+validated dalmia board comes back GOOD or REVIEW (never MANUAL purely for
+"unknown"), skipped gracefully if that file isn't present in a checkout.
+
 ## Metrics suite (Phase 1: `backend/tools/metrics.py`)
 
 A second, independent scoring layer on top of `validate_all.py`'s
