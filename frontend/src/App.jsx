@@ -1,7 +1,10 @@
 import React, { useEffect, useRef, useState } from "react";
 
 const UNITS = ["mm", "cm", "in", "ft", "m"];
-const newShop = () => ({ key: Math.random().toString(36).slice(2), name: "", width: "", height: "", unit: "ft" });
+const newShop = () => ({
+  key: Math.random().toString(36).slice(2), name: "", width: "", height: "", unit: "ft",
+  shop_name_local: "", phone: "", gst: "", address: "",
+});
 
 export default function App() {
   const [file, setFile] = useState(null);
@@ -41,7 +44,17 @@ export default function App() {
     const fd = new FormData();
     fd.append("master", file);
     fd.append("brand", brand);
-    fd.append("shops", JSON.stringify(shops.map(({ key, ...s }) => ({ ...s, width: +s.width, height: +s.height }))));
+    fd.append("shops", JSON.stringify(shops.map(({ key, address, ...s }) => ({
+      ...s,
+      width: +s.width,
+      height: +s.height,
+      // empty optional fields must be omitted, not sent as "" - the engine
+      // treats None as "leave this line alone" but "" as "replace with blank"
+      shop_name_local: s.shop_name_local.trim() || undefined,
+      phone: s.phone.trim() || undefined,
+      gst: s.gst.trim() || undefined,
+      address_lines: address.trim() ? address.split("\n").map((l) => l.trim()).filter(Boolean) : undefined,
+    }))));
     try {
       const r = await fetch("/api/jobs", { method: "POST", body: fd });
       if (!r.ok) throw new Error((await r.json()).detail || "Upload failed");
@@ -89,14 +102,22 @@ export default function App() {
         <div className="shops">
           <div className="shop head"><span>Shop name</span><span>Width</span><span>Height</span><span>Unit</span><span /></div>
           {shops.map((s) => (
-            <div className="shop" key={s.key}>
-              <input placeholder="e.g. Anna Nagar" value={s.name} onChange={(e) => updateShop(s.key, { name: e.target.value })} />
-              <input type="number" min="0" step="any" placeholder="W" value={s.width} onChange={(e) => updateShop(s.key, { width: e.target.value })} />
-              <input type="number" min="0" step="any" placeholder="H" value={s.height} onChange={(e) => updateShop(s.key, { height: e.target.value })} />
-              <select value={s.unit} onChange={(e) => updateShop(s.key, { unit: e.target.value })}>
-                {UNITS.map((u) => <option key={u}>{u}</option>)}
-              </select>
-              <button className="ghost" onClick={() => removeShop(s.key)} disabled={shops.length === 1} title="Remove">✕</button>
+            <div className="shop-block" key={s.key}>
+              <div className="shop">
+                <input placeholder="e.g. Anna Nagar" value={s.name} onChange={(e) => updateShop(s.key, { name: e.target.value })} />
+                <input type="number" min="0" step="any" placeholder="W" value={s.width} onChange={(e) => updateShop(s.key, { width: e.target.value })} />
+                <input type="number" min="0" step="any" placeholder="H" value={s.height} onChange={(e) => updateShop(s.key, { height: e.target.value })} />
+                <select value={s.unit} onChange={(e) => updateShop(s.key, { unit: e.target.value })}>
+                  {UNITS.map((u) => <option key={u}>{u}</option>)}
+                </select>
+                <button className="ghost" onClick={() => removeShop(s.key)} disabled={shops.length === 1} title="Remove">✕</button>
+              </div>
+              <div className="shop-contact">
+                <input placeholder="Tamil name (optional)" value={s.shop_name_local} onChange={(e) => updateShop(s.key, { shop_name_local: e.target.value })} />
+                <input placeholder="Phone (optional)" value={s.phone} onChange={(e) => updateShop(s.key, { phone: e.target.value })} />
+                <input placeholder="GST No. (optional)" value={s.gst} onChange={(e) => updateShop(s.key, { gst: e.target.value })} />
+                <input placeholder="Address lines, one per line (optional)" value={s.address} onChange={(e) => updateShop(s.key, { address: e.target.value })} />
+              </div>
             </div>
           ))}
         </div>

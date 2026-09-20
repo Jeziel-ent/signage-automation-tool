@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import corel_util
 from .corel_watchdog import Watchdog
-from .layout import Obj, compute_layout, find_shopname_ids, load_brand_rule, to_mm
+from .layout import MIN_TEXT_PT, Obj, compute_layout, find_contact_ids, find_shopname_ids, load_brand_rule, to_mm
 
 logger = logging.getLogger(__name__)
 
@@ -83,8 +83,9 @@ class CorelEngine:
             return None
 
     @staticmethod
-    def _set_shopname_text(shape, placed) -> None:
-        """Write the replacement text (and font, for Tamil content) via COM.
+    def _set_replacement_text(shape, placed) -> None:
+        """Write the replacement text (and font, for Tamil content) via COM,
+        then fit it into the space the layout actually gave this shape.
 
         CorelDRAW does not raise when `Font` names a font that isn't
         installed - Text.Story.Font silently reads back "" afterwards - so
@@ -99,6 +100,55 @@ class CorelEngine:
                     placed.warnings.append(f"font '{placed.font}' not available on this machine; kept original font")
         except Exception as e:
             placed.warnings.append(f"could not set shop-name text: {e}")
+            return
+        CorelEngine._fit_text(shape, placed.w, placed.warnings)
+
+    @staticmethod
+    def _fit_text(shape, target_w_mm: float, warnings: list[str]) -> None:
+        """Shrink, then wrap to a second line, a text shape that's grown
+        wider than the space its layout box was given.
+
+        CorelDRAW artistic text (what these masters use for shop
+        name/phone/GST - fixed absolute font sizes, not an auto-fit
+        paragraph frame) doesn't wrap on its own, so replacing a short
+        master name like "SRI KAVI STEELS" with a long one like "SAFI STEEL
+        TRADERS PRIVATE LIMITED" can grow the shape wide enough to collide
+        with neighbouring fixed text (the phone/GST line) - the collision
+        `metrics.py`'s text_overlap check exists to catch after the fact.
+        This tries to avoid it at generation time instead: shrink font size
+        in 10% steps down to `layout.MIN_TEXT_PT` (a floor derived from real
+        data - see that constant), then, if still too wide, wrap at the
+        space nearest the middle of the text. Gives up and warns rather
+        than looping forever or shrinking past the point of being legible.
+        """
+        if target_w_mm <= 0:
+            return
+        try:
+            story = shape.Text.Story
+            size = float(story.Size)
+        except Exception:
+            return
+
+        try:
+            if float(shape.SizeWidth) <= target_w_mm * 1.05:
+                return  # already fits
+
+            while float(shape.SizeWidth) > target_w_mm * 1.05 and size > MIN_TEXT_PT * 1.3:
+                size *= 0.9
+                story.Size = size
+
+            if float(shape.SizeWidth) > target_w_mm * 1.05:
+                text = story.Text or ""
+                spaces = [i for i, c in enumerate(text) if c == " "]
+                if spaces:
+                    mid = len(text) / 2
+                    best = min(spaces, key=lambda i: abs(i - mid))
+                    story.Text = text[:best] + "\r" + text[best + 1:]
+
+            if float(shape.SizeWidth) > target_w_mm * 1.05:
+                warnings.append("replacement text still wider than its layout box after shrinking/wrapping; check manually")
+        except Exception as e:
+            warnings.append(f"text-fit failed: {e}")
 
     def _process(self, master_path: Path, shop: dict, out_dir: Path, on_step=None) -> dict:
         new_w = to_mm(shop["width"], shop["unit"])
@@ -172,6 +222,7 @@ class CorelEngine:
                 shopname_ids = find_shopname_ids(
                     objs, shop.get("master_shop_name"), shop.get("master_shop_name_local"),
                 )
+                contact_ids = find_contact_ids(objs) if (shop.get("phone") or shop.get("gst")) else set()
                 placed = compute_layout(
                     objs, page_w, page_h, new_w, new_h,
                     safe_margin=float(shop.get("safe_margin", 0)),
@@ -180,6 +231,10 @@ class CorelEngine:
                     shop_name_local=shop.get("shop_name_local"),
                     shopname_ids=shopname_ids,
                     brand_rule=load_brand_rule(shop.get("brand")),
+                    phone=shop.get("phone"),
+                    gst=shop.get("gst"),
+                    address_lines=shop.get("address_lines"),
+                    contact_ids=contact_ids,
                 )
 
                 page.SetSize(new_w, new_h)
@@ -196,7 +251,7 @@ class CorelEngine:
                     shape.LeftX = p.x
                     shape.BottomY = p.y
                     if p.text is not None:
-                        self._set_shopname_text(shape, p)
+                        self._set_replacement_text(shape, p)
                 return page_w, page_h, placed
 
             page_w, page_h, placed = step("tile_resize", _resize_and_tile)

@@ -242,9 +242,17 @@ def layout_checks(ours_shapes: list[dict], page_w: float, page_h: float, config:
         "detail": f"{overlap_pairs} cluster pair(s) overlap more than {lc['max_overlap_ratio']:.0%} of the smaller one's area",
     })
 
+    def _is_full_bleed(b: dict) -> bool:
+        spans_width = b["w"] >= page_w - tol
+        spans_height = b["h"] >= page_h - tol
+        area_ratio = (b["w"] * b["h"]) / (page_w * page_h) if page_w > 0 and page_h > 0 else 0
+        return spans_width or spans_height or area_ratio >= lc["full_bleed_area_ratio"]
+
     margin_offenders = []
     for c in clusters:
         b = c["bbox"]
+        if _is_full_bleed(b):
+            continue  # a deliberate edge-to-edge element (accent strip, background), not a misplaced object
         m = min(b["x"], b["y"], page_w - (b["x"] + b["w"]), page_h - (b["y"] + b["h"]))
         if m < lc["min_margin_mm"]:
             margin_offenders.append(round(m, 1))
@@ -260,6 +268,35 @@ def layout_checks(ours_shapes: list[dict], page_w: float, page_h: float, config:
         "check": "text_legibility", "status": "pass" if not small_text else "warn",
         "detail": f"{len(small_text)} text shape(s) below {lc['min_text_pt']}pt"
                   + (f": {small_text}" if small_text else ""),
+    })
+
+    # Text must never overlap at all (unlike general clusters, where some
+    # overlap tolerance is normal for adjacent decorative elements) - a
+    # long replacement shop name colliding with the phone/GST line is
+    # exactly the failure mode CorelEngine._fit_text (shrink/wrap) exists to
+    # avoid at generation time; this is the check that catches it if it
+    # still happens. Zero-tolerance: any bbox overlap at all is a fail.
+    #
+    # Deliberately NOT built from _bbox_clusters: two text shapes close
+    # enough to overlap are, by definition, close enough to have already
+    # been union-find-merged into one cluster by _bbox_clusters (its
+    # proximity margin is far more generous than "touching"), which would
+    # hide exactly the overlap this check exists to catch. Checked directly
+    # on leaf text shapes instead - real masters use one literal CorelDRAW
+    # text shape per label (shop name, phone/GST), not fragmented curves
+    # the way logos are, so no clustering step is needed here.
+    text_objs = [s for s in ours_shapes if s["role"] in ("text", "shopname")]
+    overlapping_text = 0
+    for i in range(len(text_objs)):
+        for j in range(i + 1, len(text_objs)):
+            a, b = text_objs[i], text_objs[j]
+            ox = max(0.0, min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"]))
+            oy = max(0.0, min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"]))
+            if ox > 0 and oy > 0:
+                overlapping_text += 1
+    results.append({
+        "check": "text_overlap", "status": "pass" if overlapping_text == 0 else "fail",
+        "detail": f"{overlapping_text} pair(s) of text/shopname shapes overlap",
     })
 
     return results

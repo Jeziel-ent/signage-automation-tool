@@ -48,12 +48,22 @@ from dataclasses import dataclass, asdict, field
 
 ROLES = ("bg", "frame", "fixed", "shopname", "text", "logo")
 
+# Floor for CorelEngine's text-fit shrink loop (see engines.py._fit_text) and
+# metrics.py's text_legibility layout check (metrics_config.json's
+# layout.min_text_pt - keep the two in sync). Derived from real data, not a
+# guess: every text font size across all 13 cached dalmia real files ranges
+# 80.7-300pt (large-format signage read from a distance, not desktop print) -
+# 40pt is a floor comfortably below the smallest real value, meant to catch a
+# genuinely broken shrink, not to model legibility-at-viewing-distance (which
+# isn't specified anywhere in this dataset).
+MIN_TEXT_PT = 40.0
+
 TAMIL_FONT = "Nirmala UI"  # ships with Windows (Indic UI font); verified installed and
 # renders Tamil without falling back to tofu boxes. "Noto Sans Tamil" is NOT a safe
 # default even though it's commonly recommended online: it isn't installed on a stock
 # Windows/CorelDRAW machine, and CorelDRAW silently no-ops the Font assignment when
 # the name doesn't match an installed font (Text.Story.Font reads back "" afterwards)
-# rather than raising - always verify the write stuck (see CorelEngine._set_shopname_text).
+# rather than raising - always verify the write stuck (see CorelEngine._set_replacement_text).
 _TAMIL_RE = re.compile(r"[஀-௿]")
 
 
@@ -118,6 +128,10 @@ def compute_layout(
     shop_name_local: str | None = None,
     shopname_ids: set[str] | None = None,
     brand_rule: dict | None = None,
+    phone: str | None = None,
+    gst: str | None = None,
+    address_lines: list[str] | None = None,
+    contact_ids: set[str] | None = None,
 ) -> list[Placed]:
     """Return placement for every object on the new page size (all mm).
 
@@ -133,6 +147,14 @@ def compute_layout(
     `repeat_table` gives for the target aspect ratio - some groups (a small
     badge) may never repeat while others (a logo) do, matching what the
     designer's real files actually did instead of a single blanket panel.
+
+    `phone`/`gst`/`address_lines` + `contact_ids` (from `find_contact_ids`)
+    are the per-shop-content counterpart to shop-name replacement - see
+    "Per-shop content replacement" in CLAUDE.md. Unlike the shop name, the
+    phone/GST footer's *label* text ("Phone No." / "GST NO.") is stable
+    across every real dalmia file even though the value after it changes
+    per shop, so it's found by that stable label pattern rather than by
+    matching against an old known value.
     """
     if min(page_w, page_h, new_w, new_h) <= 0:
         raise ValueError("Page sizes must be positive")
@@ -143,6 +165,7 @@ def compute_layout(
     roles = {o.id: detect_role(o, page_w, page_h) for o in objects}
     shopname_ids = set(shopname_ids or ())
     shopname_ids |= {o.id for o in objects if roles[o.id] == "shopname"}
+    contact_ids = set(contact_ids or ())
 
     axis, n_tiles = _tile_plan(page_w, page_h, new_w, new_h) if tile else (None, 1)
 
@@ -204,7 +227,8 @@ def compute_layout(
             if role in ("text", "logo") and (aspect_ratio_change > 2 or aspect_ratio_change < 0.5):
                 warns.append("very different aspect ratio; review layout manually")
 
-        out.append(Placed(o.id, o.name, role, x, y, w, h, orig, warns))
+        contact_text = _contact_replacement(o, phone, gst, address_lines) if o.id in contact_ids else None
+        out.append(Placed(o.id, o.name, role, x, y, w, h, orig, warns, contact_text))
 
     if axis and n_tiles > 1:
         if brand_rule and brand_rule.get("groups"):
@@ -444,6 +468,65 @@ def _shopname_replacement(o: Obj, shop_name, shop_name_local) -> tuple[str | Non
     if shop_name_local:
         return shop_name_local, TAMIL_FONT
     return None, None
+
+
+_PHONE_RE = re.compile(r"(phone\s*no\.?\s*[:.]?\s*)([\d][\d +-]*)", re.IGNORECASE)
+_GST_RE = re.compile(r"(gst\s*no\.?\s*[:.]?\s*)([A-Za-z0-9]*)", re.IGNORECASE)
+
+
+def find_contact_ids(objects: list[Obj]) -> set[str]:
+    """Content-based match for the phone/GST footer text.
+
+    Unlike the shop name, real masters keep this label stable ("Phone No."
+    / "GST NO.") across every shop - only the value after it changes - so
+    it's found by that label, not by comparing against an old value (which
+    is exactly what's different per shop, the opposite of the shop-name
+    case). All 13 real dalmia files combine phone+GST into one text shape,
+    two lines separated by "\\r" (see CLAUDE.md "Per-shop content
+    replacement"); this matches that shape whichever of the two labels (or
+    both) it contains.
+    """
+    matches = set()
+    for o in objects:
+        if o.kind != "text" or not o.text:
+            continue
+        if _PHONE_RE.search(o.text) or _GST_RE.search(o.text):
+            matches.add(o.id)
+    return matches
+
+
+def _contact_replacement(o: Obj, phone: str | None, gst: str | None,
+                          address_lines: list[str] | None) -> str | None:
+    """Rebuild the phone/GST footer text for one shop.
+
+    Preserves whatever label formatting the master's own text already uses
+    (e.g. "Phone No. " vs "Phone No:") by substituting only the value after
+    a matched label, rather than hardcoding an English label that might not
+    match every master. If a label isn't present yet but a value is given,
+    appends a new "Phone No. <value>" / "GST NO. <value>" line - lets a
+    shop that needs a GST line get one even if this particular master
+    happened not to have one already (e.g. dalmia's M Pandi file has no GST
+    line at all). `address_lines`, if given, are appended as further lines
+    in the same text object - there's no separate address shape in any
+    sampled master, so this is the only place free-text per-shop content
+    like an address has anywhere to go.
+    """
+    if phone is None and gst is None and not address_lines:
+        return None
+    text = o.text or ""
+    if phone is not None:
+        if _PHONE_RE.search(text):
+            text = _PHONE_RE.sub(lambda m: m.group(1) + phone, text, count=1)
+        else:
+            text = (text + "\r" if text else "") + f"Phone No. {phone}"
+    if gst is not None:
+        if _GST_RE.search(text):
+            text = _GST_RE.sub(lambda m: m.group(1) + gst, text, count=1)
+        else:
+            text = (text + "\r" if text else "") + f"GST NO. {gst}"
+    if address_lines:
+        text += "".join(f"\r{line}" for line in address_lines if line)
+    return text
 
 
 def find_shopname_ids(objects: list[Obj], *old_names: str | None) -> set[str]:

@@ -250,11 +250,169 @@ returned `Placed.text` (and `Placed.font`, for Tamil content) is what
 **not installed** on a stock Windows/CorelDRAW machine. Confirmed on this
 dev machine: setting `Text.Story.Font = "Noto Sans Tamil"` silently no-ops
 (CorelDRAW doesn't raise; the property reads back `""` afterwards) while
-`"Nirmala UI"` sticks and renders correctly. `CorelEngine._set_shopname_text`
+`"Nirmala UI"` sticks and renders correctly. `CorelEngine._set_replacement_text`
 reads the font back after writing it and appends a warning if it didn't
 stick, rather than trusting the write blindly — because CorelDRAW won't
 tell you it failed. If a target machine has neither font, tofu boxes are
 back; check `Text.Story.Font` interactively before hardcoding a new default.
+
+**What real designer files actually use, read from every cached dump**:
+every text shape in all 13 cached dalmia real files reports `font="Arial"`
+for its Tamil content (the "authorized dealer" footer and the shop-name
+text) and `font="Yu Gothic Medium"` for the Latin phone/GST line - both
+installed on this machine (confirmed via
+`System.Drawing.Text.InstalledFontCollection`), alongside `Nirmala UI`
+(installed) and `Noto Sans Tamil` (not installed, as above). Arial has no
+native Tamil glyphs, so this almost certainly means Windows' automatic
+font-linking/fallback is silently substituting a real Tamil-capable font
+at *render* time while the document's own metadata still says "Arial" -
+a well-known Windows behaviour for complex scripts, not a documented
+CorelDRAW feature, and one this codebase doesn't rely on: `TAMIL_FONT`
+sets `"Nirmala UI"` explicitly for replacement text rather than leaving the
+font as whatever Latin font the master happened to use, because relying on
+automatic fallback being configured the same way on every machine that
+runs a job is a fragile assumption to build on. Agarpathi's text shapes
+all report `font=None` (COM's `Text.Story.Font` raises when a text run
+mixes fonts/sizes internally - `dump_objects.py`'s `_text_info` already
+catches that and records `None` rather than guessing) - its real font(s)
+aren't currently readable this way; would need per-character-run font
+reads (`Story.Range(i, i+1).Font`), not implemented.
+
+## Wide-board panel sequence (dalmia) - the rule Phase 2 should implement
+
+`derive_brand_rules.py`'s automated cluster-size matching (see "Per-brand
+tiling rule attempt") got the *identity* of the repeated elements wrong,
+which is why using it made results worse. Re-examined by eye against the
+real rendered PNGs of all 4 wide dalmia boards
+(`dataset_analysis/compare/*/real.png`, from `cache_real_renders.py`) plus
+their clustered geometry (`derive_brand_rules.cluster()` on each file's
+`logo`-role leaf shapes), the master's 3 non-text graphics are, left to
+right on the *master itself* (120x48, untiled):
+
+1. **Tamil logo card** - white card, Tamil "டால்மியா பாரத் சிமெண்ட்"
+   wordmark + icon. ~50 leaf shapes, height ≈ 0.67 of page height.
+2. **"Roof Column Foundation Expert" graphic** - white house-shaped
+   silhouette, no card background. ~58 leaf shapes, height ≈ 0.49 of page
+   height.
+3. **Small "Dalmia Bharat CEMENT" badge** (English) - sits in the
+   top-right corner, much smaller than the other two. ~24 leaf shapes,
+   height ≈ 0.16 of page height.
+
+On every sampled wide board, all three are laid out left-to-right, evenly
+spaced by centre-to-centre gap (consistent with the existing panel-tiling
+approach's "N evenly-spaced cells" logic - the spacing math isn't the part
+that's wrong), but **as three (or four) *different* elements, not one
+element repeated**:
+
+- The **Tamil logo card** appears once, close to its master proportional
+  height (0.60-0.67 across all 4 samples) - never repeated, never resized
+  beyond that range.
+- The **small badge is enlarged** to roughly match the Tamil card's height
+  (0.16 -> 0.60-0.67) and re-rendered as a matching white "card" (still
+  showing "Dalmia Bharat / CEMENT", English) - this is what
+  `derive_brand_rules.py`'s blind size-matching mistook for "the Tamil
+  card, duplicated": confirmed by eye on `02 (180x48)` and `11 (216x48)`'s
+  real renders, the left and right cards show **different content**
+  (Tamil vs. English), not two copies of the same graphic. Always exactly
+  one copy, never further enlarged/shrunk beyond matching the Tamil card.
+- The **Roof Column Foundation Expert graphic** is the one true *repeat*
+  element, used as a spacer/filler between the two branded cards, at
+  roughly its master proportional height (0.44-0.49 across all samples):
+  **once** at aspect ratios up to ~4.0 (`06` 180x60=3.0, `02` 180x48=3.75,
+  `11-240` 240x60=4.0 - Tamil card / Roof graphic / Dalmia Bharat card,
+  3 panels total), **twice** at the widest sampled aspect (`11-216`
+  216x48=4.5 - Tamil card / Roof graphic / Dalmia Bharat card / Roof
+  graphic again, 4 panels total, confirmed by eye against its real render).
+  The exact aspect threshold for the 3-to-4 panel jump is only bounded to
+  "somewhere in (4.0, 4.5]" by this data - a single sample, not something
+  to over-fit further without more real wide files at intermediate
+  aspects.
+- A thin, full-page-width decorative accent strip (a `logo`-role shape,
+  ~10% of page height, not visible as a distinct graphic in the renders -
+  likely a background rule line) appears in 3 of the 4 samples
+  (`02`, `11-216`; not detected in `06` or `11-240`'s clustering, cause
+  not investigated further) - unrelated to the panel sequence itself.
+
+This is a materially different, more specific rule than either the
+original generic "duplicate the whole panel as one rigid unit" tiling or
+`derive_brand_rules.py`'s "which cluster repeats, by blind size match" -
+it names the *distinct roles* (fixed card, enlarged card, repeating
+filler) rather than treating tiling as "duplicate everything" or "duplicate
+whichever cluster's size matches." Not yet implemented in `compute_layout`
+or `CorelEngine` - this section is the derived rule Phase 2 should build
+from, in place of `brand_rules/dalmia.json`'s disproven approach.
+
+## Per-shop content replacement (phone / GST / address)
+
+Real masters embed shop-specific contact details, not just the shop name -
+found live in every cached dalmia real dump: a combined text shape reading
+`"Phone No. <digits>\rGST NO. <code>"` (two lines, `\r`-separated; the GST
+line is sometimes absent entirely, e.g. the M Pandi file). Before this,
+`CorelEngine` never touched this shape, so every generated board kept the
+*master's own* phone/GST digits regardless of which shop it was for -
+found via GATE 1 review.
+
+Unlike the shop name, the phone/GST shape's **label** text ("Phone No." /
+"GST NO.") is stable across every real file even though the value after it
+is exactly what's different per shop - the opposite of the shop-name case,
+where the *value* (a known old shop name) is what's stable enough to match
+against. So it's found by that label instead:
+
+- `find_contact_ids(objects)` (`layout.py`) - regex match for `phone\s*no`
+  or `gst\s*no` (case-insensitive) in a text shape's content, no per-shop
+  hint needed.
+- `_contact_replacement(o, phone, gst, address_lines)` rebuilds the text,
+  substituting only the value after a matched label (preserving whatever
+  punctuation/spacing the master's own label already uses) or appending a
+  new "Phone No. …" / "GST NO. …" line if that label wasn't present yet
+  (e.g. adding a GST line to a master variant that didn't have one).
+  `address_lines`, if given, are appended as further lines in the same
+  shape - there's no separate address shape in any sampled master, so this
+  is the only place free-text per-shop content like an address can go.
+- `compute_layout(..., phone=, gst=, address_lines=, contact_ids=)` sets
+  the result on `Placed.text` exactly like shop-name replacement, and
+  `CorelEngine` writes it via the same `_set_replacement_text` (renamed
+  from `_set_shopname_text` - it's no longer shopname-specific).
+
+Recognized `shop` dict keys: `phone`, `gst`, `address_lines` (list[str]).
+The frontend (`App.jsx`) collects these plus `shop_name_local` per shop row
+and omits any that are blank (sending `""` would mean "replace with
+blank", not "leave alone" - `compute_layout` treats `None` as "don't touch
+this field", so the frontend must never send an empty string for a field
+the user left blank).
+
+### Text-fit: shrinking/wrapping replacement text so it doesn't collide
+
+Real shop names vary wildly in length ("M Pandi" vs. "SAFI STEEL TRADERS
+PRIVATE LIMITED") but CorelDRAW artistic text (what these masters use -
+fixed absolute font sizes, not an auto-fit paragraph frame) doesn't wrap on
+its own. Before this fix, a long replacement name grew wider than the
+shape's layout box and could collide with the neighbouring phone/GST line -
+confirmed live on two real boards (14 "A 1 SEVAN STAR ENTERPRISES", 09
+"SAFI STEEL TRADERS PRIVATE LIMITED") via metrics.py's new `text_overlap`
+check (below), both regenerated and reverified clean after the fix (14's
+shop-name font shrank from the master's 178pt to 129.8pt to fit; no wrap
+needed in either sampled case, but the wrap path is exercised by
+`test_engines`-adjacent... - no, there's no COM-based unit test for this,
+see "Tests").
+
+`CorelEngine._fit_text(shape, target_w_mm, warnings)`, called right after
+`_set_replacement_text` writes new text: if `shape.SizeWidth` exceeds the
+layout's target width (`Placed.w`) by more than 5%, shrinks `Story.Size` in
+10% steps down to `layout.MIN_TEXT_PT * 1.3` (a floor with headroom below
+the floor itself), then, if still too wide, wraps at the space nearest the
+middle of the string (one manual `\r` line break - these are artistic text
+shapes, so this is the only way to get a second line). Gives up and appends
+a warning rather than looping forever or shrinking illegibly.
+
+`layout.MIN_TEXT_PT = 40.0` is a floor derived from real data, not a
+guess: every text font size across all 13 cached dalmia real files ranges
+80.7-300pt (large-format signage read from a distance, not desktop print).
+40pt sits comfortably below the smallest real value - it exists to catch a
+genuinely broken shrink loop, not to model legibility-at-viewing-distance
+(never specified anywhere in this dataset). `metrics_config.json`'s
+`layout.min_text_pt` uses the same value for its own legibility check -
+keep the two in sync if either changes.
 
 ## Engine split (`backend/app/engines.py`)
 
@@ -531,6 +689,24 @@ tuple — any `(9, 49)` (optional `VT_DISPATCH`) argument needs an explicit
   normal operation, kept for reference if a similar hang needs diagnosing
   again. Both use `app/corel_watchdog.Watchdog` to catch a stuck dialog
   without clicking it.
+- **`metrics.py`** — the Phase 1 metric suite (see "Metrics suite" above);
+  pure Python, no COM, importable from other tools/tests.
+- **`cache_ours_dumps.py <brand> [--force]`** / **`cache_real_renders.py
+  <brand> [--force]`** — batch helpers (via `corel_supervisor`, same hang
+  protection as everything else) that backfill, respectively, shape dumps
+  of already-generated "ours" `.cdr` files and PNG renders of real designer
+  files, when a report needs them but `validate_all.py`'s own
+  `worker_results.json` no longer has them (see "Metrics suite" above for
+  why that happens). Both add a `dump_only`/`render_only` job kind to
+  `corel_worker.py` alongside its normal generate+dump job.
+- **`build_metrics_report.py <brand>`** — builds the Phase 1 HTML
+  side-by-side report (see "Metrics suite" above). Run after
+  `validate_all.py` + `cache_ours_dumps.py` + `cache_real_renders.py`.
+- **`sensitivity_test.py`** — checks metrics.py's visual score actually
+  reacts to known-wrong output (shifts, a missing graphic, a wrong shop's
+  board); see "Metrics suite" above for the results table. No CorelDRAW -
+  works from one already-generated "ours" PNG plus PIL-synthesized
+  perturbations of it.
 
 ## Batch import (`backend/app/batch_import.py`)
 
@@ -543,7 +719,17 @@ typo `"Nonlt"`, passed through unvalidated), shop names containing their own
 the third `" - "`-delimited segment, not just the fourth. Verified against
 all 76 real filenames in `signage_dataset/` (Agarpathi + dalmia), 0
 failures. Exposed as `POST /api/parse-shops` (`{"text": "..."}` →
-`{"shops": [...], "errors": [{"line", "reason"}, ...]}`).
+`{"shops": [...], "errors": [{"line", "reason"}, ...]}`) - filenames never
+encode phone/GST/address, so parsing only ever produces
+`name`/`width`/`height`/`unit`/`type`.
+
+`POST /api/jobs`'s `shops` field accepts further optional per-shop keys
+beyond what parsing produces - `shop_name_local`, `phone`, `gst`,
+`address_lines` (list[str]) - see "Per-shop content replacement" above.
+The frontend (`App.jsx`) collects these in a second row under each shop's
+name/size fields and omits any left blank (never sends `""` for them - see
+that section for why `""` and "omitted" mean different things to
+`compute_layout`).
 
 ## Master preparation guide (`docs/master-preparation.md`)
 
@@ -640,55 +826,119 @@ CorelDRAW).
 - **(c) Counts** - shape/text/cluster counts ours vs. real.
 - **(d) No-ground-truth layout checks** - run on ours' own shape dump
   alone (so they also work at real deployment time, with no designer file
-  to compare against - see Phase 6's planned "master check"): nothing
-  outside the page, no two clusters' bounding-box *envelopes* overlapping
-  more than `layout.max_overlap_ratio` of the smaller one's area, minimum
-  margin from the page edge (`layout.min_margin_mm`), no text shape below
-  `layout.min_text_pt` (CorelDRAW's own reported point size, post-layout -
-  not inferred from the scale factor).
+  to compare against - see Phase 6's planned "master check"):
+  `within_page` (nothing outside the page), `no_cluster_overlap` (no two
+  clusters' bounding-box *envelopes* overlapping more than
+  `layout.max_overlap_ratio` of the smaller one's area), `min_margin`
+  (minimum margin from the page edge, `layout.min_margin_mm` -
+  **full-bleed clusters are exempted from this one check only**: a
+  cluster spanning the full page width/height, or covering
+  `layout.full_bleed_area_ratio` of the page area, is a deliberate
+  edge-to-edge design element - every dalmia board flagged a spurious
+  0.0mm margin from exactly this before the exemption was added, GATE 1
+  feedback), `text_legibility` (no text shape below `layout.min_text_pt`,
+  CorelDRAW's own reported point size post-layout), and `text_overlap`
+  (any two text/shopname *shapes* - not clusters, see below - overlapping
+  at all is a hard fail, zero tolerance). A board with any `fail`-status
+  check (currently `within_page` or `text_overlap`) is reported FAIL in
+  the HTML report regardless of its visual score.
+
+  `text_overlap` is deliberately built from leaf text shapes, not
+  `_bbox_clusters`: two text shapes close enough to actually overlap are,
+  by definition, close enough that `_bbox_clusters`'s proximity margin
+  would already have union-find-merged them into one cluster - checking at
+  cluster granularity would hide exactly the collision this check exists
+  to catch (found this the hard way: the first version of the check never
+  fired on a board known to have a real overlap). Real masters use one
+  literal CorelDRAW text shape per label (shop name, phone/GST), not
+  fragmented curves the way logos are, so no clustering step is needed
+  for text at all.
 
 Every threshold lives in **`backend/tools/metrics_config.json`** (single
 file, per the project's rules of engagement: calibrate by eye, never tune a
 number just to raise a pass rate). `backend/tools/build_metrics_report.py
 <brand>` renders an HTML side-by-side report
 (`dataset_analysis/metrics_report/<brand>/index.html`) - ours vs. real PNG
-plus every metric and a PASS/FAIL badge (visual `combined` score vs.
-`visual.pass_threshold`) - for every non-trivial board in that brand's
-`validate_all.py` report. `cache_ours_dumps.py` / `cache_real_renders.py`
-are small batch helpers (routed through the same `corel_supervisor`
-worker-subprocess hang protection as everything else that touches
-CorelDRAW - see "Process isolation" above) that backfill the shape dumps
-and real-file PNGs a report needs when `validate_all.py`'s own
+plus every metric and a PASS/FAIL badge (visual `combined` score AND every
+layout check, not visual alone - see above) - for every non-trivial board
+in that brand's `validate_all.py` report. `cache_ours_dumps.py` /
+`cache_real_renders.py` are small batch helpers (routed through the same
+`corel_supervisor` worker-subprocess hang protection as everything else
+that touches CorelDRAW - see "Process isolation" above) that backfill the
+shape dumps and real-file PNGs a report needs when `validate_all.py`'s own
 `worker_results.json` (which only holds the *last* run's jobs, not the
 accumulated history across several `--resume` cycles) no longer has them.
+**Caution found the hard way**: running `validate_all.py --only <substr>`
+without `--resume` rebuilds `validation_report.json` from scratch for just
+that filtered subset, silently discarding every other board's entry - it
+happened once while regenerating two boards to verify the text-fit fix
+(below), caught immediately because the report shrank from 13 boards to 1,
+and fixed by reconstructing the other 12 boards' entries offline from
+their already-cached shape dumps (no COM needed, since nothing about their
+actual generated output had changed). If this happens again, `--only`
+should only be used together with `--resume`, or on a full un-filtered
+run.
 
 **Dalmia calibration data (12 boards, excludes the master-as-its-own
 -target sanity check)**: the combined visual score cleanly separates the 4
 known-over-tiled boards (0.35-0.41) from the 8 correctly-placed ones
 (0.67-0.98), and the current default threshold (0.75) happens to land
-almost exactly on that boundary - 6/12 pass, matching `validate_all.py`'s
-existing 5%-tolerance geometry pass count, and it correctly fails board 12
-(0.667), the already-known geometry outlier. This is a promising sign the
-metric is measuring something real, not noise, but **the 0.75 default in
-`metrics_config.json` is still an unconfirmed starting guess** - it was
-chosen before this data existed, not fit to it - and per the project's own
-process should only be treated as calibrated after a human looks at the
-HTML report's images and agrees the PASS/FAIL split matches what they'd
-call right or wrong by eye (GATE 1).
+almost exactly on that boundary - **7/12 pass** (both by visual score alone
+and combined with the layout checks - none of the 7 visually-passing
+boards have a hard-fail layout check), close to `validate_all.py`'s
+existing 5%-tolerance geometry pass count (6/12) without being identical
+to it (they're different metrics, not expected to agree exactly), and it
+correctly fails board 12 (0.667), the already-known geometry outlier. This
+is a promising sign the metric is measuring something real, not noise, but
+**the 0.75 default in `metrics_config.json` is still provisional** - kept
+at GATE 1 pending further review, not yet exhaustively confirmed by eye
+board-by-board.
+
+**Sensitivity test** (`backend/tools/sensitivity_test.py`,
+`dataset_analysis/sensitivity/sensitivity_report.md`) - checks the visual
+metric actually reacts to known-wrong output, using one real "ours" PNG as
+a clean baseline against synthetic/real perturbations:
+
+| Case | Combined score | Delta vs. control | PASS? |
+|---|---|---|---|
+| control (identical image) | 1.000 | +0.000 | PASS |
+| 5% horizontal shift | 0.663 | -0.337 | FAIL |
+| 10% horizontal shift | 0.499 | -0.501 | FAIL |
+| wrong shop's board (a different real board, same target size) | 0.990 | -0.010 | PASS |
+| missing graphic (central 40% blacked out) | 0.629 | -0.371 | FAIL |
+
+Shifts and a missing graphic - genuine geometric/content errors - both
+drop the score sharply and correctly flip it to FAIL. **The "wrong shop's
+board" case barely moves the score at all (0.990, still PASS)** - a real,
+important gap: the visual metric is measuring *layout/graphics similarity*,
+which is nearly identical between two boards from the same master, and is
+effectively blind to whether the *shop name is actually correct* - the one
+error a print shop can least afford to ship. This isn't a metric to fix by
+reweighting SSIM/phash/edge (none of them are the right tool for "is this
+text string correct"); it means a **separate, ground-truth-free content
+check belongs in `layout_checks`** - comparing `Placed.text` against the
+shop's own intended `name`/`phone`/`gst` is trivial (that data already
+exists in every job's report, no visual comparison needed) and catches
+this exactly. Not yet implemented - flagged here as a known gap the visual
+score alone will never close, not something Phase 2 should try to solve by
+tuning image-similarity weights.
 
 ## Tests
 
-`backend/tests/test_layout.py` (19 tests: the original 7, tiling, shop-name
-replacement, the footer-text-not-tiled fix, and brand-rule tiling),
+`backend/tests/test_layout.py` (27 tests: the original 7, tiling, shop-name
+replacement, the footer-text-not-tiled fix, brand-rule tiling, and per-shop
+contact-info replacement - `find_contact_ids`/`_contact_replacement`),
 `backend/tests/test_batch_import.py` (8 tests) and `backend/tests/test_metrics.py`
-(14 tests: dhash/edge math, cluster matching, counts, and every layout
-check, all on small synthetic shape lists/images - no CorelDRAW, no real
-dataset files) cover pure logic. `backend/tests/test_corel_supervisor.py`
-(5 tests) covers the worker/supervisor timeout, progress-callback and kill
-logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
-partially completes, or finishes normally on command - no real CorelDRAW
-needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 46 passed as of this writing. There's no
-automated test for `CorelEngine` itself beyond that — it needs a live
-CorelDRAW on Windows, so it's verified by hand against real master files
+(19 tests: dhash/edge math, cluster matching, counts, and every layout
+check including the full-bleed margin exemption and text_overlap, all on
+small synthetic shape lists/images - no CorelDRAW, no real dataset files)
+cover pure logic. `backend/tests/test_corel_supervisor.py` (5 tests) covers
+the worker/supervisor timeout, progress-callback and kill logic using a
+fake worker (`tests/fake_hanging_worker.py`) that hangs, partially
+completes, or finishes normally on command - no real CorelDRAW needed, but
+Windows-only (uses `taskkill`; skipped elsewhere). Run with `pytest` from
+`backend/` — 59 passed as of this writing. There's no automated test for
+`CorelEngine` itself (including the new `_fit_text` shrink/wrap logic)
+beyond that — it needs a live CorelDRAW on Windows, so it's verified by
+hand against real master files
 (`validate_all.py`, and see notes above and `backend/dataset_analysis/`).

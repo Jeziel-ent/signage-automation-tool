@@ -125,7 +125,7 @@ def test_layout_checks_passes_for_well_behaved_layout():
     shapes = [
         _shape("bg", "bg", 0, 0, 1000, 1000),
         _shape("logo", "logo", 100, 100, 200, 200),
-        _shape("shopname", "shopname", 400, 100, 300, 60, kind="text", font_size=24),
+        _shape("shopname", "shopname", 400, 100, 300, 60, kind="text", font_size=60),
     ]
     checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
     assert checks["within_page"]["status"] == "pass"
@@ -160,3 +160,49 @@ def test_layout_checks_flags_tight_margin():
     shapes = [_shape("logo", "logo", 1, 1, 50, 50)]
     checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
     assert checks["min_margin"]["status"] == "warn"
+
+
+def test_layout_checks_ignores_full_bleed_strip_in_margin_check():
+    # a full-width accent line touching the left/right edges is a deliberate
+    # edge-to-edge design element, not a misplaced object (GATE 1 feedback -
+    # every dalmia board flagged a spurious 0.0mm margin from exactly this)
+    shapes = [_shape("rule_line", "logo", 0, 500, 1000, 5)]
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["min_margin"]["status"] == "pass"
+
+
+def test_layout_checks_still_flags_tight_margin_alongside_a_full_bleed_element():
+    shapes = [
+        _shape("rule_line", "logo", 0, 500, 1000, 5),  # full-bleed, exempt
+        _shape("badge", "logo", 1, 1, 50, 50),  # genuinely tight to the corner
+    ]
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["min_margin"]["status"] == "warn"
+
+
+def test_layout_checks_flags_overlapping_text():
+    shapes = [
+        _shape("shopname", "shopname", 100, 100, 200, 50, kind="text"),
+        _shape("phone", "text", 250, 110, 200, 50, kind="text"),  # overlaps the shop name
+    ]
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["text_overlap"]["status"] == "fail"
+
+
+def test_layout_checks_passes_text_overlap_for_non_overlapping_text():
+    shapes = [
+        _shape("shopname", "shopname", 100, 100, 200, 50, kind="text"),
+        _shape("phone", "text", 400, 100, 200, 50, kind="text"),
+    ]
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["text_overlap"]["status"] == "pass"
+
+
+def test_layout_checks_text_overlap_ignores_non_text_clusters():
+    # a logo overlapping another logo is covered by no_cluster_overlap, not text_overlap
+    shapes = [
+        _shape("logo_a", "logo", 100, 100, 200, 200),
+        _shape("logo_b", "logo", 150, 150, 200, 200),
+    ]
+    checks = {c["check"]: c for c in metrics.layout_checks(shapes, 1000, 1000, CONFIG)}
+    assert checks["text_overlap"]["status"] == "pass"

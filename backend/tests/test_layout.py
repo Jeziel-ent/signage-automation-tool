@@ -1,5 +1,5 @@
 import pytest
-from app.layout import Obj, compute_layout, detect_role, find_shopname_ids, is_tamil, to_mm
+from app.layout import Obj, compute_layout, detect_role, find_contact_ids, find_shopname_ids, is_tamil, to_mm
 
 PAGE = (3000, 1000)
 OBJS = [
@@ -198,3 +198,62 @@ def test_load_brand_rule_missing_brand_returns_none():
     from app.layout import load_brand_rule
     assert load_brand_rule(None) is None
     assert load_brand_rule("no_such_brand_xyz") is None
+
+
+# -- per-shop content replacement: phone/GST footer, found by label not by old value --
+CONTACT_OBJS = [
+    Obj("bg", "bg", "shape", 0, 0, 1000, 400),
+    Obj("name", "Shop name", "text", 400, 350, 200, 30, text="OLD SHOP"),
+    Obj("contact", "Contact info", "text", 100, 20, 300, 40,
+        text="Phone No. 90000 11111\rGST NO. 33OLDOLD0000O1Z1"),
+]
+
+
+def test_find_contact_ids_matches_by_label_not_value():
+    # unlike find_shopname_ids, no old value needs to be passed in - the
+    # stable "Phone No"/"GST NO" label is what's matched
+    assert find_contact_ids(CONTACT_OBJS) == {"contact"}
+
+
+def test_find_contact_ids_matches_phone_only_line():
+    objs = [Obj("c", "c", "text", 0, 0, 10, 10, text="Phone No. 12345 67890")]
+    assert find_contact_ids(objs) == {"c"}
+
+
+def test_find_contact_ids_ignores_unrelated_text():
+    assert find_contact_ids([Obj("name", "n", "text", 0, 0, 10, 10, text="SRI KAVI STEELS")]) == set()
+
+
+def test_contact_replacement_substitutes_both_values_keeping_labels():
+    r = by_id(compute_layout(
+        CONTACT_OBJS, 1000, 400, 1000, 400,
+        phone="99999 88888", gst="33NEWNEW1111N1Z9", contact_ids={"contact"},
+    ))
+    assert r["contact"].text == "Phone No. 99999 88888\rGST NO. 33NEWNEW1111N1Z9"
+
+
+def test_contact_replacement_phone_only_leaves_gst_line_untouched_if_not_given():
+    r = by_id(compute_layout(
+        CONTACT_OBJS, 1000, 400, 1000, 400, phone="99999 88888", contact_ids={"contact"},
+    ))
+    assert "99999 88888" in r["contact"].text
+    assert "33OLDOLD0000O1Z1" in r["contact"].text  # untouched, gst=None means "don't change this line"
+
+
+def test_contact_replacement_appends_gst_line_when_master_had_none():
+    objs = [Obj("contact", "c", "text", 0, 0, 300, 40, text="Phone No. 90000 11111")]
+    r = by_id(compute_layout(objs, 1000, 400, 1000, 400, phone="1", gst="33ABC", contact_ids={"contact"}))
+    assert r["contact"].text == "Phone No. 1\rGST NO. 33ABC"
+
+
+def test_contact_replacement_appends_address_lines():
+    r = by_id(compute_layout(
+        CONTACT_OBJS, 1000, 400, 1000, 400,
+        phone="1", gst="2", address_lines=["12 Main St", "Chennai"], contact_ids={"contact"},
+    ))
+    assert r["contact"].text == "Phone No. 1\rGST NO. 2\r12 Main St\rChennai"
+
+
+def test_contact_replacement_none_when_no_fields_given():
+    r = by_id(compute_layout(CONTACT_OBJS, 1000, 400, 1000, 400, contact_ids={"contact"}))
+    assert r["contact"].text is None  # nothing to replace -> shape's own text left as-is by the caller

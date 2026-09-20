@@ -109,6 +109,10 @@ async def create_job(
             assert s["name"].strip()
             assert float(s["width"]) > 0 and float(s["height"]) > 0
             assert s["unit"] in ("mm", "cm", "in", "ft", "m")
+            # optional per-shop content fields (see CLAUDE.md "Per-shop content
+            # replacement"): shop_name_local (Tamil display name), phone, gst,
+            # address_lines (list[str]) - all freeform, engine treats missing/empty
+            # as "don't touch that line"
     except Exception:
         raise HTTPException(400, "Invalid shops: each needs name, width>0, height>0, unit")
 

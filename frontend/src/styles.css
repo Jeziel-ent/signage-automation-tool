@@ -19,9 +19,12 @@ button:disabled { opacity:.5; cursor:not-allowed; }
 .small { padding:4px 10px; font-size:13px; }
 .drop { display:block; border:2px dashed var(--line); border-radius:10px; padding:22px; text-align:center; color:var(--muted); cursor:pointer; }
 .drop input { display:none; }
-.shops { display:grid; gap:8px; margin-bottom:10px; }
+.shops { display:grid; gap:10px; margin-bottom:10px; }
+.shop-block { display:grid; gap:6px; padding-bottom:8px; border-bottom:1px solid var(--line); }
 .shop { display:grid; grid-template-columns: 1fr 100px 100px 80px 40px; gap:8px; }
 .shop.head { color:var(--muted); font-size:13px; }
+.shop-contact { display:grid; grid-template-columns: repeat(4, 1fr); gap:8px; }
+.shop-contact input { font-size:13px; }
 .actions { display:flex; gap:12px; align-items:center; margin-bottom:16px; }
 .err { color:var(--bad); } .note { color:var(--muted); font-size:13px; }
 .result { border-top:1px solid var(--line); padding:12px 0; }
@@ -38,4 +41,5 @@ summary { cursor:pointer; color:var(--muted); }
 @media (max-width: 720px) {
   .grid { grid-template-columns: 1fr; }
   .shop { grid-template-columns: 1fr 1fr; } .shop.head { display:none; }
+  .shop-contact { grid-template-columns: 1fr 1fr; }
 }

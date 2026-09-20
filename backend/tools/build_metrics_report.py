@@ -119,13 +119,25 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
         return html.escape(str(s)) if s is not None else "-"
 
     vc = config["visual"]
-    n_pass = sum(1 for c in cards if c.get("visual", {}).get("pass"))
+
+    def _passes(c):
+        if any(chk["status"] == "fail" for chk in c.get("layout_checks", [])):
+            return False
+        return bool(c.get("visual", {}).get("pass"))
+
+    n_pass = sum(1 for c in cards if "visual" in c and _passes(c))
     n_scored = sum(1 for c in cards if "visual" in c)
 
     card_html = []
     for c in cards:
         visual = c.get("visual")
-        badge = "pass" if visual and visual["pass"] else ("fail" if visual else "unscored")
+        hard_fail = any(chk["status"] == "fail" for chk in c.get("layout_checks", []))
+        if hard_fail:
+            badge = "fail"
+        elif visual:
+            badge = "pass" if visual["pass"] else "fail"
+        else:
+            badge = "unscored"
         header = (
             f'<p class="meta">{esc(c["shop"])} &middot; target {esc(c["target"])} &middot; '
             f'tile {esc(c["tile"])} &middot; geometry max diff {c["geometry_max_diff_pct"]:.1f}% &middot; '

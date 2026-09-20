@@ -19,6 +19,9 @@
     "page_tolerance_mm": 0.5,
     "min_margin_mm": 5.0,
     "max_overlap_ratio": 0.3,
-    "min_text_pt": 6.0
+    "min_text_pt": 40.0,
+    "min_text_pt_note": "Real data, not a guess: every text font size across all 13 cached dalmia real files ranges 80.7-300pt (large-format signage read from a distance, not desktop print). 40pt is a floor comfortably below the smallest real value - keep in sync with app/layout.py's MIN_TEXT_PT, which the text-fit shrink loop also uses.",
+    "full_bleed_area_ratio": 0.5,
+    "full_bleed_note": "A cluster is exempted from the min_margin check (only that check - it still counts for within_page/overlap) if its bbox spans (within page_tolerance_mm of) the full page width or height, or its area is >= this fraction of the page - both signal a deliberate edge-to-edge design element (e.g. a full-width accent rule line, or the true background), not a misplaced object. Found via GATE 1 feedback: every dalmia board flagged a spurious 0.0mm margin from exactly this kind of full-width strip."
   }
 }
