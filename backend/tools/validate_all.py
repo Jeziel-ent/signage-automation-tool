@@ -32,6 +32,7 @@ sys.path.insert(0, str(ROOT))
 
 from app import corel_supervisor  # noqa: E402
 from app.batch_import import parse_shop_lines  # noqa: E402
+from app.content_check import check_content, extract_contact_values  # noqa: E402
 from app.layout import Obj, detect_role, find_shopname_ids, _tile_plan  # noqa: E402
 
 DATASET = ROOT.parent / "signage_dataset"
@@ -160,7 +161,7 @@ def _diff_pct(a: dict, b: dict, page_w: float, page_h: float) -> dict:
     }
 
 
-def _build_board(f: Path, shop_spec, safe: str, out_dir: Path, entry: dict) -> dict:
+def _build_board(f: Path, shop_spec, safe: str, out_dir: Path, entry: dict, requested: dict) -> dict:
     if entry.get("status") != "done":
         return {"file": f.name, "shop_name": shop_spec.name, "error": entry.get("error", "unknown worker error")}
 
@@ -187,8 +188,18 @@ def _build_board(f: Path, shop_spec, safe: str, out_dir: Path, entry: dict) -> d
 
     outlier_note = next((note for key, note in KNOWN_OUTLIERS.items() if key in f.stem), None)
 
+    # Step 1 content check: does the generated file actually say what we asked it to?
+    # `requested` is exactly the shop dict's name/phone/gst - not the real file's own
+    # display (see content_check.py's docstring for why those are different things).
+    content = check_content(
+        _flatten_leaves(entry["ours_dump"]),
+        expected_name=requested.get("name"), expected_phone=requested.get("phone"), expected_gst=requested.get("gst"),
+    )
+
     return {
         "file": f.name, "shop_name": shop_spec.name,
+        "requested_contact": {"phone": requested.get("phone"), "gst": requested.get("gst")},
+        "content_check": content,
         "target_mm": {"w": page_w, "h": page_h},
         "seconds": entry.get("seconds"),
         "real_dump_cached": entry.get("real_dump_cached", False),
@@ -255,7 +266,7 @@ def validate_brand(brand: str, limit: int | None = None, only: str | None = None
             boards = [b for b in boards if b["file"] not in regenerating]
 
     jobs = []
-    job_meta = []  # (file, shop_spec, safe, out_dir), same order as jobs
+    job_meta = []  # (file, shop_spec, safe, out_dir, requested), same order as jobs
     for f in files:
         if "copy" in f.stem.lower():
             print(f"SKIP (Copy): {f.name}")
@@ -267,17 +278,41 @@ def validate_brand(brand: str, limit: int | None = None, only: str | None = None
         shop_spec = parsed.shops[0]
         safe = _safe(f.stem)
         out_dir = out_root / "generated" / safe
+        cache_path = REAL_DUMPS_CACHE_ROOT / brand / f"{safe}.json"
+
+        # Step 1 content check needs a *requested* phone/GST to hand to CorelEngine -
+        # there's no other source of truth for a real shop's phone/GST (filenames never
+        # encode them), so the designer's own real file is it. Only available up front
+        # when that file's dump is already cached from an earlier run - all 13 dalmia
+        # files are, as of this writing. If not cached yet, phone/gst are simply not
+        # requested for this run (content_check.py then correctly reports NOT_CHECKED
+        # for those fields, never a guessed value that could produce a false FAIL).
+        contact = {"phone": None, "gst": None}
+        if cache_path.exists():
+            try:
+                cached_real = json.loads(cache_path.read_text(encoding="utf-8"))
+                contact = extract_contact_values(_flatten_leaves(cached_real))
+            except Exception as e:
+                print(f"  (could not read cached real dump for {f.name} to get phone/GST: {e})")
+        else:
+            print(f"  (real file not dumped yet - phone/GST not requested for {f.name}, will be NOT_CHECKED)")
+
         shop = {
             "name": shop_spec.name, "width": shop_spec.width, "height": shop_spec.height,
             "unit": shop_spec.unit, "master_shop_name": cfg["shop_name"],
             "master_shop_name_local": cfg["shop_name_local"], "brand": brand,
         }
-        cache_path = REAL_DUMPS_CACHE_ROOT / brand / f"{safe}.json"
+        if contact["phone"]:
+            shop["phone"] = contact["phone"]
+        if contact["gst"]:
+            shop["gst"] = contact["gst"]
+        requested = {"name": shop_spec.name, "phone": contact["phone"], "gst": contact["gst"]}
+
         jobs.append({
             "master_path": str(master_path), "shop": shop, "out_dir": str(out_dir),
             "real_file": str(f), "real_dump_cache": str(cache_path),
         })
-        job_meta.append((f, shop_spec, safe, out_dir))
+        job_meta.append((f, shop_spec, safe, out_dir, requested))
 
     def _write_report():
         report = {"brand": brand, "tolerance_pct": TOLERANCE_PCT, "boards": boards}
@@ -287,8 +322,8 @@ def validate_brand(brand: str, limit: int | None = None, only: str | None = None
 
     if jobs:
         def _on_progress(idx, entry):
-            f, shop_spec, safe, out_dir = job_meta[idx]
-            board = _build_board(f, shop_spec, safe, out_dir, entry)
+            f, shop_spec, safe, out_dir, requested = job_meta[idx]
+            board = _build_board(f, shop_spec, safe, out_dir, entry, requested)
             boards.append(board)
             if "error" in board:
                 print(f"[{idx + 1}/{len(jobs)}] {f.name}: ERROR - {board['error']}")
@@ -312,34 +347,58 @@ def validate_brand(brand: str, limit: int | None = None, only: str | None = None
     return _write_report()
 
 
+def _content_summary(content: dict | None) -> str:
+    if not content:
+        return "-"
+    if content["overall"] == "CONTENT_OK":
+        return "OK"
+    if content["overall"] == "NOT_CHECKED":
+        return "NOT_CHECKED"
+    bad = [f for f in ("shop_name", "phone", "gst") if content[f]["status"] == "CONTENT_FAIL"]
+    return f"FAIL ({','.join(bad)})"
+
+
 def _render_md(report: dict) -> str:
     lines = [
         f"# Validation report: {report['brand']}",
         "",
         f"Strict tolerance: {TOLERANCE_PCT}% of target page width/height. Loose: {TOLERANCE_LOOSE_PCT}%. "
-        "SSIM is a greyscale image-similarity score (1.0 = identical), independent of the object-diff metrics.",
+        "SSIM is a greyscale image-similarity score (1.0 = identical), independent of the object-diff metrics. "
+        "Content: does the generated file's text actually say what was requested (shop name / phone / GST) - "
+        "see app/content_check.py; NOT_CHECKED means that field was never requested (e.g. the real shop has no "
+        "GST line), never a vacuous pass.",
         "",
-        "| File | Shop | Target (mm) | Tile ours | Objects ours/real | Matched | Max diff % | Shopname diff % | SSIM | 2% | 5% |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "| File | Shop | Target (mm) | Tile ours | Objects ours/real | Matched | Max diff % | Shopname diff % | SSIM | 2% | 5% | Content |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     n_pass_2, n_pass_5, n_total = 0, 0, 0
+    n_content_ok, n_content_fail, n_content_not_checked = 0, 0, 0
     outlier_rows = []
     for b in report["boards"]:
         if "error" in b:
-            lines.append(f"| {b['file']} | {b['shop_name']} | - | - | - | - | - | - | - | - | - | ERROR: {b['error']} |")
+            lines.append(f"| {b['file']} | {b['shop_name']} | - | - | - | - | - | - | - | - | - | - | ERROR: {b['error']} |")
             continue
         t = b["target_mm"]
         c = b["counts"]
         maxd = b["diff_pct"]["max"]
         sd = b.get("shopname_diff_pct_max")
         ssim = b.get("ssim")
+        content = b.get("content_check")
         row = (
             f"| {b['file']} | {b['shop_name']} | {t['w']:.0f}x{t['h']:.0f} | "
             f"{b['our_tile']['axis']},{b['our_tile']['n']} | {c['ours']}/{c['real']} | {c['matched']} | "
             f"{'-' if maxd is None else f'{maxd:.1f}'} | {'-' if sd is None else f'{sd:.1f}'} | "
             f"{'-' if ssim is None else f'{ssim:.3f}'} | "
-            f"{'PASS' if b.get('pass_2pct') else 'FAIL'} | {'PASS' if b.get('pass_5pct') else 'FAIL'} |"
+            f"{'PASS' if b.get('pass_2pct') else 'FAIL'} | {'PASS' if b.get('pass_5pct') else 'FAIL'} | "
+            f"{_content_summary(content)} |"
         )
+        if content:
+            if content["overall"] == "CONTENT_OK":
+                n_content_ok += 1
+            elif content["overall"] == "CONTENT_FAIL":
+                n_content_fail += 1
+            else:
+                n_content_not_checked += 1
         if b.get("excluded_outlier"):
             lines.append(row + f" *(excluded from pass rate - {b['outlier_note']})*")
             outlier_rows.append(b["file"])
@@ -351,7 +410,9 @@ def _render_md(report: dict) -> str:
 
     summary = (
         f"\n**{n_pass_2}/{n_total} boards pass at {TOLERANCE_PCT}% tolerance; "
-        f"{n_pass_5}/{n_total} pass at {TOLERANCE_LOOSE_PCT}%.**"
+        f"{n_pass_5}/{n_total} pass at {TOLERANCE_LOOSE_PCT}%.** "
+        f"Content check: {n_content_ok} CONTENT_OK, {n_content_fail} CONTENT_FAIL, "
+        f"{n_content_not_checked} NOT_CHECKED (all boards, not just the pass-rate ones)."
     )
     if outlier_rows:
         summary += f" ({len(outlier_rows)} board(s) excluded as known outliers: {', '.join(outlier_rows)})"

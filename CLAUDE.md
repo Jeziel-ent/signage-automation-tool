@@ -1587,6 +1587,87 @@ it doesn't read as an arbitrary rule.
   full `validate_all.py agarpathi` batch without confirming timing/memory
   behavior on one file first, and only when explicitly asked to.
 
+## Content check, geometric accuracy in mm, and threshold calibration (Steps 1-3)
+
+Follow-up engine work (no UI touched) closing three gaps flagged earlier:
+the visual score can't tell a right board from a wrong one, `validate_all.py`'s
+diffs are only ever reported as % of page (not comparable in absolute terms
+across board sizes), and `metrics_config.json`'s pass threshold was an
+uncalibrated guess. Dalmia only - Agarpathi untouched, per instruction.
+
+### Step 1: content check (`backend/app/content_check.py`)
+
+Reads the generated file's text shapes back (from the same COM dump
+`corel_worker.py` already produces - `entry["ours_dump"]`, see "Process
+isolation") and compares them against whatever was **actually requested**,
+returning `CONTENT_OK` / `CONTENT_FAIL` / `NOT_CHECKED` per field
+(`shop_name`, `phone`, `gst`) and overall - `NOT_CHECKED` when nothing was
+requested for that field, never a vacuous pass. Pure Python, no COM of its
+own; 12 unit tests including the exact regression that motivated it -
+`sensitivity_test.py`'s "wrong shop's board" scored 0.990 on the visual
+metric (PASS); the same content now correctly comes back `CONTENT_FAIL`.
+
+**What "expected" means, precisely** (this was a real design decision, not
+obvious): `shop_name`'s expected value is whatever was passed as
+`shop["name"]` at generation time - this checks that CorelEngine faithfully
+wrote what it was told to write, NOT that our (English-only) name matches
+the designer's own, possibly differently-scripted rendering of that shop's
+name (dalmia's real shopname text is often a Tamil transliteration, e.g.
+"NR திரேடர்ஸ்" for "NR Traders" - a separate, already-documented gap: no
+`shop_name_local` is requested by `validate_all.py`). Comparing against the
+designer's own text would make content check fail on almost every real
+board for a reason that has nothing to do with correctness. `phone`/`gst`
+have no such alternative - a real shop's phone/GST value only exists in the
+designer's own file (filenames never encode it), so `validate_all.py` now
+extracts those from each real file's cached dump
+(`content_check.extract_contact_values`, reusing `layout.find_contact_ids`'s
+label match) and requests exactly those values when regenerating, so the
+check is meaningful rather than comparing against a guess.
+
+Locating the shopname shape in the generated file is an **exact-match
+existence check** (whitespace/case normalized, so a `CorelEngine._fit_text`
+manual `\r` wrap still counts as a match), not a "which shape is the
+shopname" lookup - there is no content-independent way to identify that
+shape once its content has already been replaced (`layout.find_shopname_ids`
+matches the untouched MASTER's *old* text, which is gone after replacement).
+On a genuine mismatch `found` comes back `None`: the check confirms whether
+the requested text exists anywhere, it does not guess which different shape
+was "supposed to be" the shopname.
+
+**Live result, all 13 dalmia boards (including the master-as-its-own-target
+board): 13/13 `CONTENT_OK`.** Verified against real CorelDRAW, not just
+synthetic tests - every regenerated board's shop name, and phone/GST where
+the real file has one, read back exactly as requested (e.g. M Pandi's real
+file has no GST line at all - regenerating it correctly leaves `gst`
+`NOT_CHECKED` rather than failing or guessing). This is a narrower claim
+than "the boards look right" - see "Validation: all 13 dalmia files" above
+for the (unrelated, still-open) geometric/tiling gap; content correctness
+and layout correctness are independent axes, which is the whole point of
+splitting this into its own check.
+
+Regenerating all 13 boards to get this live result surfaced a **process
+-isolation limitation worth recording honestly**: under this machine's
+memory pressure this session (free RAM oscillating 1.9-2.5GB for long
+stretches), `corel_supervisor`'s pooled/recycled-instance path failed on
+almost every job after the first *within the same worker-process batch* -
+not just the "occasional transient COM error" the existing docs describe,
+but a near-100% failure rate for jobs 2+ in one batch invocation across
+three separate attempts. Splitting the remaining boards into **one
+`validate_all.py --only <file> --resume` invocation per board** (a fresh
+worker subprocess launched per board, never reusing a pooled instance)
+reliably succeeded where the batched runs did not - every single board
+succeeded as "job 1" of its own process. This is a workaround, not a fix to
+`corel_util.py`'s pooling code (out of scope here); if batch validation runs
+start failing this badly again, falling back to one-file-per-invocation is
+the practical mitigation alongside the already-documented "restart the
+machine."
+
+`validate_all.py`'s markdown table gained a Content column
+(`OK`/`FAIL (field,...)`/`NOT_CHECKED`); the HTML report
+(`build_metrics_report.py`) gained a per-board expected/found breakdown, and
+a `CONTENT_FAIL` now flips that board's overall PASS/FAIL badge regardless
+of its visual score - the whole reason this exists.
+
 ## Metrics suite (Phase 1: `backend/tools/metrics.py`)
 
 A second, independent scoring layer on top of `validate_all.py`'s
@@ -1707,13 +1788,11 @@ which is nearly identical between two boards from the same master, and is
 effectively blind to whether the *shop name is actually correct* - the one
 error a print shop can least afford to ship. This isn't a metric to fix by
 reweighting SSIM/phash/edge (none of them are the right tool for "is this
-text string correct"); it means a **separate, ground-truth-free content
-check belongs in `layout_checks`** - comparing `Placed.text` against the
-shop's own intended `name`/`phone`/`gst` is trivial (that data already
-exists in every job's report, no visual comparison needed) and catches
-this exactly. Not yet implemented - flagged here as a known gap the visual
-score alone will never close, not something Phase 2 should try to solve by
-tuning image-similarity weights.
+text string correct"); it needs a **separate, ground-truth-free content
+check** - comparing the generated text against the shop's own intended
+`name`/`phone`/`gst`. **Implemented - see "Content check, geometric
+accuracy in mm, and threshold calibration" below**, which reproduces this
+exact scenario as a unit test and confirms it now correctly fails.
 
 ## Tests
 
