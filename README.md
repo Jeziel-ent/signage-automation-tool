@@ -44,3 +44,4 @@ Warnings are flagged in the report (clamped, tiny scale, big aspect change).
 ## Next ideas
 
 Multi-page masters, per-brand rule presets, Excel/CSV import of shops, auth, job history in a DB.
+"# signage-automation-tool" 
