@@ -31,12 +31,12 @@ before the next starts:
   and a shops table where each row converts independently with live
   step-by-step progress, reusing the existing `CorelEngine`/
   `corel_supervisor`/single-worker queue unchanged.
-- **Phase B (not started)**: "Recently generated" page (currently a
-  placeholder stub) - list of past jobs/shops with download links.
-- **Phase C (not started)**: the canvas editor at `/editor/:jobId/:shopId`
-  (currently a placeholder stub, opened in a new browser tab from a
-  finished shop's row) - select/move/resize objects, layers panel,
-  undo/redo, backed by a COM-exported scene.
+- **Phase B (done)**: "Recently generated" page - list of past
+  jobs/shops with filters, download links and "Open in editor".
+- **Phase C (done)**: the canvas editor at `/editor/:jobId/:shopId`
+  (opened in a new browser tab) - a CorelDRAW-rendered scene, select/move/
+  resize, layers tree, undo/redo, every edit stored as a replayable
+  operation list. See "Phase C: editor v1" below.
 - **Phase D (not started)**: "Save and Generate" - replay the editor's
   recorded operations through COM and export the chosen output formats.
 
@@ -166,10 +166,133 @@ queued/converting. Downloads reuse the path-guarded
 
 Approximate / not real Corel: with MockEngine the thumbnail and "preview"
 download are the mock SVG, not a CorelDRAW render (with CorelEngine they are
-the real PNG). The editor tab is still the Phase C placeholder. The Phase B
+the real PNG). The Phase B
 screenshots were taken against a seeded mock-engine database (done / new /
 failed rows across two brands), not real conversions - real conversions
 already exercise the same rows via Phase A.
+
+### Phase C: editor v1 (`frontend/src/editor/`, `backend/app/scene_*.py`)
+
+**Scene export (real CorelDRAW).** `GET /api/editor/{job}/{shop}/scene`
+returns the converted board as a scene: page size, a layer tree (layers ->
+groups / PowerClips -> shapes) and per shape x/y/w/h (mm, origin
+bottom-left, bbox), rotation, type, name, visibility, lock, text
+(content/font/size). The first request builds it and answers **202 with
+live progress** until done (the editor polls); the finished scene is
+cached under `<out_dir>/scene/`. The build runs the `scene_export` job kind
+in the corel_worker subprocess via `corel_supervisor.run_batch` (single
+CorelDRAW job at a time on the shared `_pool`; inherits the 1.5 GB free-RAM
+refusal floor - which the endpoint reports as **503 with the reason**,
+retryable with `?retry=1` -, the hang watchdog and orphan cleanup).
+
+Every leaf shape is exported by CorelDRAW itself, one at a time,
+selection-only with a transparent background (`Document.ExportBitmap`
+with `cdrSelection`, or `Document.Export` to `cdrSVG`): **curves/rectangles/
+ellipses as SVG** (crisp at any zoom), **text, bitmaps and PowerClips as
+PNG**. Text is never SVG because Corel's SVG text uses `<font>` elements,
+which browsers do not render (an SVG that contains one falls back to PNG
+too). PNG size is ~100 dpi clamped to 96-2048 px on the long side. Groups
+have no image - the canvas draws their children; a PowerClip is one image of
+the clipped result. A full-page reference render (`page.png`) is exported
+too. Verified live: **CorelDRAW's `Shapes.Item(1)` is the TOPMOST shape**
+(`OrderToFront` moved a shape to index 1), so every child list is reversed
+to bottom -> top; the `Guides` layer is `IsSpecialLayer` and skipped; a
+selection export's pixel size maps exactly onto `SizeWidth/SizeHeight`.
+
+Measured on real generated dalmia boards: **120x48in = 138 shapes, 10 s of
+export (about 40 s end to end including CorelDRAW launch/open/quit), 419 KB
+of images; 216x48in = 200 shapes, 18 s of export (47 s end to end), 608 KB.**
+The editor's composite of those per-shape images vs CorelDRAW's own
+full-page render of the same file: mean absolute pixel difference 2.3 / 255,
+0.002% of pixels differing strongly (only the Tamil footer that already
+renders as tofu boxes in the source - missing font, see limitations).
+
+**Operation list = the contract** (`app/scene_ops.py`, mirrored line for
+line by `frontend/src/editor/ops.js`). The visible scene is always
+`apply_ops(base_scene, ops)`. Ops: `move`, `resize` (a selection box mapped
+onto another; descendants scale with it, text `size_pt` follows height),
+`order` (front/back/forward/backward), `reorder` (parent + index - layer
+drag and drop), `visibility` (object or layer), `group`, `ungroup`, `text`
+(content/font/size; marks the node `stale`), `delete`, `paste` (also how
+duplicate/cut+paste work: the op carries the node snapshots with fresh
+ids and a `src` back-reference), `page` (page size only - objects stay).
+Edits are autosaved (`PUT /api/editor/{job}/{shop}/ops`, table
+`editor_ops`); the PUT replays the list on the pristine scene first and
+answers **422 without saving** if it cannot be replayed.
+`GET /api/editor/.../replayed` returns the server-side replay - this is
+what Phase D will drive through COM. **Drift guard:**
+`backend/tests/fixtures/ops_golden.json` holds hand-computed cases run by
+both `test_scene_ops.py` (Python) and `src/editor/ops.test.mjs` (JS, `npm
+test`); verified live that the browser's scene and the server's replay of
+the saved ops differ by 0.0000 mm across all 138 shapes after a 10-op
+session.
+
+**Canvas: plain SVG, not react-konva.** Every shape is already an image
+Corel rendered, so the canvas only places, hit-tests and transforms
+`<image>` elements: SVG gives resolution-independent zoom of the SVG
+leaves, free DOM for the ~140-330 elements, exact mm units via a single
+scale transform, and no extra dependency; Konva would only add
+rasterisation and a wrapper. Details worth knowing: clicks are hit-tested
+against each image's **alpha channel** (`alphaMaps.js`, a 192 px grid per
+image, preloaded in idle time) so a click on a transparent corner falls
+through to the object underneath, as in CorelDRAW; drags update the
+`<image>` attributes directly (no React re-render) and commit one op on
+release; wheel = zoom about the cursor, middle-mouse drag = pan, shift+wheel
+= sideways; rulers use "nice" 1/2/5 steps in the chosen unit (default `in`),
+run from the page's bottom-left, and carry red double-headed dimension arrows
+with the page W/H above and left of the canvas; corner handles keep
+proportions, side handles do not, Shift on a corner frees it.
+
+**Selection model.** A group or PowerClip is ONE object on click;
+double-click enters a group and selects the child under the cursor (a
+"context" - Esc leaves it and selects the group); Ctrl/Shift+click toggles
+within the same parent; marquee selects fully-enclosed objects; Ctrl+A
+selects the current layer/context. Shortcuts: Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y,
+Ctrl+C/X/V, Ctrl+A, Ctrl+G (group), Ctrl+U (ungroup), Delete, Esc. Layers
+panel: tree in Object Manager order (top of stack first), eye toggle per
+row/layer, per-group ungroup button, Group/Ungroup buttons, click <->
+canvas selection both ways, HTML5 drag and drop (above / below / into a
+group, also inside groups). The properties panel shows X/Y as the
+**centre** of the selection (CorelDRAW's default reference point).
+
+**Bugs found and fixed while building it** (each with a regression test):
+group/PowerClip children were not reversed to bottom -> top like layer
+children (caught by the fake-COM test); deleting both children of a group
+refreshed the already-removed group and raised a KeyError; and, only visible
+on the real engine, the worker's atomic heartbeat write
+(`tmp.replace(path)`) raised `PermissionError` on Windows whenever the web
+API or supervisor happened to be reading the file at that instant - the
+editor's 800 ms progress polling plus one heartbeat per image made it
+fail a real export. `_write_json` now retries for up to ~3 s and
+`export_scene` emits at most ~2 image heartbeats per second.
+
+**Real CorelDRAW vs approximate - be honest about these:**
+- Real: every pixel on the canvas is a CorelDRAW render of that shape at
+  export time; positions/sizes/tree/z-order are read from COM.
+- Approximate: after a **resize** the image is stretched, not re-rendered
+  (fine for logos, not identical to Corel for text or strokes); after a
+  **text change** the canvas keeps showing Corel's original render and
+  marks the object "edited" until Phase D regenerates it; rotated shapes
+  keep their rotation baked into the image and are resized by bounding box.
+- Not implemented: editing **inside** a PowerClip (its contents are listed
+  in the tree but read-only - move/resize applies to the clipped result as
+  one object); locked objects/layers are shown but not editable; layers
+  cannot be reordered; the page-size field changes the page only (it does
+  not re-lay-out the content - that is the layout engine's job, not the
+  editor's); no snapping/guides/arrow-key nudging; the font list is a
+  suggestion list, not a check that the font is installed (Phase D).
+- "Save and Generate" saves the operation list and says so; the export
+  popup (cdr/pdf/png/jpeg) is Phase D.
+- Real dalmia masters are ungrouped curves, so the layers tree of a real
+  board is ~130 "Curve" rows (this is the documented ungrouped-logo
+  limitation); grouping them in the editor works but is a manual step.
+
+**RAM.** Scene export needs one CorelDRAW instance for 20-50 s and
+respects the same free-RAM floor as conversion (1.5 GB, 503 below it).
+Free RAM was 1.8-4.0 GB on this machine during the work; conversions
+took 15 s in Phase A but 75 s once while memory was tight. The browser side
+is light (138 images = 420 KB; largest decoded leaf capped at 2048x2048).
+Do not run a scene build while a validation batch is running.
 
 ### Frontend: `frontend/src/` structure
 
@@ -182,9 +305,11 @@ there's no shell to share); everything else renders inside `Shell`
 (sidebar + `<Routes>` for `Automation`/`RecentlyGenerated`).
 `pages/Automation.jsx` holds all of Phase A's logic; `components/
 UploadDropzone.jsx` is the standalone click-or-drag upload control.
-`pages/RecentlyGenerated.jsx` is Phase B (done); `pages/EditorPage.jsx` is
-an intentional placeholder for Phase C - not unfinished code left by
-accident, it just says what's coming.
+`pages/RecentlyGenerated.jsx` is Phase B; `pages/EditorPage.jsx` (Phase C)
+owns the editor state (ops + undo cursor, selection, autosave, shortcuts,
+toolbar) and composes `src/editor/` - `Canvas.jsx`, `Rulers.jsx`,
+`LayersPanel.jsx`, `PropertiesPanel.jsx`, plus the pure, unit-tested
+`ops.js` / `model.js` / `units.js` / `view.js` and `alphaMaps.js`.
 
 Verified by hand with Playwright (headless Chromium) driving the actual
 dev servers - both engines: a full upload → preview → add-brand →
@@ -1496,7 +1621,11 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 83 passed as of this writing. Note that the
+`pytest` from `backend/` — 153 passed as of this writing (that includes
+the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
+`test_scene_export.py` - fake COM objects, `test_editor_api.py`,
+`test_corel_worker_io.py`); `npm test` from `frontend/` runs 46 more
+(`ops.test.mjs` against the shared golden cases, `model.test.mjs`). Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a

@@ -26,6 +26,14 @@ CREATE TABLE IF NOT EXISTS brands (
     name TEXT UNIQUE NOT NULL
 );
 
+-- Editor edits (Phase C): the replayable operation list per shop, kept apart
+-- from `shops` so status/list queries never drag a large JSON blob along.
+CREATE TABLE IF NOT EXISTS editor_ops (
+    shop_id TEXT PRIMARY KEY,
+    ops_json TEXT NOT NULL,
+    updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS jobs (
     id TEXT PRIMARY KEY,
     brand TEXT NOT NULL,
@@ -218,3 +226,20 @@ def get_step_timing_estimates() -> dict[str, float]:
             sums[step] = sums.get(step, 0.0) + float(seconds)
             counts[step] = counts.get(step, 0) + 1
     return {step: round(sums[step] / counts[step], 2) for step in sums}
+
+
+# ----------------------------------------------------------- editor edits
+
+def get_editor_ops(shop_id: str) -> list[dict]:
+    with _conn() as conn:
+        row = conn.execute("SELECT ops_json FROM editor_ops WHERE shop_id = ?", (shop_id,)).fetchone()
+    return json.loads(row["ops_json"]) if row else []
+
+
+def set_editor_ops(shop_id: str, ops: list[dict]) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO editor_ops (shop_id, ops_json, updated_at) VALUES (?, ?, ?)
+               ON CONFLICT(shop_id) DO UPDATE SET ops_json = excluded.ops_json, updated_at = excluded.updated_at""",
+            (shop_id, json.dumps(ops), time.time()),
+        )

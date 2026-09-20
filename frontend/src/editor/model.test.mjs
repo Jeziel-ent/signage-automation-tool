@@ -1,0 +1,131 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
+import { applyOps, buildIndex } from "./ops.js";
+import { flattenLeaves, resolveTarget, hitTest, buildRows, planDrop, marqueeSelect, cloneWithNewIds, unionBox } from "./model.js";
+import { fmt, toUnit, fromUnit, niceStep, rulerTicks } from "./units.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const BASE = JSON.parse(readFileSync(resolve(here, "../../../backend/tests/fixtures/ops_golden.json"), "utf8")).base;
+
+test("flattenLeaves: draw order, PowerClip is one leaf, hidden things are skipped", () => {
+  assert.deepEqual(flattenLeaves(BASE).map((n) => n.id), ["a", "b", "c", "t", "pc"]);
+  const hiddenChild = applyOps(BASE, [{ op: "visibility", id: "b", visible: false }]);
+  assert.deepEqual(flattenLeaves(hiddenChild).map((n) => n.id), ["a", "c", "t", "pc"]);
+  const hiddenGroup = applyOps(BASE, [{ op: "visibility", id: "g", visible: false }]);
+  assert.deepEqual(flattenLeaves(hiddenGroup).map((n) => n.id), ["a", "t", "pc"]);
+  const hiddenLayer = applyOps(BASE, [{ op: "visibility", id: "L1", visible: false }]);
+  assert.deepEqual(flattenLeaves(hiddenLayer), []);
+});
+
+test("resolveTarget: a click on a group's child selects the group; inside the group it selects the child", () => {
+  const idx = buildIndex(BASE);
+  assert.deepEqual(resolveTarget(idx, "b", null), { targetId: "g", ctx: null });
+  assert.deepEqual(resolveTarget(idx, "b", "g"), { targetId: "b", ctx: "g" });
+  // clicking outside the entered group leaves it and selects the top-level object
+  assert.deepEqual(resolveTarget(idx, "a", "g"), { targetId: "a", ctx: null });
+  assert.deepEqual(resolveTarget(idx, "a", null), { targetId: "a", ctx: null });
+});
+
+test("hitTest: topmost first, locked skipped, transparent pixels fall through", () => {
+  const leaves = flattenLeaves(BASE);
+  const opaque = () => 255;
+  assert.equal(hitTest(leaves, 30, 20, 0, opaque).id, "b");      // b is above a
+  assert.equal(hitTest(leaves, 95, 95, 0, opaque).id, "a");
+  assert.equal(hitTest(leaves, 150, 50, 0, opaque), null);       // off every shape
+  const seeThroughB = (n) => (n.id === "b" ? 0 : 255);
+  assert.equal(hitTest(leaves, 30, 20, 0, seeThroughB).id, "a"); // transparent b -> falls to a
+  assert.equal(hitTest(leaves, 30, 20, 0, () => null).id, "b");  // not loaded yet -> bbox hit
+  const locked = applyOps(BASE, []);
+  locked.layers[0].children[0].locked = true;
+  assert.equal(hitTest(flattenLeaves(locked), 95, 95, 0, opaque), null);
+  // tolerance widens thin shapes
+  assert.equal(hitTest(leaves, 100.5, 95, 1, opaque).id, "a");
+});
+
+test("hitTest maps the point into image space with v growing downward", () => {
+  const leaves = [{ id: "s", x: 0, y: 0, w: 10, h: 10, kind: "shape" }];
+  let seen;
+  hitTest(leaves, 2, 9, 0, (n, u, v) => {
+    seen = [u, v];
+    return 255;
+  });
+  assert.ok(Math.abs(seen[0] - 0.2) < 1e-9 && Math.abs(seen[1] - 0.1) < 1e-9);
+});
+
+test("buildRows lists the stack top-first and respects expansion", () => {
+  const collapsed = buildRows(BASE, new Set());
+  assert.deepEqual(collapsed.map((r) => r.id), ["L1"]);
+  const rows = buildRows(BASE, new Set(["L1", "g"]));
+  assert.deepEqual(rows.map((r) => [r.id, r.depth]), [["L1", 0], ["pc", 1], ["t", 1], ["g", 1], ["c", 2], ["b", 2], ["a", 1]]);
+});
+
+test("planDrop: index semantics match scene_ops.reorder", () => {
+  // drop t above g -> t sits directly above g in the layer
+  let plan = planDrop(BASE, "t", "g", "above");
+  assert.deepEqual(plan, { op: "reorder", id: "t", parent: "L1", index: 2 });
+  let out = applyOps(BASE, [plan]);
+  assert.deepEqual(out.layers[0].children.map((n) => n.id), ["a", "g", "t", "pc"]);
+  // drop pc below a -> pc is at the very bottom
+  plan = planDrop(BASE, "pc", "a", "below");
+  out = applyOps(BASE, [plan]);
+  assert.deepEqual(out.layers[0].children.map((n) => n.id), ["pc", "a", "g", "t"]);
+  // drop a into group g -> top of g's children
+  plan = planDrop(BASE, "a", "g", "into");
+  assert.deepEqual(plan, { op: "reorder", id: "a", parent: "g", index: 2 });
+  out = applyOps(BASE, [plan]);
+  assert.deepEqual(out.layers[0].children.find((n) => n.id === "g").children.map((n) => n.id), ["b", "c", "a"]);
+  // reorder inside a group: drop c below b
+  plan = planDrop(BASE, "c", "b", "below");
+  out = applyOps(BASE, [plan]);
+  assert.deepEqual(out.layers[0].children.find((n) => n.id === "g").children.map((n) => n.id), ["c", "b"]);
+});
+
+test("planDrop refuses illegal drops", () => {
+  assert.equal(planDrop(BASE, "g", "g", "into"), null);
+  assert.equal(planDrop(BASE, "g", "b", "above"), null); // would put g inside itself
+  assert.equal(planDrop(BASE, "a", "pc", "into"), null);  // PowerClip is not a container in v1
+  assert.equal(planDrop(BASE, "a", "L1", "above"), null); // layers are not reorderable
+  const nested = applyOps(BASE, [{ op: "group", ids: ["g", "t"], group_id: "G2" }]);
+  assert.equal(planDrop(nested, "G2", "g", "into"), null); // into its own descendant
+});
+
+test("marqueeSelect picks fully-enclosed objects in the current context", () => {
+  assert.deepEqual(marqueeSelect(BASE, null, { x: 5, y: 5, w: 90, h: 40 }), ["g"]);
+  assert.deepEqual(marqueeSelect(BASE, null, { x: -1, y: -1, w: 300, h: 300 }).sort(), ["a", "g", "pc", "t"]);
+  assert.deepEqual(marqueeSelect(BASE, "g", { x: 0, y: 0, w: 55, h: 100 }), ["b"]);
+});
+
+test("cloneWithNewIds gives every node a fresh id and remembers the source", () => {
+  let n = 0;
+  const c = cloneWithNewIds(BASE.layers[0].children[1], () => `n${++n}`);
+  assert.deepEqual([c.id, c.children.map((k) => k.id)], ["n1", ["n2", "n3"]]);
+  assert.deepEqual([c.src, c.children.map((k) => k.src)], ["g", ["b", "c"]]);
+  const pasted = applyOps(BASE, [{ op: "paste", parent: "L1", nodes: [c] }]);
+  assert.equal(pasted.layers[0].children.at(-1).id, "n1");
+  assert.deepEqual(unionBox([{ x: 0, y: 0, w: 5, h: 5 }, { x: 10, y: -2, w: 5, h: 5 }]), { x: 0, y: -2, w: 15, h: 7 });
+});
+
+test("units: conversions and formatting", () => {
+  assert.equal(toUnit(3048, "in"), 120);
+  assert.equal(toUnit(1219.2, "ft"), 4);
+  assert.ok(Math.abs(fromUnit(4, "ft") - 1219.2) < 1e-9);
+  assert.equal(fmt(3048, "in"), "120");
+  assert.equal(fmt(1219.2, "in"), "48");
+  assert.equal(fmt(3048, "mm"), "3048");
+  assert.equal(fmt(12.5, "mm"), "12.5");
+});
+
+test("rulerTicks: labelled majors at nice steps, minors only when there is room", () => {
+  const t = rulerTicks(0, 3048, 0.3, "in"); // 0.3 px/mm ~ 7.6 px/in -> big steps
+  const majors = t.filter((k) => k.major);
+  assert.ok(majors.length >= 2 && majors.every((k) => k.label !== null));
+  const stepPx = (majors[1].mm - majors[0].mm) * 0.3;
+  assert.ok(stepPx >= 64, `major spacing ${stepPx}px`);
+  assert.equal(niceStep(10, 64), 10); // 64px / 10 px-per-unit = 6.4 -> next nice value is 10
+  const fine = rulerTicks(0, 100, 20, "mm");
+  assert.ok(fine.some((k) => !k.major), "minor ticks appear once zoomed in");
+  assert.ok(rulerTicks(0, 3048, 0.05, "mm").length < 100, "zoomed-out rulers stay sparse");
+});

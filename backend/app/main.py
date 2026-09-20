@@ -12,9 +12,10 @@ from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
-from . import corel_supervisor, db
+from . import corel_supervisor, db, scene_export, scene_ops
 from .batch_import import parse_shop_lines
 from .engines import get_engine
 from .layout import to_mm
@@ -424,3 +425,172 @@ def v2_shop_file(shop_id: str, filename: str):
     if out_dir not in p.parents or not p.is_file():
         raise HTTPException(404)
     return FileResponse(p)
+
+
+# ------------------------------------------------------ editor (Phase C)
+#
+# GET /api/editor/{job}/{shop}/scene returns the converted board as an editor
+# scene (scene_ops.py describes the model). The first request builds it: the
+# .cdr is opened read-only in the worker subprocess and every leaf shape is
+# rendered by CorelDRAW itself (scene_export.py) - that takes seconds to tens
+# of seconds, so until it finishes the endpoint answers 202 with progress and
+# the editor polls. The build is queued on the same single-worker pool as
+# conversions (one CorelDRAW job at a time) and goes through
+# corel_supervisor.run_batch, so it inherits the free-RAM refusal floor, the
+# hang watchdog and orphan cleanup. The finished scene is cached on disk.
+
+_scene_builds: dict[str, dict] = {}  # shop_id -> {"status": "building"|"error", ...}
+_scene_lock = threading.Lock()
+
+
+def _editor_shop(job_id: str, shop_id: str) -> dict:
+    row = db.get_shop(shop_id)
+    if not row or row["job_id"] != job_id:
+        raise HTTPException(404, "shop not found")
+    if row["status"] != "done":
+        raise HTTPException(409, f"shop is not converted yet (status: {row['status']})")
+    return row
+
+
+def _scene_dir(job_id: str, shop_id: str) -> Path:
+    return JOBS_V2 / job_id / "out" / shop_id / "scene"
+
+
+def _scene_build_worker(job_id: str, shop_id: str) -> None:
+    row = db.get_shop(shop_id)
+    files = json.loads(row["files_json"]) if row["files_json"] else {}
+    out_dir = JOBS_V2 / job_id / "out" / shop_id
+    scene_dir = _scene_dir(job_id, shop_id)
+    engine = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto"))
+    results_path = CONVERT_RUNS / f"scene_{shop_id}.json"
+    try:
+        scene_dir.mkdir(parents=True, exist_ok=True)
+        (scene_dir / "scene.json").unlink(missing_ok=True)
+        if engine.name == "corel":
+            cdr = out_dir / files["cdr"]
+            if not cdr.is_file():
+                raise FileNotFoundError(f"converted file is missing: {files['cdr']}")
+            results = corel_supervisor.run_batch(
+                [{"scene_export": str(cdr), "scene_out": str(scene_dir)}], results_path,
+            )
+            if results[0].get("status") != "done":
+                raise RuntimeError(results[0].get("error", "scene export failed"))
+        else:
+            scene_export.mock_scene(
+                scene_dir, to_mm(row["width"], row["width_unit"]), to_mm(row["height"], row["height_unit"]),
+            )
+        with _scene_lock:
+            _scene_builds.pop(shop_id, None)
+    except corel_supervisor.RefusedToStart as e:
+        with _scene_lock:
+            _scene_builds[shop_id] = {"status": "error", "error": str(e), "low_memory": True}
+    except Exception as e:
+        with _scene_lock:
+            _scene_builds[shop_id] = {"status": "error", "error": str(e), "low_memory": False}
+    finally:
+        for p in (results_path, results_path.with_suffix(".heartbeat"), results_path.with_suffix(".done"),
+                  results_path.with_suffix(".jobs.json"), results_path.with_suffix(".json.tmp"),
+                  results_path.with_suffix(".heartbeat.tmp")):
+            p.unlink(missing_ok=True)
+
+
+def _scene_progress(shop_id: str) -> dict:
+    step, pct = "starting", 3
+    hb = CONVERT_RUNS / f"scene_{shop_id}.heartbeat"
+    if hb.exists():
+        try:
+            step = json.loads(hb.read_text(encoding="utf-8")).get("step", step)
+        except Exception:
+            pass
+    if step.startswith("images "):
+        try:
+            done, total = (int(v) for v in step.split()[1].split("/"))
+            pct = 10 + int(85 * done / max(total, 1))
+        except ValueError:
+            pass
+    elif step == "walk":
+        pct = 8
+    elif step == "page_image":
+        pct = 96
+    return {"status": "building", "step": step, "progress_pct": pct}
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/scene")
+def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool = False):
+    _editor_shop(job_id, shop_id)
+    scene_path = _scene_dir(job_id, shop_id) / "scene.json"
+    with _scene_lock:
+        state = _scene_builds.get(shop_id)
+        if state is not None and state["status"] == "building":
+            return JSONResponse(_scene_progress(shop_id), status_code=202)
+        if state is not None and state["status"] == "error" and not (retry or rebuild):
+            raise HTTPException(503 if state.get("low_memory") else 500, state["error"])
+        if scene_path.is_file() and not rebuild:
+            scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            scene["ops"] = db.get_editor_ops(shop_id)
+            scene["asset_base"] = f"/api/editor/{job_id}/{shop_id}/asset/"
+            return scene
+        _scene_builds[shop_id] = {"status": "building"}
+    _pool.submit(_scene_build_worker, job_id, shop_id)
+    return JSONResponse({"status": "building", "step": "queued", "progress_pct": 1}, status_code=202)
+
+
+_ASSET_TYPES = {".svg": "image/svg+xml", ".png": "image/png"}
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/asset/{filename}")
+def editor_asset(job_id: str, shop_id: str, filename: str):
+    _editor_shop(job_id, shop_id)
+    scene_dir = _scene_dir(job_id, shop_id).resolve()
+    p = (scene_dir / "page.png") if filename == "page.png" else (scene_dir / "img" / filename)
+    p = p.resolve()
+    if scene_dir not in p.parents or not p.is_file() or p.suffix not in _ASSET_TYPES:
+        raise HTTPException(404)
+    return FileResponse(p, media_type=_ASSET_TYPES[p.suffix], headers={"Cache-Control": "private, max-age=300"})
+
+
+class EditorOps(BaseModel):
+    ops: list[dict]
+
+
+MAX_EDITOR_OPS = 5000
+
+
+def _load_scene(job_id: str, shop_id: str) -> dict | None:
+    p = _scene_dir(job_id, shop_id) / "scene.json"
+    return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/ops")
+def editor_get_ops(job_id: str, shop_id: str):
+    _editor_shop(job_id, shop_id)
+    return {"ops": db.get_editor_ops(shop_id)}
+
+
+@app.put("/api/editor/{job_id}/{shop_id}/ops")
+def editor_put_ops(job_id: str, shop_id: str, body: EditorOps):
+    _editor_shop(job_id, shop_id)
+    if len(body.ops) > MAX_EDITOR_OPS:
+        raise HTTPException(413, f"too many operations (max {MAX_EDITOR_OPS})")
+    scene = _load_scene(job_id, shop_id)
+    if scene is None:
+        raise HTTPException(409, "scene has not been built yet")
+    try:  # never persist a list that cannot be replayed
+        scene_ops.apply_ops(scene, body.ops)
+    except scene_ops.OpError as e:
+        raise HTTPException(422, str(e))
+    db.set_editor_ops(shop_id, body.ops)
+    return {"saved": len(body.ops)}
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/replayed")
+def editor_replayed(job_id: str, shop_id: str):
+    """The saved operation list applied to the pristine scene, server side (what Phase D replays)."""
+    _editor_shop(job_id, shop_id)
+    scene = _load_scene(job_id, shop_id)
+    if scene is None:
+        raise HTTPException(409, "scene has not been built yet")
+    try:
+        return scene_ops.apply_ops(scene, db.get_editor_ops(shop_id))
+    except scene_ops.OpError as e:
+        raise HTTPException(422, str(e))

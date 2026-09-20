@@ -1,17 +1,462 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
+import "../editor/editor.css";
+import Canvas from "../editor/Canvas.jsx";
+import LayersPanel from "../editor/LayersPanel.jsx";
+import PropertiesPanel from "../editor/PropertiesPanel.jsx";
+import { DIM, LeftDimension, LeftRuler, RULER, TopDimension, TopRuler } from "../editor/Rulers.jsx";
+import { Fit, Redo, Undo, ZoomIn, ZoomOut } from "../editor/icons.jsx";
+import { AlphaMaps } from "../editor/alphaMaps.js";
+import { cloneWithNewIds, shiftNode, unionBox } from "../editor/model.js";
+import { applyOps, buildIndex } from "../editor/ops.js";
+import { UNIT_NAMES, fmt, fromUnit, toUnit, UNITS } from "../editor/units.js";
+import { fitView, zoomAt } from "../editor/view.js";
 
-/** Placeholder for Phase C. Opened in a new tab from the Automation page's
- * per-shop "Editor" button once a shop's conversion has finished.
- */
+const PX_PER_MM_100 = 96 / 25.4; // CorelDRAW's "100%" is 96 dpi
+
 export default function EditorPage() {
   const { jobId, shopId } = useParams();
+  const [load, setLoad] = useState({ phase: "loading", progress: 0, step: "" });
+  const [attempt, setAttempt] = useState(0);
+  const [base, setBase] = useState(null);
+  const [assetBase, setAssetBase] = useState("");
+  const [ops, setOps] = useState([]);
+  const [cursor, setCursor] = useState(0);
+  const [sel, setSel] = useState([]);
+  const [ctx, setCtx] = useState(null);
+  const [unit, setUnit] = useState("in");
+  const [view, setView] = useState({ zoom: 1, x: 0, y: 0 });
+  const [size, setSize] = useState({ w: 800, h: 600 });
+  const [showRender, setShowRender] = useState(false);
+  const [saveState, setSaveState] = useState("saved");
+  const [toast, setToast] = useState("");
+  const [pointer, setPointer] = useState(null);
+  const alphaMaps = useMemo(() => new AlphaMaps(), []);
+  const clip = useRef(null);
+  const idCounter = useRef(0);
+  const pasteCount = useRef(0);
+  const fitted = useRef(false);
+  const sizeMeasured = useRef(false);
+  const retry = useRef(false);
+  const lastSaved = useRef("[]");
+  const toastTimer = useRef(null);
+
+  const say = useCallback((msg) => {
+    setToast(msg);
+    clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(""), 4500);
+  }, []);
+
+  // ------------------------------------------------------------------ load
+  useEffect(() => {
+    let cancelled = false;
+    let timer;
+    async function go() {
+      try {
+        const r = await fetch(`/api/editor/${jobId}/${shopId}/scene${retry.current ? "?retry=1" : ""}`);
+        if (cancelled) return;
+        if (r.status === 202) {
+          retry.current = false;
+          const b = await r.json();
+          setLoad({ phase: "building", progress: b.progress_pct, step: b.step });
+          timer = setTimeout(go, 800);
+          return;
+        }
+        if (!r.ok) {
+          let detail = "";
+          try {
+            detail = (await r.json()).detail;
+          } catch {
+            /* not json */
+          }
+          setLoad({ phase: "error", status: r.status, error: detail || `HTTP ${r.status}` });
+          return;
+        }
+        retry.current = false;
+        const { ops: saved, asset_base: ab, ...scene } = await r.json();
+        let usable = saved;
+        try {
+          applyOps(scene, saved);
+        } catch (e) {
+          usable = [];
+          say(`Saved edits could not be replayed and were ignored: ${e.message}`);
+        }
+        setBase(scene);
+        setAssetBase(ab);
+        setOps(usable);
+        setCursor(usable.length);
+        lastSaved.current = JSON.stringify(usable);
+        setLoad({ phase: "ready" });
+      } catch (e) {
+        if (!cancelled) setLoad({ phase: "error", error: e.message });
+      }
+    }
+    setLoad({ phase: "loading", progress: 0, step: "" });
+    go();
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+  }, [jobId, shopId, attempt, say]);
+
+  // ----------------------------------------------------------------- scene
+  const scene = useMemo(() => {
+    if (!base) return null;
+    try {
+      return applyOps(base, ops.slice(0, cursor));
+    } catch {
+      return base;
+    }
+  }, [base, ops, cursor]);
+
+  useEffect(() => {
+    if (scene && !fitted.current && sizeMeasured.current) {
+      fitted.current = true;
+      setView(fitView(size, scene.page));
+    }
+  }, [scene, size]);
+
+  // drop selection/context that no longer exist (after undo, delete, ungroup ...)
+  useEffect(() => {
+    if (!scene) return;
+    const idx = buildIndex(scene);
+    setSel((s) => (s.every((i) => idx.has(i)) ? s : s.filter((i) => idx.has(i))));
+    setCtx((c) => (c && !idx.has(c) ? null : c));
+  }, [scene]);
+
+  const onCanvasSize = useCallback((s) => {
+    sizeMeasured.current = true;
+    setSize(s);
+  }, []);
+
+  const nextId = useCallback(() => `n${Date.now().toString(36)}${++idCounter.current}`, []);
+
+  const commit = useCallback(
+    (op) => {
+      if (!scene) return false;
+      let result;
+      try {
+        result = applyOps(scene, [op]);
+      } catch (e) {
+        say(e.message.replace(/^op #0 \(\w+\): /, ""));
+        return false;
+      }
+      setOps((o) => [...o.slice(0, cursor), op]);
+      setCursor((c) => c + 1);
+      if (op.op === "group") {
+        setSel([op.group_id]);
+      } else if (op.op === "ungroup") {
+        const g = buildIndex(scene).get(op.id);
+        setSel(g.node.children.map((c) => c.id));
+        setCtx(g.parent ? g.parent.id : null);
+      } else if (op.op === "delete") {
+        setSel([]);
+      } else if (op.op === "paste") {
+        setSel(op.nodes.map((n) => n.id));
+        setCtx(buildIndex(result).get(op.parent).isLayer ? null : op.parent);
+      }
+      return true;
+    },
+    [scene, cursor, say],
+  );
+
+  const undo = useCallback(() => setCursor((c) => Math.max(0, c - 1)), []);
+  const redo = useCallback(() => setCursor((c) => Math.min(ops.length, c + 1)), [ops.length]);
+  const select = useCallback((ids, nextCtx) => {
+    setSel(ids);
+    setCtx(nextCtx);
+  }, []);
+
+  // -------------------------------------------------------------- autosave
+  const flush = useCallback(async () => {
+    const body = JSON.stringify(ops.slice(0, cursor));
+    if (body === lastSaved.current) return true;
+    setSaveState("saving");
+    try {
+      const r = await fetch(`/api/editor/${jobId}/${shopId}/ops`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: `{"ops":${body}}` });
+      if (!r.ok) throw new Error(((await r.json()).detail) || `HTTP ${r.status}`);
+      lastSaved.current = body;
+      setSaveState("saved");
+      return true;
+    } catch (e) {
+      setSaveState("error");
+      say(`Could not save edits: ${e.message}`);
+      return false;
+    }
+  }, [ops, cursor, jobId, shopId, say]);
+
+  useEffect(() => {
+    if (load.phase !== "ready") return undefined;
+    if (JSON.stringify(ops.slice(0, cursor)) === lastSaved.current) return undefined;
+    setSaveState("dirty");
+    const t = setTimeout(flush, 600);
+    return () => clearTimeout(t);
+  }, [ops, cursor, load.phase, flush]);
+
+  // ------------------------------------------------------------- clipboard
+  const copySelection = useCallback(
+    (cut) => {
+      if (!scene || !sel.length) return;
+      const idx = buildIndex(scene);
+      const nodes = sel.map((id) => idx.get(id)?.node).filter(Boolean);
+      clip.current = { nodes: structuredClone(nodes), cut };
+      pasteCount.current = 0;
+      if (cut && !commit({ op: "delete", ids: sel })) clip.current = null;
+      else say(`${cut ? "Cut" : "Copied"} ${nodes.length} object${nodes.length > 1 ? "s" : ""}`);
+    },
+    [scene, sel, commit, say],
+  );
+
+  const paste = useCallback(() => {
+    if (!scene || !clip.current) return;
+    const idx = buildIndex(scene);
+    const anchor = ctx || (sel.length && idx.get(sel[0]) ? idx.get(sel[0]).layer.id : null) || [...scene.layers].reverse().find((l) => !l.locked)?.id;
+    if (!anchor) return;
+    pasteCount.current += 1;
+    const off = clip.current.cut && pasteCount.current === 1 ? 0 : Math.max(10, 24 / view.zoom) * (clip.current.cut ? pasteCount.current - 1 : pasteCount.current);
+    const nodes = clip.current.nodes.map((n) => {
+      const c = cloneWithNewIds(n, nextId);
+      shiftNode(c, off, -off);
+      return c;
+    });
+    commit({ op: "paste", parent: anchor, nodes });
+  }, [scene, sel, ctx, view.zoom, commit, nextId]);
+
+  const selectAll = useCallback(() => {
+    if (!scene) return;
+    const idx = buildIndex(scene);
+    let list;
+    let nextCtx = null;
+    if (ctx) {
+      list = idx.get(ctx).node.children;
+      nextCtx = ctx;
+    } else {
+      const layer = (sel.length && idx.get(sel[0]) ? idx.get(sel[0]).layer : null) || [...scene.layers].reverse().find((l) => !l.locked && l.visible !== false);
+      list = layer ? layer.children : [];
+    }
+    setSel(list.filter((n) => n.visible !== false && !n.locked).map((n) => n.id));
+    setCtx(nextCtx);
+  }, [scene, ctx, sel]);
+
+  // ------------------------------------------------------------- shortcuts
+  const keys = useRef({});
+  keys.current = { undo, redo, copySelection, paste, selectAll, commit, sel, ctx, scene };
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = (e.target.tagName || "").toLowerCase();
+      if (tag === "input" || tag === "textarea" || tag === "select" || e.target.isContentEditable) return;
+      const k = keys.current;
+      const mod = e.ctrlKey || e.metaKey;
+      const key = e.key.toLowerCase();
+      if (mod && key === "z") {
+        e.preventDefault();
+        e.shiftKey ? k.redo() : k.undo();
+      } else if (mod && key === "y") {
+        e.preventDefault();
+        k.redo();
+      } else if (mod && key === "c") {
+        e.preventDefault();
+        k.copySelection(false);
+      } else if (mod && key === "x") {
+        e.preventDefault();
+        k.copySelection(true);
+      } else if (mod && key === "v") {
+        e.preventDefault();
+        k.paste();
+      } else if (mod && key === "a") {
+        e.preventDefault();
+        k.selectAll();
+      } else if (mod && key === "g") {
+        e.preventDefault();
+        if (k.sel.length >= 2) k.commit({ op: "group", ids: k.sel, group_id: `n${Date.now().toString(36)}g`, name: "Group" });
+      } else if (mod && key === "u") {
+        e.preventDefault();
+        const n = k.sel.length === 1 && k.scene ? buildIndex(k.scene).get(k.sel[0])?.node : null;
+        if (n && n.kind === "group") k.commit({ op: "ungroup", id: n.id });
+      } else if (e.key === "Delete" || e.key === "Backspace") {
+        if (k.sel.length) {
+          e.preventDefault();
+          k.commit({ op: "delete", ids: k.sel });
+        }
+      } else if (e.key === "Escape") {
+        if (k.ctx) {
+          const g = k.scene ? buildIndex(k.scene).get(k.ctx) : null;
+          setSel([k.ctx]); // leaving a group selects the group itself, like CorelDRAW
+          setCtx(g && g.parent ? g.parent.id : null);
+        } else setSel([]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
+  // ----------------------------------------------------------------- render
+  if (load.phase !== "ready") {
+    return (
+      <div className="ed-splash">
+        <div className="ed-splash-card">
+          <h1>Editor</h1>
+          {(load.phase === "loading" || load.phase === "building") && (
+            <>
+              <p>
+                {load.phase === "building"
+                  ? "CorelDRAW is rendering every object of this board so it can be edited here."
+                  : "Opening…"}
+              </p>
+              <div className="progress-bar"><div className="progress-fill" style={{ width: `${load.progress || 3}%` }} /></div>
+              <p className="ed-hint">
+                {load.step && load.step.startsWith("images ")
+                  ? `Rendering objects ${load.step.slice(7)}`
+                  : load.step === "page_image"
+                    ? "Rendering the full-page reference"
+                    : load.step || "Starting"}
+                {load.progress ? ` · ${load.progress}%` : ""}
+              </p>
+            </>
+          )}
+          {load.phase === "error" && (
+            <>
+              <p className="err">{load.error}</p>
+              {load.status === 503 && <p className="ed-hint">The machine is low on free memory. Close other programs (or restart the PC), then retry.</p>}
+              {load.status === 409 && <p className="ed-hint">Convert this shop on the Automation page first.</p>}
+              <button className="btn" onClick={() => { retry.current = true; setAttempt((a) => a + 1); }}>Retry</button>{" "}
+              <a className="btn ghost" href="/recent">Recently generated</a>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  const pageW = scene.page.width;
+  const pageH = scene.page.height;
+  const zoomBy = (f) => setView((v) => zoomAt(v, pageH, f, size.w / 2, size.h / 2));
+  const zoomPct = Math.round((view.zoom / PX_PER_MM_100) * 100);
+  const idxNow = buildIndex(scene);
+  const selNodes = sel.map((id) => idxNow.get(id)?.node).filter(Boolean);
+  const selBox = unionBox(selNodes);
+  const ctxNode = ctx ? idxNow.get(ctx)?.node : null;
+
   return (
-    <div style={{ fontFamily: "var(--font-sans, system-ui, sans-serif)", padding: 40, background: "#121212", color: "#fff", minHeight: "100vh" }}>
-      <h1 style={{ marginTop: 0 }}>Editor</h1>
-      <p>
-        Job <code>{jobId}</code>, shop <code>{shopId}</code>
-      </p>
-      <p style={{ color: "#a0a0a0" }}>The full canvas editor (Phase C) isn't built yet.</p>
+    <div className="ed-root">
+      <header className="ed-top">
+        <span className="dot" />
+        <strong>Signage Editor</strong>
+        <span className="ed-top-sub">job {jobId.slice(0, 8)} · shop {shopId.slice(0, 8)}</span>
+        <span className="ed-top-spacer" />
+        <span className={`ed-save ed-save-${saveState}`}>
+          {saveState === "saved" ? "All edits saved" : saveState === "saving" ? "Saving…" : saveState === "dirty" ? "Unsaved edits" : "Save failed"}
+        </span>
+      </header>
+
+      <div className="ed-toolbar">
+        <button className="ed-icon-btn" title="Undo (Ctrl+Z)" disabled={cursor === 0} onClick={undo}><Undo /> Undo</button>
+        <button className="ed-icon-btn" title="Redo (Ctrl+Shift+Z)" disabled={cursor >= ops.length} onClick={redo}><Redo /> Redo</button>
+        <span className="ed-sep" />
+        <button className="ed-icon-btn" title="Zoom out" onClick={() => zoomBy(1 / 1.25)}><ZoomOut /></button>
+        <span className="ed-zoom">{zoomPct}%</span>
+        <button className="ed-icon-btn" title="Zoom in" onClick={() => zoomBy(1.25)}><ZoomIn /></button>
+        <button className="ed-icon-btn" title="Fit page" onClick={() => setView(fitView(size, scene.page))}><Fit /> Fit</button>
+        <span className="ed-sep" />
+        <PageSize pageW={pageW} pageH={pageH} unit={unit} onCommit={(w, h) => commit({ op: "page", width: w, height: h })} />
+        <select className="ed-select" value={unit} onChange={(e) => setUnit(e.target.value)} aria-label="Units">
+          {UNIT_NAMES.map((u) => <option key={u}>{u}</option>)}
+        </select>
+        <span className="ed-sep" />
+        <label className="ed-check" title="Show CorelDRAW's own full-page render of the converted board instead of the per-object images (edits are hidden while on)">
+          <input type="checkbox" checked={showRender} onChange={(e) => setShowRender(e.target.checked)} /> Corel page render
+        </label>
+        <span className="ed-top-spacer" />
+        <button
+          className="btn"
+          onClick={async () => {
+            const ok = await flush();
+            if (ok) say(`${cursor} edit${cursor === 1 ? "" : "s"} saved. Exporting to CDR / PDF / PNG / JPEG arrives in Phase D.`);
+          }}
+        >
+          Save and Generate
+        </button>
+      </div>
+
+      <div className="ed-main">
+        <div className="ed-stage" style={{ gridTemplateColumns: `${DIM}px ${RULER}px 1fr`, gridTemplateRows: `${DIM}px ${RULER}px 1fr` }}>
+          <div className="ed-corner" style={{ gridArea: "1 / 1 / 3 / 3" }} />
+          <div style={{ gridArea: "1 / 3" }}><TopDimension width={size.w} view={view} pageW={pageW} unit={unit} /></div>
+          <div style={{ gridArea: "2 / 3" }}><TopRuler width={size.w} view={view} unit={unit} cursor={pointer} /></div>
+          <div style={{ gridArea: "3 / 1" }}><LeftDimension height={size.h} view={view} pageH={pageH} unit={unit} /></div>
+          <div style={{ gridArea: "3 / 2" }}><LeftRuler height={size.h} view={view} pageH={pageH} unit={unit} cursor={pointer} /></div>
+          <div style={{ gridArea: "3 / 3", position: "relative", minWidth: 0, minHeight: 0, overflow: "hidden" }}>
+            <Canvas
+              scene={scene}
+              assetBase={assetBase}
+              sel={sel}
+              ctx={ctx}
+              view={view}
+              setView={setView}
+              showRender={showRender}
+              alphaMaps={alphaMaps}
+              onSelect={select}
+              onCommit={commit}
+              onToast={say}
+              onCursor={setPointer}
+              onSize={onCanvasSize}
+            />
+          </div>
+        </div>
+        <aside className="ed-side">
+          <PropertiesPanel scene={scene} sel={sel} unit={unit} onCommit={commit} />
+          <LayersPanel scene={scene} sel={sel} ctx={ctx} onSelect={select} onCommit={commit} nextId={() => `n${Date.now().toString(36)}g${++idCounter.current}`} />
+        </aside>
+      </div>
+
+      <footer className="ed-status">
+        <span>{pointer ? `X ${fmt(pointer.x, unit)}  Y ${fmt(pointer.y, unit)} ${unit}` : "—"}</span>
+        <span>
+          {selNodes.length
+            ? `${selNodes.length} selected · ${fmt(selBox.w, unit)} × ${fmt(selBox.h, unit)} ${unit}`
+            : "Nothing selected"}
+          {ctxNode ? ` · inside “${ctxNode.name || "Group"}” (Esc to leave)` : ""}
+        </span>
+        <span>{ops.length ? `${cursor}/${ops.length} operations` : "No edits"}</span>
+        <span>{scene.stats && scene.stats.mock ? "Mock scene (no CorelDRAW)" : `${scene.stats?.leaves ?? "?"} rendered objects`}</span>
+      </footer>
+
+      {toast && <div className="ed-toast" role="status">{toast}</div>}
     </div>
+  );
+}
+
+function PageSize({ pageW, pageH, unit, onCommit }) {
+  const [w, setW] = useState("");
+  const [h, setH] = useState("");
+  const show = (mm) => {
+    const s = toUnit(mm, unit).toFixed(UNITS[unit].decimals);
+    return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
+  };
+  useEffect(() => {
+    setW(show(pageW));
+    setH(show(pageH));
+  }, [pageW, pageH, unit]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const apply = () => {
+    const nw = parseFloat(w);
+    const nh = parseFloat(h);
+    if (!(nw > 0) || !(nh > 0)) {
+      setW(show(pageW));
+      setH(show(pageH));
+      return;
+    }
+    const mmW = fromUnit(nw, unit);
+    const mmH = fromUnit(nh, unit);
+    if (Math.abs(mmW - pageW) > 1e-3 || Math.abs(mmH - pageH) > 1e-3) onCommit(mmW, mmH);
+  };
+  const key = (e) => e.key === "Enter" && e.currentTarget.blur();
+  return (
+    <span className="ed-pagesize" title="Page size (changes the page only - objects stay where they are)">
+      <span>Page</span>
+      <input aria-label="Page width" value={w} onChange={(e) => setW(e.target.value)} onBlur={apply} onKeyDown={key} />
+      <span>×</span>
+      <input aria-label="Page height" value={h} onChange={(e) => setH(e.target.value)} onBlur={apply} onKeyDown={key} />
+    </span>
   );
 }
