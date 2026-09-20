@@ -238,12 +238,32 @@ class CorelEngine:
                 )
 
                 page.SetSize(new_w, new_h)
+                reused_base_ids: set[str] = set()
                 for p in placed:
-                    base_id, _, tile_idx = p.id.partition("_tile")
+                    base_id, _, _tile_idx = p.id.partition("_tile")
                     base_shape = shapes_by_id.get(base_id)
                     if base_shape is None:
                         continue
-                    shape = base_shape if tile_idx in ("", "0") else base_shape.Duplicate()
+                    # Reuse the original shape for a base_id's FIRST placement in
+                    # this job, duplicate for every subsequent one - tracked by
+                    # which base_ids have actually been placed already, not by
+                    # whether the id happens to end in "_tile0". That string check
+                    # was a latent bug: it's only true for the panel-tiling schemes
+                    # where every group's copies are numbered 0..N-1 starting at 0
+                    # (_place_tiled_panel, _place_brand_ruled_panel's *repeating*
+                    # groups) - a group that appears exactly once but isn't the
+                    # first one processed (e.g. _place_brand_ruled_panel's "never
+                    # repeats" badge, or ANY group in _place_panel_sequence, which
+                    # numbers by sequence position, not per-group occurrence) got
+                    # ".Duplicate()"-ed instead of repositioned, leaving the
+                    # original shape behind at its old, now-wrong location - a
+                    # visible "ghost" duplicate, confirmed live on a real board
+                    # (see CLAUDE.md "Wide-board panel sequence").
+                    if base_id in reused_base_ids:
+                        shape = base_shape.Duplicate()
+                    else:
+                        shape = base_shape
+                        reused_base_ids.add(base_id)
                     if shape.Locked:
                         p.warnings.append("shape locked; skipped")
                         continue

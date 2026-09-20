@@ -231,7 +231,11 @@ def compute_layout(
         out.append(Placed(o.id, o.name, role, x, y, w, h, orig, warns, contact_text))
 
     if axis and n_tiles > 1:
-        if brand_rule and brand_rule.get("groups"):
+        if brand_rule and brand_rule.get("panel_sequence"):
+            panel_placed, panel_scale = _place_panel_sequence(
+                panel_objs, roles, page_w, page_h, new_w, new_h, axis, brand_rule["panel_sequence"],
+            )
+        elif brand_rule and brand_rule.get("groups"):
             panel_placed, panel_scale = _place_brand_ruled_panel(
                 panel_objs, roles, page_w, page_h, new_w, new_h, axis, brand_rule,
             )
@@ -404,6 +408,127 @@ def _place_brand_ruled_panel(panel_objs, roles, page_w, page_h, new_w, new_h, ax
         x_offset = cx - w / 2 - bx0 * fit_scale
         y_offset = cy - h / 2 - by0 * fit_scale
         out.extend(_place_tile_copy(fixed, roles, fit_scale, x_offset, y_offset, cell_i))
+
+    return out, (min(scales) if scales else 1.0)
+
+
+def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis, seq_rule) -> tuple[list[Placed], float]:
+    """Tile panel_objs as a SEQUENCE of named slots evenly spaced across the
+    tiling axis, each with its own target size/vertical position - not a
+    single rigid panel duplicated (`_place_tiled_panel`) and not a
+    per-group "repeat count competes for shared cells" split either
+    (`_place_brand_ruled_panel`).
+
+    Built from CLAUDE.md "Wide-board panel sequence": studying dalmia's 4
+    real wide boards by eye against their rendered PNGs found the master's
+    3 logo groups play distinct, *fixed* roles rather than "the same thing,
+    repeated" - one graphic (`sequence_3`/`sequence_4` name it) stays at
+    roughly its master size, one (the small top-right badge) gets
+    *enlarged* to match it and substituted in as a second "card", and a
+    third repeats as a filler between them, with an extra filler copy
+    appended once the target is wide enough (`aspect_split`). Two
+    independent geometry-only matching attempts
+    (`backend/tools/derive_brand_rules.py`, and Phase 2's example engine -
+    see CLAUDE.md "Example-based layout engine") both mistook the enlarged
+    badge for a duplicate of the other card; this rule exists because that
+    mistake can't be fixed by better matching alone without a colour/content
+    signal neither approach extracts - the correct assignment came from
+    looking at the images, so it's captured here as verified data instead.
+
+    `seq_rule` (see `brand_rules/dalmia.json`'s `panel_sequence` key):
+    `{"aspect_split": float, "groups": [{"group_id", "bbox_mm", "target_h_frac",
+    "target_cy_frac"}, ...], "sequence_3": [group_id, ...], "sequence_4": [...]}`.
+    `target_h_frac`/`target_cy_frac` are fractions of `new_h` regardless of
+    tiling axis (matching how they were measured - see CLAUDE.md), so this
+    is currently only validated for horizontal tiling (all 4 sampled wide
+    boards tile on x); untested for vertical.
+
+    A shape only joins a named group if its centre falls inside that
+    group's master bbox (expanded by `GROUP_MEMBERSHIP_MARGIN`) - NOT
+    "whichever named group happens to be nearest," which was tried first
+    and silently swept the master's full-width decorative accent strip
+    (see CLAUDE.md "Designer dataset analysis") into the `tamil_card`
+    bucket, since its bbox centre is geometrically closer to that group
+    than to the other two even though it isn't part of any of them. That
+    single wrongly-included shape (2345mm wide, spanning most of the page)
+    blew up the whole bucket's bounding box, corrupting both its scale and
+    its centring offset - visually obvious once rendered (the "roof"
+    graphic appeared duplicated and the enlarged badge overflowed the
+    page), not something the diff-percentage numbers alone made obvious.
+    Anything outside every group's expanded bbox falls back to `fixed_objs`,
+    kept at its own proportional position/size like an ordinary un-tiled
+    logo - never dropped silently.
+    """
+    if not panel_objs:
+        return [], 1.0
+    groups_cfg = {g["group_id"]: g for g in seq_rule["groups"]}
+    GROUP_MEMBERSHIP_MARGIN = 50.0
+
+    def _in_group(o, g):
+        b = g["bbox_mm"]
+        ocx, ocy = o.x + o.w / 2, o.y + o.h / 2
+        m = GROUP_MEMBERSHIP_MARGIN
+        return (b["x"] - m) <= ocx <= (b["x"] + b["w"] + m) and (b["y"] - m) <= ocy <= (b["y"] + b["h"] + m)
+
+    def _dist(o, g):
+        b = g["bbox_mm"]
+        gcx, gcy = b["x"] + b["w"] / 2, b["y"] + b["h"] / 2
+        return (o.x + o.w / 2 - gcx) ** 2 + (o.y + o.h / 2 - gcy) ** 2
+
+    buckets: dict[str, list] = {}
+    fixed_objs: list[Obj] = []
+    for o in panel_objs:
+        candidates = [gid for gid in groups_cfg if _in_group(o, groups_cfg[gid])]
+        if not candidates:
+            fixed_objs.append(o)
+            continue
+        gid = min(candidates, key=lambda gid: _dist(o, groups_cfg[gid]))
+        buckets.setdefault(gid, []).append(o)
+
+    target_aspect = new_w / new_h
+    sequence = seq_rule["sequence_4"] if target_aspect > seq_rule["aspect_split"] else seq_rule["sequence_3"]
+    n = len(sequence)
+    cell_w = new_w / n if axis == "x" else new_w
+    cell_h = new_h if axis == "x" else new_h / n
+
+    out: list[Placed] = []
+    scales: list[float] = []
+    for i, group_id in enumerate(sequence):
+        objs = buckets.get(group_id)
+        if not objs:
+            continue
+        cfg = groups_cfg[group_id]
+        bx0, by0, bx1, by1 = _bbox(objs)
+        gw, gh = bx1 - bx0, by1 - by0
+        if gh <= 0:
+            continue
+        scale = (cfg["target_h_frac"] * new_h) / gh
+        scales.append(scale)
+        gw_s, gh_s = gw * scale, gh * scale
+
+        if axis == "x":
+            cell_left = i * cell_w
+            x_offset = cell_left + (cell_w - gw_s) / 2 - bx0 * scale
+        else:
+            x_offset = (new_w - gw_s) / 2 - bx0 * scale
+        y_offset = cfg["target_cy_frac"] * new_h - gh_s / 2 - by0 * scale
+        if axis == "y":
+            cell_bottom = (n - 1 - i) * cell_h
+            y_offset = cell_bottom + (cell_h - gh_s) / 2 - by0 * scale
+
+        out.extend(_place_tile_copy(objs, roles, scale, x_offset, y_offset, i))
+
+    if fixed_objs:
+        fit_scale = min(new_w / page_w, new_h / page_h)
+        scales.append(fit_scale)
+        bx0, by0, bx1, by1 = _bbox(fixed_objs)
+        gw, gh = bx1 - bx0, by1 - by0
+        cx = (bx0 + gw / 2) / page_w * new_w
+        cy = (by0 + gh / 2) / page_h * new_h
+        w, h = gw * fit_scale, gh * fit_scale
+        x_offset = cx - w / 2 - bx0 * fit_scale
+        y_offset = cy - h / 2 - by0 * fit_scale
+        out.extend(_place_tile_copy(fixed_objs, roles, fit_scale, x_offset, y_offset, n))
 
     return out, (min(scales) if scales else 1.0)
 

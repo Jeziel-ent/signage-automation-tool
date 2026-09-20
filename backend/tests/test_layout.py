@@ -257,3 +257,91 @@ def test_contact_replacement_appends_address_lines():
 def test_contact_replacement_none_when_no_fields_given():
     r = by_id(compute_layout(CONTACT_OBJS, 1000, 400, 1000, 400, contact_ids={"contact"}))
     assert r["contact"].text is None  # nothing to replace -> shape's own text left as-is by the caller
+
+
+# -- panel_sequence tiling: distinct fixed/enlarged/repeating slots, not one rigid panel --
+SEQ_PAGE = (1000.0, 400.0)
+SEQ_OBJS = [
+    Obj("bg", "bg", "shape", 0, 0, 1000, 400),
+    Obj("card_a", "logo_a", "group", 50, 100, 200, 200),  # "tamil_card": never repeats
+    Obj("filler", "logo_b", "group", 400, 150, 100, 100),  # "roof_graphic": the repeat element
+    Obj("badge", "logo_c", "group", 850, 350, 40, 20),  # "enlarged_badge_card": tiny in the master
+    Obj("name", "Shop name", "text", 300, 350, 200, 30, text="OLD SHOP"),
+]
+SEQ_RULE = {
+    "panel_sequence": {
+        "aspect_split": 4.25,
+        "groups": [
+            {"group_id": "tamil_card", "bbox_mm": {"x": 50, "y": 100, "w": 200, "h": 200},
+             "target_h_frac": 0.5, "target_cy_frac": 0.5},
+            {"group_id": "roof_graphic", "bbox_mm": {"x": 400, "y": 150, "w": 100, "h": 100},
+             "target_h_frac": 0.3, "target_cy_frac": 0.5},
+            {"group_id": "enlarged_badge_card", "bbox_mm": {"x": 850, "y": 350, "w": 40, "h": 20},
+             "target_h_frac": 0.5, "target_cy_frac": 0.5},
+        ],
+        "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
+        "sequence_4": ["tamil_card", "roof_graphic", "enlarged_badge_card", "roof_graphic"],
+    },
+}
+
+
+def test_panel_sequence_uses_3_slots_below_aspect_split():
+    # target aspect 3.0 (1000x400 -> 3000x1000) is below aspect_split=4.25
+    r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=SEQ_RULE))
+    card_a_ids = [k for k in r if k.startswith("card_a_tile")]
+    filler_ids = [k for k in r if k.startswith("filler_tile")]
+    badge_ids = [k for k in r if k.startswith("badge_tile")]
+    assert len(card_a_ids) == 1 and len(filler_ids) == 1 and len(badge_ids) == 1
+
+
+def test_panel_sequence_adds_a_second_filler_copy_beyond_aspect_split():
+    # target aspect 5.0 (1000x400 -> 5000x1000) is above aspect_split=4.25
+    r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 5000, 1000, tile=True, shopname_ids={"name"}, brand_rule=SEQ_RULE))
+    filler_ids = [k for k in r if k.startswith("filler_tile")]
+    card_a_ids = [k for k in r if k.startswith("card_a_tile")]
+    badge_ids = [k for k in r if k.startswith("badge_tile")]
+    assert len(filler_ids) == 2  # the repeating slot appears twice in sequence_4
+    assert len(card_a_ids) == 1 and len(badge_ids) == 1  # the two "card" slots still appear exactly once
+
+
+def test_panel_sequence_enlarges_badge_to_its_target_height_not_its_master_size():
+    r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=SEQ_RULE))
+    badge = next(p for k, p in r.items() if k.startswith("badge_tile"))
+    # master badge h=20mm; target_h_frac=0.5 of new_h=1000 -> should become 500mm, NOT
+    # a small uniform-fit-scaled version of its own tiny 20mm height
+    assert badge.h == pytest.approx(500, rel=0.01)
+
+
+def test_panel_sequence_slots_are_evenly_spaced_left_to_right():
+    r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=SEQ_RULE))
+    card_a = next(p for k, p in r.items() if k.startswith("card_a_tile"))
+    filler = next(p for k, p in r.items() if k.startswith("filler_tile"))
+    badge = next(p for k, p in r.items() if k.startswith("badge_tile"))
+    centres = [card_a.x + card_a.w / 2, filler.x + filler.w / 2, badge.x + badge.w / 2]
+    assert centres == sorted(centres)  # sequence order preserved left to right
+    # 3 evenly spaced cells over width 3000 -> centres near 1/6, 3/6, 5/6
+    assert centres[0] == pytest.approx(3000 / 6, abs=1)
+    assert centres[1] == pytest.approx(3000 / 2, abs=1)
+    assert centres[2] == pytest.approx(3000 * 5 / 6, abs=1)
+
+
+def test_panel_sequence_wins_over_groups_schema_when_both_present():
+    rule = {**SEQ_RULE, "groups": BRAND_RULE["groups"]}
+    r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=rule))
+    assert any(k.startswith("card_a_tile") for k in r)  # panel_sequence's own ids, not the groups schema's
+
+
+def test_panel_sequence_keeps_unmatched_shape_at_its_own_proportional_position():
+    # a decorative shape far from every named group's bbox (e.g. dalmia's
+    # real full-width accent strip) must NOT be force-assigned to whichever
+    # group happens to be nearest - it should keep its own proportional
+    # position/size instead, like an ordinary un-tiled logo
+    objs = SEQ_OBJS + [Obj("strip", "accent_line", "shape", 0, 390, 1000, 2, text=None)]
+    r = by_id(compute_layout(objs, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=SEQ_RULE))
+    strip = next(p for k, p in r.items() if k.startswith("strip"))
+    # proportional position preserved: centre x fraction and y fraction unchanged
+    assert (strip.x + strip.w / 2) / 3000 == pytest.approx((0 + 1000 / 2) / 1000, abs=0.01)
+    assert (strip.y + strip.h / 2) / 1000 == pytest.approx((390 + 2 / 2) / 400, abs=0.01)
+    # and it must not have inflated any group's bounding box - the 3 real groups still fit their cells
+    card_a = next(p for k, p in r.items() if k.startswith("card_a_tile"))
+    assert card_a.w < 3000 / 3  # sane cell-relative size, not blown up by contamination

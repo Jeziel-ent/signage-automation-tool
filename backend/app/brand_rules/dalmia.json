@@ -11,7 +11,33 @@
     "dalmia_11_216x48.json",
     "dalmia_11_240x60.json"
   ],
-  "note": "Derived from backend/tools/derive_brand_rules.py against real designer files, not hand-tuned. groups[].bbox_mm is in the MASTER's own mm coordinates and is used to re-match a master's top-level logo shapes to a group at layout time (nearest bbox centre) - there is no stable shape id/name in these untagged files.",
+  "note": "SUPERSEDED by panel_sequence below (see CLAUDE.md 'Wide-board panel sequence' and 'Example-based layout engine' for why: derive_brand_rules.py's automatic cluster-size matching that produced this groups[] section mismatched the enlarged badge for a duplicate of cluster_id 1, an error independently reproduced by Phase 2's example engine - kept only because compute_layout still supports this schema as a fallback for a future brand that doesn't need panel_sequence's enlarge/substitute case). groups[].bbox_mm is in the MASTER's own mm coordinates and is used to re-match a master's top-level logo shapes to a group at layout time (nearest bbox centre) - there is no stable shape id/name in these untagged files.",
+  "panel_sequence": {
+    "note": "Hand-verified against real rendered PNGs (dataset_analysis/compare/*/real.png for 02-180x48, 06-180x60, 11-216x48, 11-240x60), not derived by automatic matching - see CLAUDE.md 'Wide-board panel sequence'. tamil_card = the master's left Tamil-wordmark card (never repeats, kept near its master size). roof_graphic = the master's centre white house-silhouette graphic (the true repeat element, used as a spacer/filler). enlarged_badge_card = the master's small top-right English 'Dalmia Bharat Cement' badge, enlarged to roughly the Tamil card's height and substituted in as a second, equal-sized card (never repeats, never further enlarged). target_h_frac/target_cy_frac are fractions of the TARGET page height regardless of tiling axis (only validated for horizontal tiling - all 4 sampled wide boards tile on x), averaged from the 4 samples. aspect_split is bounded only to 'somewhere in (4.0, 4.5]' by the single sample at 4.5 that showed a 4th panel - not fitted further without more real wide files at intermediate aspects.",
+    "aspect_split": 4.25,
+    "groups": [
+      {
+        "group_id": "tamil_card",
+        "bbox_mm": {"x": 386.9266, "y": 242.1056, "w": 1284.2668, "h": 814.9427},
+        "target_h_frac": 0.64,
+        "target_cy_frac": 0.53
+      },
+      {
+        "group_id": "roof_graphic",
+        "bbox_mm": {"x": 1937.9174, "y": 405.9946, "w": 723.1551, "h": 597.4089},
+        "target_h_frac": 0.47,
+        "target_cy_frac": 0.57
+      },
+      {
+        "group_id": "enlarged_badge_card",
+        "bbox_mm": {"x": 2607.3269, "y": 975.9158, "w": 392.9035, "h": 199.9416},
+        "target_h_frac": 0.62,
+        "target_cy_frac": 0.53
+      }
+    ],
+    "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
+    "sequence_4": ["tamil_card", "roof_graphic", "enlarged_badge_card", "roof_graphic"]
+  },
   "groups": [
     {
       "cluster_id": 0,

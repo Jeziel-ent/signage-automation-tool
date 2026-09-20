@@ -278,7 +278,7 @@ catches that and records `None` rather than guessing) - its real font(s)
 aren't currently readable this way; would need per-character-run font
 reads (`Story.Range(i, i+1).Font`), not implemented.
 
-## Wide-board panel sequence (dalmia) - the rule Phase 2 should implement
+## Wide-board panel sequence (dalmia) - derivation, implementation, and two real bugs found along the way
 
 `derive_brand_rules.py`'s automated cluster-size matching (see "Per-brand
 tiling rule attempt") got the *identity* of the repeated elements wrong,
@@ -338,9 +338,87 @@ original generic "duplicate the whole panel as one rigid unit" tiling or
 `derive_brand_rules.py`'s "which cluster repeats, by blind size match" -
 it names the *distinct roles* (fixed card, enlarged card, repeating
 filler) rather than treating tiling as "duplicate everything" or "duplicate
-whichever cluster's size matches." Not yet implemented in `compute_layout`
-or `CorelEngine` - this section is the derived rule Phase 2 should build
-from, in place of `brand_rules/dalmia.json`'s disproven approach.
+whichever cluster's size matches."
+
+### Implementation: `layout._place_panel_sequence` + `brand_rules/dalmia.json`'s `panel_sequence` key
+
+Per GATE 2 feedback (Phase 2's general example-interpolation approach was a
+proven regression - see "Example-based layout engine" below - while this
+specific, hand-verified rule was worth keeping), the sequence above is now
+implemented directly rather than left as a research note. `compute_layout`
+checks `brand_rule.get("panel_sequence")` before falling back to the older
+`groups` (aspect-repeat-table) schema, which stays available for a future
+brand that fits it. `_place_panel_sequence` buckets each panel object into
+whichever named group's *master bbox, expanded by a margin* contains its
+centre (not "whichever group is nearest," which - see below - swept an
+unrelated decorative shape into the wrong bucket), places the sequence for
+the target aspect (`sequence_3`/`sequence_4`) into N evenly-spaced cells,
+and scales/positions each group by its own `target_h_frac`/`target_cy_frac`
+(fractions of page height, averaged from the 4 real samples) rather than a
+uniform contain-fit - this is what lets the badge be *enlarged* instead of
+kept at its native size. Anything that doesn't belong to a named group
+(the accent strip) falls back to an ordinary proportional-position
+placement, same as `_place_brand_ruled_panel`'s "never repeats" groups.
+
+**Two real bugs found and fixed while getting this correct, both confirmed
+live against 02 (180x48)'s actual rendered PNG, not just numbers:**
+
+1. **Nearest-group matching (no size/containment gate) swept the
+   full-width decorative accent strip into the `tamil_card` bucket.** Its
+   centre is geometrically closer to the Tamil card's master bbox centre
+   than to the other two groups, even though it isn't part of any of
+   them - a single 2345mm-wide stray shape then blew up that whole
+   bucket's bounding box, corrupting its scale and centring. **Fixed** by
+   requiring a shape's centre to actually fall inside a group's bbox
+   (expanded by 50mm) to join it; anything outside every group's bbox
+   falls back to a proportional-position placement instead of being
+   force-assigned. Confirmed: before the fix, the accent strip visually
+   vanished from its correct position and warped the Tamil card's layout;
+   after, it renders as a normal thin horizontal line, unrelated to the
+   panel sequence.
+2. **A pre-existing, more consequential bug in `CorelEngine._resize_and_tile`
+   itself, unrelated to this feature but only surfaced by it**: whether a
+   placed shape reused the original COM shape or called `.Duplicate()` was
+   decided by checking if its id's tile-index suffix was literally `"0"` -
+   correct only when every group's copies are always numbered `0..N-1`
+   starting at 0 (true for `_place_tiled_panel` and `_place_brand_ruled_panel`'s
+   *repeating* groups, false for any group appearing once at a non-zero
+   sequence position - which is most of them in a panel_sequence, and was
+   already true for `_place_brand_ruled_panel`'s "never repeats" badge,
+   likely unnoticed because a small badge's leftover "ghost" copy is much
+   less visually obvious than a full logo's). The result: the *original*
+   shape was left untouched at its old position while a *new*, correctly
+   -placed duplicate was also created - two visible copies of the roof
+   graphic side by side on the first fixed render, confirmed by comparing
+   `orig` (pre-transform) vs. placed coordinates in the job's own
+   report.json. **Fixed** in `engines.py` by tracking which `base_id`s have
+   already been placed *across the whole job*, independent of the id's
+   tile-index string: a base_id's first placement reuses the original
+   shape, every subsequent placement of the *same* base_id duplicates -
+   correct for every panel scheme, not just this one.
+
+**Result after both fixes, confirmed on 2 of the 4 wide boards (02 180x48,
+06 180x60) - regeneration of the other 2 (11-216, 11-240) deferred, see
+below**: 02's visual similarity `combined` score (see "Metrics suite")
+rose from 0.38 (original single-rigid-panel tiling) to **0.686** - a large,
+real improvement, though still below the 0.75 provisional pass threshold.
+06 rose more modestly, to 0.478, and its render shows a new, different
+problem: **the enlarged badge card overflows its cell and bleeds off the
+page edge** at this board's aspect ratio (3.0) - `target_h_frac`/
+`target_cy_frac` are simple averages across all 4 samples, not
+interpolated per-aspect, so they don't fit every sampled board precisely.
+`validate_all.py`'s leaf-shape geometry diff % barely moved for either
+board (77.1%→65.7%, 73.8%→66.2%) despite the large visual improvement -
+consistent with that metric's already-documented noise on ~130-fragment
+packed curve matching (see "Validation: all 13 dalmia files"); the visual
+score is the more trustworthy signal for judging this specific change.
+**11-216 and 11-240 were not regenerated** - free RAM dropped to ~1GB
+mid-session (below `corel_supervisor`'s 1.5GB refusal floor) before they
+could be run; regenerating them and re-running `build_metrics_report.py`
+is the immediate next step once free memory recovers (restarting the
+machine is the practical mitigation, per "Remaining limitations").
+Per-aspect interpolation of `target_h_frac`/`target_cy_frac` (rather than
+a flat average) is the next refinement once all 4 boards can be compared.
 
 ## Per-shop content replacement (phone / GST / address)
 
@@ -501,14 +579,17 @@ hand-verified way as the prediction (or, more robustly, an actual
 colour/content signal so the *general* matcher stops needing a per-brand
 override at all) - not yet done.
 
-**Not yet integrated**: none of this is wired into `CorelEngine` or the
-website - `compute_layout`/`load_brand_rule` are still what actually runs
-a job. Given the negative plain-board result above, integrating the
-example engine as-is would be a regression; the wide-panel rule's
-*findings* (which entity is which, which one repeats) are worth folding
-into `layout.py`'s existing brand-rule mechanism directly - a targeted,
-rule-based fix - in preference to shipping the general example-interpolation
-approach that this validation shows underperforms.
+**Not integrated, by decision**: none of `example_engine.py` is wired into
+`CorelEngine` or the website - `compute_layout`/`load_brand_rule` are still
+what actually runs a job. Given the negative plain-board result above,
+integrating the general example engine as-is would be a regression. Per
+GATE 2, the wide-panel rule's *findings* (which entity is which, which one
+repeats) were instead folded directly into `layout.py` as a targeted,
+rule-based fix (`_place_panel_sequence` - see "Wide-board panel sequence"
+above) rather than shipping the general example-interpolation approach
+this validation shows underperforms. `example_engine.py` and its tests
+remain in the codebase for reference/future use, not as dead code to
+delete, but aren't on any runtime path.
 
 ## Engine split (`backend/app/engines.py`)
 
@@ -1030,22 +1111,30 @@ tuning image-similarity weights.
 
 ## Tests
 
-`backend/tests/test_layout.py` (27 tests: the original 7, tiling, shop-name
-replacement, the footer-text-not-tiled fix, brand-rule tiling, and per-shop
-contact-info replacement - `find_contact_ids`/`_contact_replacement`),
-`backend/tests/test_batch_import.py` (8 tests), `backend/tests/test_metrics.py`
-(19 tests: dhash/edge math, cluster matching, counts, and every layout
-check including the full-bleed margin exemption and text_overlap, all on
-small synthetic shape lists/images - no CorelDRAW, no real dataset files)
-and `backend/tests/test_example_engine.py` (7 tests: entity classification,
-the shopname-by-relative-height matching fix, example transform recording,
+`backend/tests/test_layout.py` (33 tests: the original 7, tiling, shop-name
+replacement, the footer-text-not-tiled fix, brand-rule tiling, per-shop
+contact-info replacement - `find_contact_ids`/`_contact_replacement` - and
+`panel_sequence` tiling - slot count by aspect, badge enlargement, even
+spacing, schema precedence, and the unmatched-shape fallback that catches
+the accent-strip bug described above), `backend/tests/test_batch_import.py`
+(8 tests), `backend/tests/test_metrics.py` (19 tests: dhash/edge math,
+cluster matching, counts, and every layout check including the full-bleed
+margin exemption and text_overlap, all on small synthetic shape
+lists/images - no CorelDRAW, no real dataset files) and
+`backend/tests/test_example_engine.py` (7 tests: entity classification, the
+shopname-by-relative-height matching fix, example transform recording,
 nearest/interpolated prediction, and the brand-override hook, all on small
 synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 (5 tests) covers the worker/supervisor timeout, progress-callback and kill
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 66 passed as of this writing. There's no
+`pytest` from `backend/` — 72 passed as of this writing. Note that the
+`engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
+sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
+exercisable against a live CorelDRAW, and was only caught by looking at a
+rendered PNG, not by any automated check; there isn't currently a good way
+to catch a regression here without a real CorelDRAW in CI. There's no
 automated test for `CorelEngine` itself (including the new `_fit_text`
 shrink/wrap logic) beyond that — it needs a live CorelDRAW on Windows, so
 it's verified by hand against real master files
