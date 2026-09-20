@@ -157,3 +157,53 @@ def test_v2_shop_file_blocks_path_traversal(client):
     }).json()
     r = client.get(f"/api/v2/shops/{shop['id']}/files/..%2F..%2Fmaster.cdr")
     assert r.status_code == 404
+
+
+def test_v2_add_shop_accepts_optional_reference_file_path(client):
+    # No upload UI for this yet - the data model just needs to hold it (see
+    # CLAUDE.md "New UI" / GATE feedback after Phase A).
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    r = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
+        "reference_file_path": "/some/uploaded/reference.png",
+    })
+    assert r.status_code == 200
+    assert r.json()["reference_file_path"] == "/some/uploaded/reference.png"
+
+
+def test_v2_step_estimates_endpoint_works_with_no_data_yet(client):
+    # MockEngine's report.json has no timings_s (only CorelEngine's does -
+    # see engines.py's _report/step()), so this stays empty even after a
+    # mock conversion - just confirming the endpoint itself doesn't error
+    # and returns the right shape either way.
+    assert client.get("/api/v2/step-estimates").json() == {}
+
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
+    }).json()
+    client.post(f"/api/v2/shops/{shop['id']}/convert")
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        if client.get(f"/api/v2/shops/{shop['id']}/status").json()["status"] == "done":
+            break
+        time.sleep(0.05)
+
+    assert client.get("/api/v2/step-estimates").json() == {}
+
+
+def test_get_step_timing_estimates_averages_real_timings(tmp_path, monkeypatch):
+    monkeypatch.setenv("SIGNAGE_DATA", str(tmp_path))
+    import app.db as db
+
+    importlib.reload(db)
+    db.init_db()
+    db.create_job("j1", "dalmia", "m.cdr", str(tmp_path / "m.cdr"))
+    for i, (launch, open_) in enumerate([(1.0, 2.0), (3.0, 4.0)]):
+        db.create_shop(f"s{i}", "j1", i, "X", 1, "ft", 1, "ft", None)
+        db.set_shop_result(f"s{i}", {"cdr": "x.cdr"}, {"timings_s": {"launch": launch, "open": open_}})
+
+    estimates = db.get_step_timing_estimates()
+    assert estimates == {"launch": 2.0, "open": 3.0}

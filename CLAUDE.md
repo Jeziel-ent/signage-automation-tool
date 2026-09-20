@@ -107,6 +107,47 @@ pre-converts both to mm itself via `layout.to_mm()` before building the
 `shop` dict the engine sees - the engine never has to know the UI offered
 two independent units.
 
+### Post-Phase-A refinements (review feedback)
+
+**Smoothed progress.** The per-row Convert bar no longer jumps between the
+backend's discrete step thresholds. `frontend/src/hooks/useSteppedProgress.js`
+eases the displayed value toward the end of whichever step the backend
+last reported, paced by **measured** step durations: `GET
+/api/v2/step-estimates` (`db.get_step_timing_estimates`) averages every
+completed shop's own `report.json` `timings_s`, so the pacing improves as
+real conversions accumulate (a step with no data yet falls back to a 4s
+default). The displayed value is capped 1 point below the step's end
+threshold until the backend confirms the next step, and only reaches 100
+when status is `done`. Verified live: samples 0.5s apart on a 180x48 board
+read `1,3,12,15,33,38,44,47,51,53,54,54,54...` - continuous easing that
+plateaus at 54 (just under `tile_resize`'s 55) while the slow step runs,
+then advances only when the real step event arrives. The hook takes
+generic `steps`/`currentStepKey`/`done`/`estimates`, so Phase D's export
+progress reuses it as-is. Caveat: MockEngine's reports carry no
+`timings_s`, so estimates stay empty (defaults apply) until a real
+CorelEngine run has completed.
+
+**Reference field.** UI unchanged (free-text `reference`), but `shops` now
+also has a nullable `reference_file_path` column (`db._MIGRATIONS` adds it
+to an already-created database via an idempotent `ALTER TABLE`), and
+`POST /api/v2/jobs/{id}/shops` accepts it. No upload UI yet - waiting on
+what the field should actually be.
+
+**Verified through the UI, real CorelEngine, brand `dalmia`** (uploaded
+one of the already-generated dalmia `.cdr` outputs as the master - nothing
+from `signage_dataset` touched): a 180x48in board and a mixed-unit
+120in x 4ft board (correctly converted to 3048x1219.2mm).
+
+| Board (new UI) | Visual combined | Same-size benchmark (old CLI pipeline) |
+|---|---|---|
+| 180x48in | 0.795 PASS | 0.785 (board 02-180) |
+| 120in x 4ft | 0.977 PASS | 0.976 / 0.972 / 0.955 (boards 03 / 05 / 14) |
+
+No regression from routing conversion through the v2 API. Caveat: the v2
+API doesn't yet pass `master_shop_name`/phone/GST, so the master's own
+shop name is kept as-is - the new UI doesn't expose shop-name replacement
+yet.
+
 ### Frontend: `frontend/src/` structure
 
 `main.jsx` wraps the app in `<BrowserRouter>` and imports `theme.css`

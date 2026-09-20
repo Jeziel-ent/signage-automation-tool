@@ -1,8 +1,22 @@
 import { useEffect, useRef, useState } from "react";
 import UploadDropzone from "../components/UploadDropzone.jsx";
+import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 
 const UNITS = ["in", "cm", "mm", "ft"];
 const emptyShopForm = () => ({ name: "", width: "", width_unit: "in", height: "", height_unit: "in", reference: "" });
+
+// CorelEngine's own named steps (see backend/app/engines.py's step() closure
+// and CLAUDE.md "Production hardening"), each with the cumulative percent
+// reached once that step is confirmed complete - mirrors main.py's
+// _STEP_PERCENT. Exported shape reused by useSteppedProgress.
+export const CONVERT_STEPS = [
+  { key: "launch", endPct: 10 },
+  { key: "open", endPct: 25 },
+  { key: "tile_resize", endPct: 55 },
+  { key: "saveas", endPct: 75 },
+  { key: "pdf", endPct: 88 },
+  { key: "png", endPct: 97 },
+];
 
 export default function Automation() {
   const [brands, setBrands] = useState([]);
@@ -14,12 +28,20 @@ export default function Automation() {
   const [shops, setShops] = useState([]);
   const [shopForm, setShopForm] = useState(emptyShopForm());
   const [shopError, setShopError] = useState("");
+  const [stepEstimates, setStepEstimates] = useState({});
   const pollers = useRef({});
 
   useEffect(() => {
     fetch("/api/v2/brands")
       .then((r) => r.json())
       .then(setBrands)
+      .catch(() => {});
+    // Measured average step durations (seconds), used to pace the smoothed
+    // per-row progress animation - see useSteppedProgress. Fetched once per
+    // page load, not on every status poll.
+    fetch("/api/v2/step-estimates")
+      .then((r) => r.json())
+      .then(setStepEstimates)
       .catch(() => {});
   }, []);
 
@@ -181,7 +203,7 @@ export default function Automation() {
                   <td>{s.height_unit}</td>
                   <td>{s.reference || "—"}</td>
                   <td>
-                    <ConvertCell shop={s} onConvert={() => convertShop(s.id)} />
+                    <ConvertCell shop={s} onConvert={() => convertShop(s.id)} stepEstimates={stepEstimates} />
                   </td>
                   <td>
                     {s.status === "done" ? (
@@ -259,7 +281,11 @@ function NewShopRow({ seqNo, form, setForm, onAdd }) {
   );
 }
 
-function ConvertCell({ shop, onConvert }) {
+function ConvertCell({ shop, onConvert, stepEstimates }) {
+  // Called unconditionally (hooks can't be conditional) - it's a no-op
+  // until `shop.status === "converting"` actually starts reporting steps.
+  const smoothedPct = useSteppedProgress(CONVERT_STEPS, shop.step, shop.status === "done", stepEstimates);
+
   if (shop.status === "new") {
     return (
       <button className="btn small" onClick={onConvert}>
@@ -269,12 +295,15 @@ function ConvertCell({ shop, onConvert }) {
   }
   if (shop.status === "queued") return <span className="pill">Queued…</span>;
   if (shop.status === "converting") {
+    // Eased toward (but capped just below) the next real step threshold -
+    // never a straight jump to the backend's last-polled value, and never
+    // 100% here (that only happens once status flips to "done").
     return (
       <div className="row-progress">
         <div className="progress-bar small">
-          <div className="progress-fill" style={{ width: `${shop.progress_pct || 0}%` }} />
+          <div className="progress-fill" style={{ width: `${smoothedPct}%` }} />
         </div>
-        <span className="progress-pct">{shop.progress_pct || 0}%</span>
+        <span className="progress-pct">{smoothedPct}%</span>
       </div>
     );
   }

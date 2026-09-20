@@ -277,6 +277,9 @@ def v2_add_shop(job_id: str, payload: dict):
         width_unit = payload.get("width_unit", "in")
         height_unit = payload.get("height_unit", "in")
         reference = (payload.get("reference") or "").strip() or None
+        # No upload UI for this yet (see CLAUDE.md "New UI") - accepted now so the
+        # data model doesn't need another migration once one exists.
+        reference_file_path = (payload.get("reference_file_path") or "").strip() or None
         assert name and width > 0 and height > 0
         assert width_unit in ("mm", "cm", "in", "ft") and height_unit in ("mm", "cm", "in", "ft")
     except Exception:
@@ -284,8 +287,19 @@ def v2_add_shop(job_id: str, payload: dict):
 
     shop_id = uuid.uuid4().hex[:12]
     seq_no = len(db.list_shops(job_id)) + 1
-    db.create_shop(shop_id, job_id, seq_no, name, width, width_unit, height, height_unit, reference)
+    db.create_shop(shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
+                    reference, reference_file_path)
     return db.get_shop(shop_id)
+
+
+@app.get("/api/v2/step-estimates")
+def v2_step_estimates():
+    """Average measured duration (seconds) per CorelEngine step across every
+    completed conversion so far - used by the frontend to pace its smoothed
+    per-row progress animation (see CLAUDE.md "New UI"). Fetched once per
+    Automation page load, not on every status poll.
+    """
+    return db.get_step_timing_estimates()
 
 
 @app.get("/api/v2/jobs/{job_id}/shops")

@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS shops (
     height REAL NOT NULL,
     height_unit TEXT NOT NULL,
     reference TEXT,
+    reference_file_path TEXT,
     status TEXT NOT NULL DEFAULT 'new',
     step TEXT,
     error TEXT,
@@ -55,6 +56,14 @@ CREATE TABLE IF NOT EXISTS shops (
     completed_at REAL
 );
 """
+
+# Columns added after the tables above first shipped - `CREATE TABLE IF NOT
+# EXISTS` doesn't retroactively add columns to an existing table, so an
+# already-created shops.db needs an explicit ALTER TABLE. Each entry here is
+# idempotent (checked against the live schema before running).
+_MIGRATIONS = [
+    ("shops", "reference_file_path", "ALTER TABLE shops ADD COLUMN reference_file_path TEXT"),
+]
 
 
 @contextmanager
@@ -73,6 +82,10 @@ def _conn():
 def init_db() -> None:
     with _conn() as conn:
         conn.executescript(SCHEMA)
+        for table, column, alter_sql in _MIGRATIONS:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+            if column not in cols:
+                conn.execute(alter_sql)
 
 
 # ---------------------------------------------------------------- brands
@@ -122,13 +135,22 @@ def list_jobs() -> list[dict]:
 # ----------------------------------------------------------------- shops
 
 def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float, width_unit: str,
-                 height: float, height_unit: str, reference: str | None) -> None:
+                 height: float, height_unit: str, reference: str | None,
+                 reference_file_path: str | None = None) -> None:
+    """`reference` is the free-text note shown in the UI today.
+    `reference_file_path`, if given, is a path to an uploaded reference
+    file - the data model supports it (per review feedback) ahead of any
+    UI for actually uploading one; unused by the current frontend, which
+    always passes it as None.
+    """
     with _conn() as conn:
         conn.execute(
             """INSERT INTO shops
-               (id, job_id, seq_no, name, width, width_unit, height, height_unit, reference, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
-            (shop_id, job_id, seq_no, name, width, width_unit, height, height_unit, reference, time.time()),
+               (id, job_id, seq_no, name, width, width_unit, height, height_unit,
+                reference, reference_file_path, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
+            (shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
+             reference, reference_file_path, time.time()),
         )
 
 
@@ -172,3 +194,27 @@ def list_all_shops_with_job() -> list[dict]:
                ORDER BY shops.created_at DESC"""
         ).fetchall()
     return [dict(r) for r in rows]
+
+
+def get_step_timing_estimates() -> dict[str, float]:
+    """Average observed duration (seconds) per `CorelEngine` step, across
+    every completed shop's own `report.json` `timings_s` (see
+    `engines.py`'s `_report`/`step()`) - real, measured numbers the
+    frontend uses to pace its smoothed progress animation, rather than a
+    guessed constant. Naturally starts empty and gets more representative
+    as more real conversions complete; the frontend falls back to its own
+    default for any step with no data yet.
+    """
+    sums: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    with _conn() as conn:
+        rows = conn.execute("SELECT report_json FROM shops WHERE report_json IS NOT NULL").fetchall()
+    for r in rows:
+        try:
+            timings = json.loads(r["report_json"]).get("timings_s") or {}
+        except Exception:
+            continue
+        for step, seconds in timings.items():
+            sums[step] = sums.get(step, 0.0) + float(seconds)
+            counts[step] = counts.get(step, 0) + 1
+    return {step: round(sums[step] / counts[step], 2) for step in sums}
