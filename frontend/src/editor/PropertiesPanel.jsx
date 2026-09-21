@@ -11,7 +11,7 @@ const fmtField = (mm, unit) => {
 };
 
 /** Right panel 1: size/position of the selection (centre reference point, like CorelDRAW's default), stacking order, text. */
-export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onFontPreview }) {
+export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onTextPreview }) {
   const idx = useMemo(() => buildIndex(scene), [scene]);
   const nodes = useMemo(() => sel.map((id) => idx.get(id)?.node).filter(Boolean), [sel, idx]);
   const box = useMemo(() => unionBox(nodes), [nodes]);
@@ -155,14 +155,14 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onF
         )}
 
         {active === "text" && hasText && (
-          <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} fonts={fonts} onFontPreview={onFontPreview} />
+          <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} fonts={fonts} onTextPreview={onTextPreview} />
         )}
       </div>
     </section>
   );
 }
 
-function TextFields({ node, locked, onCommit, fonts, onFontPreview }) {
+function TextFields({ node, locked, onCommit, fonts, onTextPreview }) {
   const known = fonts && fonts.available ? new Set(fonts.fonts.map((f) => f.toLowerCase())) : null;
   const installed = (name) => !known || known.has(name.toLowerCase());
   const [fontError, setFontError] = useState("");
@@ -177,11 +177,31 @@ function TextFields({ node, locked, onCommit, fonts, onFontPreview }) {
   }, [t.content, t.font, t.size_pt]);
 
   const push = (patch) => onCommit({ op: "text", id: node.id, ...patch });
+  // Live, uncommitted preview shown on the canvas as the user types or picks a
+  // font - see Canvas.jsx's textPreview rendering. Always carries BOTH the
+  // current content and font (whichever field didn't just change keeps its
+  // latest typed/picked value, not the last-committed one) so editing one
+  // field doesn't revert the other's in-progress preview.
+  const preview = (patch) => onTextPreview && onTextPreview({ id: node.id, content, font, ...patch });
+  const clearPreview = () => onTextPreview && onTextPreview(null);
   return (
     <div className="ed-text">
       <label className="ed-field wide">
         <span>Text</span>
-        <textarea rows={2} value={content} disabled={locked} onChange={(e) => setContent(e.target.value)} onBlur={() => content !== t.content && push({ content })} />
+        <textarea
+          rows={2}
+          value={content}
+          disabled={locked}
+          onChange={(e) => {
+            const v = e.target.value;
+            setContent(v);
+            preview({ content: v });
+          }}
+          onBlur={() => {
+            clearPreview();
+            if (content !== t.content) push({ content });
+          }}
+        />
       </label>
       <div className="ed-grid2">
         <label className="ed-field">
@@ -193,9 +213,9 @@ function TextFields({ node, locked, onCommit, fonts, onFontPreview }) {
             // own render, but it can overlay the shape's text in the chosen font (an actual
             // SVG <text> with that font-family) so a pick is seen right away, not only after
             // blur commits the real `text` op.
-            onFontPreview && onFontPreview(v ? { id: node.id, font: v } : null);
+            preview({ font: v });
           }} onBlur={() => {
-            onFontPreview && onFontPreview(null);
+            clearPreview();
             if (!font || font === t.font) return setFontError("");
             if (!installed(font)) {
               setFontError(`"${font}" is not installed on this machine - CorelDRAW would silently ignore it and keep the old font. Pick an installed font.`);
@@ -215,7 +235,7 @@ function TextFields({ node, locked, onCommit, fonts, onFontPreview }) {
       {!fontError && t.font && !installed(t.font) && (
         <div className="ed-warn">This board's font "{t.font}" is not installed here - CorelDRAW is substituting another one.</div>
       )}
-      {node.stale && <div className="ed-warn">Text changed - the canvas keeps showing CorelDRAW's original render until Save and Generate.</div>}
+      {node.stale && <div className="ed-hint">Live preview active - Save and Generate will re-render this exactly through CorelDRAW.</div>}
     </div>
   );
 }

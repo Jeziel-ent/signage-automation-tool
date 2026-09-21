@@ -38,10 +38,15 @@ export function resizeBox(handle, start, dx, dy, free) {
 }
 
 // Every leaf's <image>. Memoised on the leaves array so pointer-move re-renders of
-// the overlay never touch the (potentially several hundred) images.
-const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRefs }) {
+// the overlay never touch the (potentially several hundred) images. `hideId`
+// (the node currently under a live text/font preview - see Canvas's own
+// textPreview rendering below) is skipped entirely rather than just covered,
+// so the live SVG <text> preview is the only thing visible for that shape,
+// not CorelDRAW's stale render peeking out from underneath or through any
+// transparent pixels in it.
+const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRefs, hideId }) {
   return leaves.map((n) =>
-    n.image ? (
+    n.image && n.id !== hideId ? (
       <image
         key={n.id}
         ref={(el) => {
@@ -60,7 +65,7 @@ const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRef
   );
 });
 
-export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, fontPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
+export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, textPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
   const imgRefs = useRef(new Map());
@@ -340,7 +345,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
           <rect x={4 / view.zoom} y={4 / view.zoom} width={pageW} height={pageH} fill="rgba(0,0,0,0.28)" />
           <rect x="0" y="0" width={pageW} height={pageH} fill="#ffffff" />
           <g style={{ visibility: showRender && scene.page_image ? "hidden" : "visible" }}>
-            <SceneImages leaves={leaves} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} />
+            <SceneImages leaves={leaves} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideId={textPreview && textPreview.id} />
           </g>
           {showRender && scene.page_image && (
             <image href={assetBase + scene.page_image.file} x="0" y="0" width={pageW} height={pageH} preserveAspectRatio="none" style={{ pointerEvents: "none" }} />
@@ -378,24 +383,30 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
           );
         })}
 
-        {fontPreview && selNodes.filter((n) => n.id === fontPreview.id && n.text).map((n) => {
-          // Live, uncommitted font preview: the canvas can't re-typeset CorelDRAW's own
-          // render, so this overlays the shape's own text as a real SVG <text> in the
-          // chosen font-family, right over its (now stale-looking) image - removed the
-          // instant the Font field blurs (committed or not), never itself an operation.
+        {textPreview && selNodes.filter((n) => n.id === textPreview.id && n.text).map((n) => {
+          // Live, uncommitted text/font preview: the canvas can't re-typeset CorelDRAW's
+          // own render, so while either field is being edited, this replaces the shape's
+          // (now hidden - see SceneImages' hideId) image with a real SVG <text> showing the
+          // in-progress content in the in-progress font-family. Removed the instant either
+          // field blurs (committed or not), never itself an operation. Falls back through
+          // Nirmala UI/Nirmala Text (the Windows Indic UI fonts this app's own engine relies
+          // on for Tamil - see backend CLAUDE.md "Shop name replacement") so complex scripts
+          // like Tamil still render something legible even if the exact picked font is only
+          // Latin-capable or not installed in this browser.
           const b = sbox(n);
+          const previewFont = textPreview.font || n.text.font || "";
+          const fontFamily = `"${previewFont}", "Nirmala UI", "Nirmala Text", Arial, sans-serif`;
           const fontSizePx = Math.max(8, (n.text.size_pt || 24) * view.zoom * (96 / 72) * 0.5);
+          const lines = String(textPreview.content ?? "").split(/\r\n|\r|\n/);
+          const lineHeight = fontSizePx * 1.2;
+          const startY = b.y + b.h / 2 - (lineHeight * (lines.length - 1)) / 2;
           return (
-            <g key={"fontpreview" + n.id} pointerEvents="none">
-              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="var(--color-white)" />
-              <text
-                x={b.x + b.w / 2}
-                y={b.y + b.h / 2}
-                textAnchor="middle"
-                dominantBaseline="central"
-                style={{ fontFamily: `"${fontPreview.font}", "Nirmala UI", Arial, sans-serif`, fontSize: fontSizePx }}
-              >
-                {n.text.content}
+            <g key={"textpreview" + n.id} pointerEvents="none">
+              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-red)" strokeDasharray="3 3" opacity="0.6" />
+              <text x={b.x + b.w / 2} textAnchor="middle" style={{ fontFamily, fontSize: fontSizePx }}>
+                {lines.map((line, i) => (
+                  <tspan key={i} x={b.x + b.w / 2} y={startY + i * lineHeight}>{line || " "}</tspan>
+                ))}
               </text>
             </g>
           );
