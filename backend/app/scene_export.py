@@ -19,10 +19,12 @@ subprocess - see corel_worker.py's "scene_export" job).
 from __future__ import annotations
 
 import json
+import re
 import time
 from pathlib import Path
 from typing import Callable
 
+SCENE_VERSION = 3
 CDR_PNG = 802
 CDR_SVG = 1345
 CDR_CURRENT_PAGE = 1
@@ -135,7 +137,7 @@ def _frame_is_rect(shape, type_: str) -> bool:
     return bool(_safe(check, False))
 
 
-def walk_shape(shape, leaves: list) -> dict:
+def walk_shape(shape, leaves: list, in_clip: bool = False) -> dict:
     """Builds the node for `shape` (recursively). Appends (node, shape) to `leaves`
     for every shape that needs its own rendered image."""
     type_ = _shape_type(shape)
@@ -149,18 +151,22 @@ def walk_shape(shape, leaves: list) -> dict:
         # frames, rotated frames, or a scene whose children failed to render). Child order in
         # `leaves` is bottom -> top, container last - the id-assignment order (see
         # export_replay.index_doc) is unchanged because ids are read in walk order, not export order.
-        node["children"] = [walk_shape(c, leaves) for c in reversed(_children(powerclip))]
+        node["children"] = [walk_shape(c, leaves, True) for c in reversed(_children(powerclip))]
+        if in_clip:
+            node["_in_clip"] = True
         leaves.append((node, shape))          # ... and one image for the whole clipped result
         return node
     if type_ == "group":
         node = _node(shape, "group", type_)
-        node["children"] = [walk_shape(c, leaves) for c in reversed(_children(shape))]
+        node["children"] = [walk_shape(c, leaves, in_clip) for c in reversed(_children(shape))]
         return node
     node = _node(shape, "shape", type_)
     if type_ == "text":
         info = _safe(lambda: _text_info(shape))
         if info is not None:
             node["text"] = info
+    if in_clip:
+        node["_in_clip"] = True                # popped by _export_leaf - export-only bookkeeping
     leaves.append((node, shape))
     return node
 
@@ -198,58 +204,91 @@ def _select_only(doc, shape) -> None:
     shape.AddToSelection()
 
 
-def _export_png(doc, shape, node: dict, path: Path, px_w: int, px_h: int) -> None:
-    def go():
-        flt = doc.ExportBitmap(
-            str(path), CDR_PNG, CDR_SELECTION, CDR_RGB_IMAGE,
-            px_w, px_h, 96, 96, 1, False, True, True, False, 0, None, None,
-        )
-        flt.Finish()
+_SVG_DRAWING_TAGS = (b"<path", b"<rect", b"<polygon", b"<ellipse", b"<circle", b"<image", b"<line", b"<polyline", b"<use")
+_EMPTY_VIEWBOX = re.compile(rb'viewBox="[^"]*nan')
 
+
+def _svg_has_drawing(p: Path) -> bool:
+    """False for an SVG that CorelDRAW wrote empty (`viewBox="0 0 nan nan"`, no elements) or that
+    uses <font> text (browsers cannot render it). A selection export of a vector shape that sits
+    inside a PowerClip produces exactly such an empty file - accepting it drew the shape as nothing
+    (a whole maroon banner vanished from the canvas) - so it must be treated as a failure."""
     try:
-        go()
-        return
-    except Exception:
-        if node["type"] != "bitmap":
-            raise
-    # A bitmap INSIDE a PowerClip cannot be exported by selection (ExportBitmap raises E_FAIL for
-    # every size/transparency setting - verified live on a real board; curves, groups and text in
-    # the same PowerClip export fine). A duplicate moved out onto the layer exports like any
-    # top-level bitmap; it is deleted again straight after, so the document is unchanged.
+        data = p.read_bytes()
+    except OSError:
+        return False
+    if b"FontID" in data[:4000] or _EMPTY_VIEWBOX.search(data[:4000]):
+        return False
+    return any(t in data for t in _SVG_DRAWING_TAGS)
+
+
+def _export_png(doc, path: Path, px_w: int, px_h: int) -> None:
+    flt = doc.ExportBitmap(
+        str(path), CDR_PNG, CDR_SELECTION, CDR_RGB_IMAGE,
+        px_w, px_h, 96, 96, 1, False, True, True, False, 0, None, None,
+    )
+    flt.Finish()
+
+
+def _duplicate_out_of_clip(doc, shape):
+    """A copy of `shape` on the layer, outside any PowerClip. Exporting a shape that is INSIDE a
+    PowerClip by selection is unreliable (verified live: a bitmap raises E_FAIL, a vector shape
+    writes an empty SVG), while a plain top-level copy exports like any other shape. The caller
+    deletes the copy straight after, so the document is unchanged."""
     dup = shape.Duplicate()
     try:
         layer = _safe(lambda: shape.Layer) or _safe(lambda: doc.ActivePage.ActiveLayer)
         dup.MoveToLayer(layer)
-        _select_only(doc, dup)
-        go()
-    finally:
+        _safe(lambda: setattr(dup, "Visible", True))
+    except Exception:
         _safe(lambda: dup.Delete())
+        raise
+    return dup
+
+
+def _render_leaf(doc, node: dict, target, img_dir: Path) -> None:
+    _select_only(doc, target)
+    if node["type"] in VECTOR_TYPES and node["kind"] == "shape":
+        p = img_dir / f"{node['id']}.svg"
+        try:
+            doc.Export(str(p), CDR_SVG, CDR_SELECTION, None, None)
+            if _svg_has_drawing(p):
+                node["image"] = {"file": p.name, "format": "svg"}
+                return
+        except Exception:
+            pass
+        p.unlink(missing_ok=True)
+    px_w, px_h = plan_png_size(node["w"], node["h"])
+    p = img_dir / f"{node['id']}.png"
+    _export_png(doc, p, px_w, px_h)
+    node["image"] = {"file": p.name, "format": "png"}
 
 
 def _export_leaf(doc, node: dict, shape, img_dir: Path) -> None:
     """Renders one leaf to img_dir and sets node["image"]. Temporarily makes a hidden
-    shape visible (a hidden shape exports as nothing) and restores it afterwards."""
+    shape visible (a hidden shape exports as nothing) and restores it afterwards.
+    A leaf inside a PowerClip is rendered from a duplicate moved out of the clip (see
+    _duplicate_out_of_clip); any other leaf that fails a direct export gets one retry that way."""
+    in_clip = bool(node.pop("_in_clip", False))
     was_visible = _safe(lambda: shape.Visible, True)
     if not was_visible:
         _safe(lambda: setattr(shape, "Visible", True))
+    dup = None
     try:
-        _select_only(doc, shape)
-        vector = node["type"] in VECTOR_TYPES and node["kind"] == "shape"
-        if vector:
-            p = img_dir / f"{node['id']}.svg"
+        if in_clip:
+            dup = _duplicate_out_of_clip(doc, shape)
+            _render_leaf(doc, node, dup, img_dir)
+        else:
             try:
-                doc.Export(str(p), CDR_SVG, CDR_SELECTION, None, None)
-                if p.exists() and b"FontID" not in p.read_bytes()[:4000]:
-                    node["image"] = {"file": p.name, "format": "svg"}
-                    return
+                _render_leaf(doc, node, shape, img_dir)
             except Exception:
-                pass
-            p.unlink(missing_ok=True)
-        px_w, px_h = plan_png_size(node["w"], node["h"])
-        p = img_dir / f"{node['id']}.png"
-        _export_png(doc, shape, node, p, px_w, px_h)
-        node["image"] = {"file": p.name, "format": "png"}
+                if node["type"] != "bitmap":
+                    raise
+                dup = _duplicate_out_of_clip(doc, shape)
+                _render_leaf(doc, node, dup, img_dir)
     finally:
+        if dup is not None:
+            _safe(lambda: dup.Delete())
         if not was_visible:
             _safe(lambda: setattr(shape, "Visible", False))
         _safe(lambda: doc.ClearSelection())
@@ -315,7 +354,7 @@ def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = Non
         failed.append(f"page image: {e}")
 
     scene = {
-        "version": 2,                      # 2: PowerClip children carry their own images
+        "version": SCENE_VERSION,          # 2: PowerClip children have own images; 3: ...and are exported from duplicates (v2 wrote empty SVGs for them)
         "unit": "mm",
         "page": {"width": round(page_w, 4), "height": round(page_h, 4)},
         "page_image": page_image,

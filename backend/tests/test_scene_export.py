@@ -71,7 +71,7 @@ class FakeFilter:
 
 
 class FakeDoc:
-    def __init__(self, page, svg_body=b"<svg/>", fail_on=()):
+    def __init__(self, page, svg_body=b'<svg viewBox="0 0 10 10"><path d="M0 0L1 1"/></svg>', fail_on=()):
         self.ActivePage, self.Unit = page, 0
         self.calls, self.svg_body, self.fail_on = [], svg_body, set(fail_on)
         self.selection = []
@@ -107,11 +107,21 @@ def _select_hook(shape, doc):
     shape.AddToSelection = lambda: doc.selection.append(shape)
 
 
+def _default_duplicate(shape, doc):
+    dup = Shape(shape.Type, shape.LeftX, shape.BottomY, shape.SizeWidth, shape.SizeHeight)
+    dup.MoveToLayer = lambda layer: None
+    dup.Delete = lambda: None
+    _select_hook(dup, doc)
+    return dup
+
+
 def _attach(doc):
     def walk(shapes):
         for i in range(1, shapes.Count + 1):
             s = shapes.Item(i)
             _select_hook(s, doc)
+            if "Duplicate" not in vars(s):
+                s.Duplicate = lambda s=s: _default_duplicate(s, doc)
             walk(s.Shapes)
             if s.PowerClip is not None:
                 walk(s.PowerClip.Shapes)
@@ -286,7 +296,8 @@ def test_paragraph_text_is_labelled_as_such():
 def test_scene_version_2_and_old_cached_scenes_with_a_powerclip_are_rebuilt_once():
     from app import main
     assert main._needs_powerclip_images({"version": 1, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "powerclip", "children": []}]}]})
-    assert not main._needs_powerclip_images({"version": 2, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "powerclip", "children": []}]}]})
+    assert main._needs_powerclip_images({"version": 2, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "powerclip", "children": []}]}]})   # v2 wrote empty SVGs for clipped vectors
+    assert not main._needs_powerclip_images({"version": scene_export.SCENE_VERSION, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "powerclip", "children": []}]}]})
     assert not main._needs_powerclip_images({"version": 1, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "shape"}]}]})  # no PowerClip: keep the cache
 
 
@@ -311,13 +322,59 @@ def test_bitmap_inside_a_powerclip_is_exported_via_a_duplicate_moved_out_of_the_
     assert not scene["stats"]["image_failures"]
 
 
-def test_a_failing_non_bitmap_still_reports_a_failure_instead_of_duplicating(tmp_path):
-    curve = Shape(4, 300, 300, 80, 60)                       # type 4 -> not vector-exportable, not a bitmap
-    doc = FakeDoc(Page([Layer("L", [Shape(RECT, 0, 0, 90, 90, powerclip=[curve])])]), fail_on=[curve.StaticID])
-    curve.Duplicate = lambda: (_ for _ in ()).throw(AssertionError("must not duplicate a non-bitmap"))
-    _attach(doc)
+def test_a_failing_top_level_non_bitmap_reports_a_failure_instead_of_duplicating(tmp_path):
+    doc, s = _sample_doc(fail_on=[])
+    top = s["top_text"]
+    doc.fail_on = {top.StaticID}
+    top.Duplicate = lambda: (_ for _ in ()).throw(AssertionError("must not duplicate a top-level non-bitmap"))
     scene = scene_export.export_scene(doc, tmp_path)
-    assert any(str(curve.StaticID) in f for f in scene["stats"]["image_failures"])
+    assert any(f.startswith(f"s{top.StaticID}:") for f in scene["stats"]["image_failures"])
+
+
+def _clip_doc(svg_body=None):
+    """A PowerClip (rect frame) holding one curve; the curve's Duplicate() is observable."""
+    curve = Shape(CURVE, -50, -50, 400, 100)             # sticks out of the frame, like a banner
+    clip = Shape(RECT, 0, 0, 100, 100, powerclip=[curve])
+    kw = {} if svg_body is None else {"svg_body": svg_body}
+    doc = FakeDoc(Page([Layer("L", [clip])]), **kw)
+    events = []
+    dup = Shape(CURVE, -50, -50, 400, 100)
+    curve.Duplicate = lambda: (events.append("dup"), dup)[1]
+    dup.MoveToLayer = lambda layer: events.append("moved")
+    dup.Delete = lambda: events.append("deleted")
+    curve.Layer = "the-layer"
+    _attach(doc)
+    _select_hook(dup, doc)
+    return doc, curve, dup, events
+
+
+def test_a_vector_shape_inside_a_powerclip_is_exported_from_a_duplicate_outside_the_clip(tmp_path):
+    # Selection-exporting a vector shape INSIDE a PowerClip wrote an empty SVG (verified live), which
+    # made the canvas draw e.g. the maroon banner behind the Tamil text as nothing.
+    doc, curve, dup, events = _clip_doc()
+    scene = scene_export.export_scene(doc, tmp_path)
+    node = next(n for n in scene_ops.iter_nodes(scene) if n["id"] == f"s{curve.StaticID}")
+    assert node["image"]["format"] == "svg"
+    assert events == ["dup", "moved", "deleted"]
+    assert "_in_clip" not in node                                           # export-only bookkeeping never leaks into scene.json
+    assert doc.visible_at_export.get(dup.StaticID) is True
+
+
+def test_an_empty_svg_from_corel_falls_back_to_png(tmp_path):
+    empty = b'<svg viewBox="0 0 nan nan"></svg>'
+    doc, s = _sample_doc(svg_body=empty)
+    scene = scene_export.export_scene(doc, tmp_path)
+    node = next(n for n in scene_ops.iter_nodes(scene) if n["id"] == f"s{s['child_a'].StaticID}")
+    assert node["image"]["format"] == "png"
+    assert not (tmp_path / "img" / f"s{s['child_a'].StaticID}.svg").exists()
+
+
+def test_the_duplicate_is_deleted_even_when_its_export_fails(tmp_path):
+    doc, curve, dup, events = _clip_doc()
+    doc.fail_on = {dup.StaticID}
+    scene = scene_export.export_scene(doc, tmp_path)
+    assert events[-1] == "deleted"
+    assert any(f.startswith(f"s{curve.StaticID}:") for f in scene["stats"]["image_failures"])
 
 
 def test_powerclip_records_whether_its_frame_is_an_axis_aligned_rectangle(tmp_path):

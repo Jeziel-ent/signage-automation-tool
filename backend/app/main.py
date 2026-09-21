@@ -542,9 +542,10 @@ def _scene_progress(shop_id: str) -> dict:
 
 
 def _needs_powerclip_images(scene: dict) -> bool:
-    """A scene cached before version 2 has PowerClips whose children carry no images, so the
-    editor could only outline them; rebuild it once (boards without a PowerClip are untouched)."""
-    if scene.get("version", 1) >= 2:
+    """A scene cached before version 3 has PowerClips whose children carry no images (v1) or empty
+    SVGs (v2), so the editor could only outline them or drew them as nothing; rebuild it once
+    (boards without a PowerClip are untouched)."""
+    if scene.get("version", 1) >= scene_export.SCENE_VERSION:
         return False
     return any(n.get("kind") == "powerclip" for n in scene_ops.iter_nodes(scene))
 

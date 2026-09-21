@@ -413,16 +413,20 @@ cross-machine font differences are only warned about, not fixed.
 (driven by embedded bitmaps), PNG/JPEG 1-3 s at 4000 px; one CorelDRAW
 instance per export, same free-RAM floor as everything else.
 
-**Live PowerClip contents (scene version 2).** The scene export now renders every PowerClip
+**Live PowerClip contents (scene version 3).** The scene export now renders every PowerClip
 child to its own image (a bitmap child cannot be selection-exported inside the clip - E_FAIL, verified
-live - so a duplicate is moved out onto the layer, exported and deleted) and records `frame_rect` (true
+live - so a duplicate is moved out onto the layer, exported and deleted; the same for EVERY leaf inside
+a PowerClip, because a selection SVG export of a vector shape inside a clip is written EMPTY -
+`viewBox="0 0 nan nan"` - which made version 2 draw e.g. a board's whole maroon bottom banner as nothing,
+leaving white Tamil text on cream; `_svg_has_drawing` now rejects such files and falls back to PNG) and records `frame_rect` (true
 when the frame is an axis-aligned rectangle, incl. a 4-node curve). For such a "live" PowerClip
 (`model.js livePowerclip`) the canvas draws the contents itself inside `<clipPath id="powerclip-<id>">`
 (`Canvas.jsx SceneImages`), instead of the flat container image, so moving/resizing a child or the whole
 container updates real pixels during the drag; ops carry absolute coordinates as before. Non-rect or
 rotated frames, or scenes without child images, keep the flat image + outline. Scenes cached before
-version 2 that contain a PowerClip are rebuilt once when opened. Verified live: scene export of a real
-board (193 leaves, 0 image failures, bitmap children non-empty, frame_rect true); the browser drag itself
+version 3 that contain a PowerClip are rebuilt once when opened. Verified live: scene export of the
+AL MADEENA board (352 leaves, 0 failures, 0 empty SVGs; a browser composite of the scene vs CorelDRAW's own page render
+differs by 3.2/255 mean, was 20.3/255 with the empty SVGs); the browser drag itself
 was NOT exercised in a real browser this session (no Playwright installed) - only unit tests
 (`model.test.mjs`), the production build and the fake-COM export tests.
 
