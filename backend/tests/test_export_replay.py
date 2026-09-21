@@ -558,3 +558,72 @@ def test_powerclip_child_still_rejects_order_and_delete():
     for op in ({"op": "order", "id": cid, "mode": "front"}, {"op": "delete", "ids": [cid]}):
         with pytest.raises(Exception, match="PowerClip"):
             run([op], doc, scene)
+
+
+# ---- lazily assigned PowerClip ids (found live: the scene's s48 was s208 in the replay document) ----
+
+class LazyIdShape(FShape):
+    """CorelDRAW gives a PowerClip's contents their StaticID the first time it is read."""
+
+    @property
+    def StaticID(self):
+        if getattr(self, "_sid", None) is None:
+            self._sid = next(self.doc._lazy_ids)
+        return self._sid
+
+    @StaticID.setter
+    def StaticID(self, _):
+        self._sid = None
+
+
+def _lazy_powerclip_doc():
+    global _ids
+    _ids = iter(range(1000, 100000))                   # every "open" of the same file gives its eager shapes the same ids
+    doc = build_doc()
+    doc._lazy_ids = iter(range(200, 400))
+    top = doc.ActivePage._layers[1]
+    frame = FShape(doc, 1, 0, 0, 500, 500)
+    frame.parent = top
+    kids = [LazyIdShape(doc, 3, 100, 100, 50, 20),      # top-most (COM index 1)
+            LazyIdShape(doc, 3, 200, 200, 60, 30),
+            LazyIdShape(doc, 5, 10, 10, 400, 300)]      # bottom-most: the big photo
+    for k in kids:
+        k.parent = frame
+    frame.PowerClip = FPowerClip(kids)
+    top._kids.append(frame)
+    return doc, kids
+
+
+def test_powerclip_child_ids_match_between_scene_export_and_a_fresh_replay_document():
+    doc1, _ = _lazy_powerclip_doc()
+    scene = {"page": {"width": 1000.0, "height": 500.0}, "layers": scene_export.walk_page(doc1.ActivePage)[0]}
+    photo_id = next(n["id"] for n in scene_ops.iter_nodes(scene) if n["type"] == "bitmap")
+    doc2, kids2 = _lazy_powerclip_doc()                       # a fresh "open" of the same file
+    ids2, _ = er.index_doc(doc2.ActivePage)
+    assert ids2[photo_id] is kids2[2]                          # the scene's photo id resolves to the photo, not another child
+    _, r, _, v = run([{"op": "move", "ids": [photo_id], "dx": 7, "dy": 3}], doc2, scene)
+    assert _child_box(kids2[2]) == [17.0, 13.0, 400.0, 300.0]
+    assert _child_box(kids2[0]) == [100.0, 100.0, 50.0, 20.0]  # the other children stayed put
+    assert v["ok"], v
+
+
+def test_replay_refuses_a_scene_whose_shapes_do_not_match_the_document():
+    doc, scene, inner = _doc_with_powerclip_text()
+    container = next(n for n in scene_ops.iter_nodes(scene) if n["kind"] == "powerclip")
+    container["x"] += 40.0                                            # scene disagrees with the document
+    with pytest.raises(er.ReplayError, match="does not match"):
+        er.Replayer(doc, scene, [])
+    doc, scene, _ = _doc_with_powerclip_text()
+    scene_ops.find_node(scene, next(n["id"] for n in scene_ops.iter_nodes(scene) if n["type"] == "text" and n.get("text", {}).get("content") == "INNER"))["id"] = "s99999"
+    with pytest.raises(er.ReplayError, match="not in the document"):
+        er.Replayer(doc, scene, [])
+
+
+def test_scene_check_ignores_text_extent_but_still_requires_text_to_be_text():
+    doc, scene, inner = _doc_with_powerclip_text()
+    node = scene_ops.find_node(scene, f"s{inner.StaticID}")
+    node["w"] += 30.0                                   # font substitution changed the measured width: fine
+    er.Replayer(doc, scene, [])
+    inner.Type = 3                                      # ... but the id now names a non-text shape: not fine
+    with pytest.raises(er.ReplayError, match="not in CorelDRAW"):
+        er.Replayer(doc, scene, [])

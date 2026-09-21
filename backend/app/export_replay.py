@@ -146,7 +146,20 @@ _children = scene_export._children
 
 
 def index_doc(page) -> tuple[dict, dict]:
-    """node id -> COM shape and layer id -> COM layer, using exactly the ids scene_export assigns."""
+    """node id -> COM shape and layer id -> COM layer, using exactly the ids scene_export assigns.
+
+    The traversal ORDER matters, not just the id format: CorelDRAW hands out a
+    StaticID to a PowerClip's contents the first time each is read, so the id a
+    shape gets depends on the order they are visited. scene_export.walk_shape reads a
+    container's id, then descends into its children bottom -> top
+    (`reversed(_children(...))`); this must visit them in that same order or the
+    same shape gets a different id here than in the scene the editor edited.
+    Verified live on a real PowerClip: with a top-first walk here, the scene's `s48` (a
+    341x339 mm bitmap) was `s208` in the replay document, and the scene's `s47` (a
+    772x799 mm photo) was a different, thin group - so a replayed move/resize
+    would have hit the wrong shape or none. Replayer._check_scene_matches_doc
+    guards against any remaining drift.
+    """
     shapes: dict = {}
     layers: dict = {}
 
@@ -154,10 +167,10 @@ def index_doc(page) -> tuple[dict, dict]:
         shapes[f"s{int(shape.StaticID)}"] = shape
         pc = _safe(lambda: shape.PowerClip)
         if pc is not None:
-            for c in _children(pc):
+            for c in reversed(_children(pc)):
                 walk(c)
         elif int(shape.Type) == 7:
-            for c in _children(shape):
+            for c in reversed(_children(shape)):
                 walk(c)
 
     for i in range(1, int(page.Layers.Count) + 1):
@@ -191,6 +204,7 @@ class Replayer:
         self.ops = ops
         self.shadow = copy.deepcopy(scene)
         self.shapes, self.layers = index_doc(self.page)
+        self._check_scene_matches_doc(scene)
         self.sid = {int(s.StaticID): nid for nid, s in self.shapes.items()}
         self.ghosts: dict = {}
         self.warnings: list[str] = []
@@ -221,6 +235,35 @@ class Replayer:
         getattr(self, "_op_" + op["op"])(op, before)
 
     # ------------------------------------------------------------ lookups
+    def _check_scene_matches_doc(self, scene: dict) -> None:
+        """Refuse to replay when the scene's ids don't line up with this document.
+
+        Every scene node must resolve to a COM shape with the same box. Without this, ids that
+        drifted (see index_doc) would silently apply an edit to a DIFFERENT shape - the failure
+        mode is a wrong export that still "succeeds", so it must be an error, not a warning.
+        Text nodes are only checked for existing and still being text: their measured extent
+        legitimately differs between sessions (font substitution/linking), which would make a box
+        comparison a false alarm that blocks valid exports.
+        """
+        bad: list[str] = []
+        for node in scene_ops.iter_nodes(scene):
+            shape = self.shapes.get(node["id"])
+            if shape is None:
+                bad.append(f"{node['id']} is not in the document")
+            elif node.get("type") == "text":
+                if int(shape.Type) != 6:
+                    bad.append(f"{node['id']} is a text object in the scene but not in CorelDRAW")
+            else:
+                got = [float(shape.LeftX), float(shape.BottomY), float(shape.SizeWidth), float(shape.SizeHeight)]
+                want = [node["x"], node["y"], node["w"], node["h"]]
+                if any(abs(g - w) > max(POS_TOL_MM, 0.001 * max(want[2], want[3])) for g, w in zip(got, want)):
+                    bad.append(f"{node['id']} is at {[round(v, 1) for v in got]} in CorelDRAW but {[round(v, 1) for v in want]} in the scene")
+            if len(bad) >= 5:
+                break
+        if bad:
+            raise ReplayError("the editor's scene does not match the CorelDRAW document (was the board re-converted "
+                              "after the scene was built?): " + "; ".join(bad))
+
     def _shape(self, node_id: str):
         s = self.shapes.get(node_id) or self.ghosts.get(node_id)
         if s is None:

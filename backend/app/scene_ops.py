@@ -25,8 +25,10 @@ not how it looks). Child coordinates are absolute page coordinates like every
 other node, so a nested move is the same translation as a top-level one - the
 clip frame itself never changes. Moving/resizing a child marks its PowerClip
 `stale` (its rendered image no longer matches) until CorelDRAW re-renders it.
-No real board in this project's dataset contains a PowerClip, so none of this
-has been verified against real CorelDRAW.
+Verified live (tools/probe_powerclip_coords.py) on a real Agarpathi board's
+PowerClip: child coordinates are absolute page coordinates (they follow the
+frame when it moves), LeftX/BottomY/SetSize read back what was written, and
+moving a child visibly changes the container's render.
 
 Operations (`op` key; every op is JSON and self-contained):
     move        {ids, dx, dy}
