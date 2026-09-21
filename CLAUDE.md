@@ -1617,11 +1617,50 @@ content is handled wholesale by the background stretch. Covered by
 `test_classify_zones_treats_a_page_covering_container_as_background_even_with_a_heuristic_slot_nested_inside`
 and reverified against the real board (the whole-board PowerClip stretched
 to exactly fill the new page, independent of the unrelated small bitmap
-nested inside it, which got its own zone). For a wide (landscape) target the product column sits on the
-left with the text column to its right (header over main_text); for a
-tall target the same four zones stack top-to-bottom instead - only the
-landscape template is exercised by the required no-overlap/in-bounds
-tests, so the portrait fallback is the less-tested path.
+nested inside it, which got its own zone).
+
+### Three templates for the area above the footer, picked by aspect ratio (`calculate_zone_rects`)
+
+A single "wide vs. tall" split (the original two-template design) looks
+wrong once ANY positive `target_w`/`target_h` is accepted rather than just
+a couple of sizes a template happened to be tuned against - a thin,
+full-height product column reads fine on a very wide board but is absurd
+on a near-square one. `calculate_zone_rects(target_w, target_h)` now picks
+from R = target_w / target_h:
+
+| R range | template | product / header / main_text placement |
+|---|---|---|
+| R >= 2.0 (`WIDE_RATIO`) | `_wide_zones` | product: a left column (width grows with target_w); header stacked above main_text in a column to its right |
+| 1.0 <= R < 2.0 (`GRID_RATIO`) | `_grid_zones` | a full-width header banner across the top of the upper area; product and main_text as an equal-width pair of cells side by side below it |
+| R < 1.0 | `_stack_zones` | header, product and main_text stacked full-width, top to bottom |
+
+The footer is always a horizontal banner across the full width at the
+bottom, in every template - only the area above it changes shape. Every
+fraction each template uses (margin/gap/footer as fractions of
+`min(target_w, target_h)`; each zone's own width/height as a fraction of
+the "upper area" or "available" height that's itself always a fixed
+fraction of `target_h`) is relative, never an absolute mm figure - this is
+what makes the geometry provably non-degenerate for ANY positive
+`target_w`/`target_h`, not just sizes it's been tried on; each `_*_zones`
+helper's own docstring in `orientation_adapter.py` carries the specific
+argument for why its own rectangles can't collapse. `zone_frames` (the old
+name) was renamed to `calculate_zone_rects` as part of this - there is no
+compatibility alias, since nothing outside this module and its own tests
+called it.
+
+Verified: 17 new tests including the grid template's defining shape (an
+equal-width, equal-height pair of cells) at the exact R=1.0 boundary,
+disjointness/in-bounds across a much wider range of sizes than before
+(extreme aspect ratios in both directions, sub-millimetre targets, and the
+task's own arbitrary examples - 90x40, 120x36, 48x96, 60x60in), and a
+full `convert_orientation` + `apply_ops` integration check at five
+different target sizes (one per template, plus a second grid-range size)
+confirming 0 overlaps, strict boundary containment, and that a
+multi-shape zone (the footer's address+contact pair) is still realized as
+ONE atomic `resize` op, not two independent ones - re-verified live
+against the same real board as above (job 16bfc025ca11) at all four of the
+task's own target sizes (90x40, 120x36, 48x96, 60x60in) through the
+running API: 0 errors, 0 overlaps, 0 out-of-bounds shapes at every size.
 
 **No new op type.** `convert_orientation(scene, target_w_mm, target_h_mm)`
 returns a `page` op plus one `resize` op per non-empty named zone, each
@@ -1652,9 +1691,10 @@ exactly like a manual editor resize, so nothing new was needed there), and
 not into the OLD `App.jsx`/`/api/jobs` flow at all - only the new-UI
 editor.
 
-`backend/tests/test_orientation_adapter.py` (26 tests): pairwise-disjoint,
+`backend/tests/test_orientation_adapter.py` (43 tests): pairwise-disjoint,
 in-bounds zone rectangles across a wide range of aspect ratios (including
-both the landscape and portrait templates); slot->zone classification on a
+all three templates and the task-specified arbitrary sizes - see "Three
+templates" below); slot->zone classification on a
 synthetic portrait scene with a PowerClip-nested product image, a hidden
 shape, an untagged "other" shape, a locked slot shape, and the
 page-covering-container-wins-background case above; and full
@@ -2273,7 +2313,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 382 passed as of this writing (that includes
+`pytest` from `backend/` — 399 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
 `test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`,

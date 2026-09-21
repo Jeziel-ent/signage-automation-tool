@@ -10,19 +10,21 @@ CLAUDE.md "Wide-board panel sequence"), one level up: instead of re-deriving gen
 tool, so slots are known, unlike the untagged dalmia/Agarpathi masters `layout.py` has to reason about
 from geometry alone) to move each kind of content into a purpose-built zone of the target page:
 
-    zone         slot kinds                    landscape placement
-    header       brand_title                    top of the right-hand text column
-    product      product_image (incl. nested    left column, aspect-fit scaled
-                 inside a PowerClip)
-    main_text    product_title                   middle of the right-hand text column
+    zone         slot kinds                    which rectangle (see "Three templates" below for
+                                                exactly where each zone's rectangle sits - it depends
+                                                on the target's aspect ratio, not fixed positions)
+    header       brand_title                    part of the "upper" area, above the footer
+    product      product_image (incl. nested    part of the "upper" area, aspect-fit scaled into
+                 inside a PowerClip)             its own rectangle
+    main_text    product_title                   part of the "upper" area
     footer       address, contact                a horizontal banner across the full width at the
                                                   bottom - the same "shop name belongs in the bottom
                                                   bar" placement CLAUDE.md's wide-board work already
                                                   established for contact-like text, reused here
                                                   rather than invented fresh
-    background   any unslotted top-level shape   stretched to exactly fill the new page (bg role,
-                 covering >= product_engine.       see layout.py's own `bg` role)
-                 BG_AREA_RATIO of the page area
+    background   any top-level shape covering    stretched to exactly fill the new page (bg role,
+                 >= product_engine.BG_AREA_RATIO  see layout.py's own `bg` role)
+                 of the page area
     other        everything else unslotted      scaled by the page's own uniform fit factor, centre
                                                   kept at the same proportional page position - the
                                                   same fallback layout.py's `text`/`logo` roles use
@@ -57,6 +59,23 @@ so a caller can tell the designer.
 All lengths are millimetres, like the rest of the scene model (`scene_ops.py`'s docstring) - a
 caller with a user-facing size in inches/feet converts with `layout.to_mm()` first, the same as every
 other place in this codebase that accepts a board size.
+
+**Three templates, picked by aspect ratio, not just "wide vs. tall".** `calculate_zone_rects` picks
+the layout for the area above the footer banner from R = target_w / target_h, since a template tuned
+for a very wide board (a thin product column, full page height) looks equally wrong stretched onto a
+near-square or a tall target - a single "landscape vs. portrait" split isn't enough once ANY positive
+target_w/target_h is accepted, not just the couple of sizes a template happened to be tuned against:
+
+    R range              template        product / header / main_text placement
+    R >= 2.0             wide            product: a left column (grows with target_w); header
+                                          stacked above main_text in a column to its right
+    1.0 <= R < 2.0       grid            a full-width header banner across the top of the upper
+                                          area; product and main_text as an equal-width pair of
+                                          cells side by side below it
+    R < 1.0              stack           header, product and main_text stacked full-width, top
+                                          to bottom
+
+The footer is always a horizontal banner across the full width at the bottom, in every template.
 """
 from __future__ import annotations
 
@@ -81,14 +100,26 @@ _KIND_TO_ZONE = {
     pe.SLOT_CONTACT: ZONE_FOOTER,
 }
 
-# Template proportions (fractions of the target page), tuned by eye for a wide landscape target -
-# see the module docstring for why the portrait fallback below is the less-tested path.
+# Template proportions (fractions of the target page or of its own upper/available area, never of an
+# absolute mm figure) - this is what makes calculate_zone_rects work for ANY positive target_w/
+# target_h, not just the sizes it happens to have been tried on: margin/gap/footer are fractions of
+# min(target_w, target_h), and everything each template derives from "upper_h"/"avail" is in turn a
+# fixed fraction of THAT (itself a fixed fraction of target_h), so no computed rectangle's width or
+# height can go non-positive for any target_w, target_h > 0 - see the proof in each _*_zones
+# docstring instead of a runtime "page too small" check that would either never fire or fire on
+# perfectly reasonable inputs depending on the constants.
 MARGIN_FRAC = 0.03
 GAP_FRAC = 0.02
 FOOTER_FRAC = 0.20          # of target height
-PRODUCT_COL_FRAC = 0.32     # of target width, landscape template only
-HEADER_OF_UPPER_FRAC = 0.35  # of the upper (non-footer) area's height, landscape template only
+PRODUCT_COL_FRAC = 0.32     # of target width, wide template only
+HEADER_OF_UPPER_FRAC = 0.35  # of the upper (non-footer) area's height, wide template only
+GRID_HEADER_FRAC = 0.28     # of the upper area's height, grid template only
 ZONE_PADDING_FRAC = 0.06    # of the zone's own smaller dimension - keeps content off the zone edges
+
+# Aspect-ratio thresholds (R = target_w / target_h) selecting which template calculate_zone_rects
+# uses for the area above the footer banner - see the module docstring's table.
+WIDE_RATIO = 2.0
+GRID_RATIO = 1.0
 
 
 def _r(v: float) -> float:
@@ -99,10 +130,64 @@ def _rect(x: float, y: float, w: float, h: float) -> dict:
     return {"x": _r(x), "y": _r(y), "w": _r(w), "h": _r(h)}
 
 
-def zone_frames(target_w: float, target_h: float) -> dict[str, dict]:
+def _wide_zones(m: float, gap: float, target_w: float, upper_y0: float, upper_h: float) -> dict[str, dict]:
+    """R >= WIDE_RATIO: a left product column at PRODUCT_COL_FRAC of the FULL target width (so it
+    keeps growing with target_w, unlike the grid template's column, which is why this template is
+    reserved for wide-enough targets - see calculate_zone_rects), header stacked above main_text in a
+    right-hand text column. product_w < target_w - m always (PRODUCT_COL_FRAC=0.32 < 1), so text_w =
+    target_w - m - (m+product_w+gap) is positive whenever target_w > 2m + product_w + gap; since m and
+    gap are fractions of min(target_w, target_h) <= target_w and product_w = 0.32*target_w, this holds
+    for every target_w > 0 once the fixed fractions (0.06+0.32+0.02 = 0.40 of target_w, at most) are
+    accounted for - true across the whole WIDE_RATIO domain, verified by
+    test_calculate_zone_rects_never_degenerates_across_a_wide_range_of_aspect_ratios."""
+    product_w = PRODUCT_COL_FRAC * target_w
+    product = _rect(m, upper_y0, product_w, upper_h)
+    text_x0 = m + product_w + gap
+    text_w = target_w - m - text_x0
+    header_h = HEADER_OF_UPPER_FRAC * upper_h
+    header = _rect(text_x0, upper_y0 + upper_h - header_h, text_w, header_h)
+    main_text = _rect(text_x0, upper_y0, text_w, upper_h - header_h - gap)
+    return {ZONE_HEADER: header, ZONE_PRODUCT: product, ZONE_MAIN_TEXT: main_text}
+
+
+def _grid_zones(m: float, gap: float, target_w: float, upper_y0: float, upper_h: float) -> dict[str, dict]:
+    """GRID_RATIO <= R < WIDE_RATIO: a compact, balanced 2-row grid - a full-width header banner
+    across the top of the upper area, product and main_text side by side in an equal-width pair of
+    cells below it. Unlike the wide template's column (a fraction of target_w, which would make a
+    near-square board's product zone as tall as the whole page but barely wider than its margin),
+    both cells here are (target_w - 2m - gap) / 2 wide - exactly half the available width regardless
+    of R, so neither one degenerates as R approaches 1.0 from above."""
+    header_h = GRID_HEADER_FRAC * upper_h
+    row2_h = upper_h - header_h - gap
+    col_w = (target_w - 2 * m - gap) / 2
+    header = _rect(m, upper_y0 + upper_h - header_h, target_w - 2 * m, header_h)
+    product = _rect(m, upper_y0, col_w, row2_h)
+    main_text = _rect(m + col_w + gap, upper_y0, col_w, row2_h)
+    return {ZONE_HEADER: header, ZONE_PRODUCT: product, ZONE_MAIN_TEXT: main_text}
+
+
+def _stack_zones(m: float, gap: float, target_w: float, upper_y0: float, upper_h: float) -> dict[str, dict]:
+    """R < GRID_RATIO (a tall/portrait target): header, product and main_text stacked full-width,
+    top to bottom, each a fixed fraction of the upper area's own height (`avail`, itself always
+    positive - see calculate_zone_rects)."""
+    avail = upper_h - 2 * gap
+    header_h = 0.18 * avail
+    product_h = 0.55 * avail
+    main_h = avail - header_h - product_h
+    top = upper_y0 + upper_h
+    header = _rect(m, top - header_h, target_w - 2 * m, header_h)
+    product = _rect(m, top - header_h - gap - product_h, target_w - 2 * m, product_h)
+    main_text = _rect(m, upper_y0, target_w - 2 * m, main_h)
+    return {ZONE_HEADER: header, ZONE_PRODUCT: product, ZONE_MAIN_TEXT: main_text}
+
+
+def calculate_zone_rects(target_w: float, target_h: float) -> dict[str, dict]:
     """The four named zones' rectangles (mm) on a page of `target_w` x `target_h`, disjoint by
-    construction. Chooses a left-column-product / right-column-text template for a wide (landscape)
-    target, or a simple top-to-bottom stack for a tall one - see the module docstring."""
+    construction, for ANY positive target_w/target_h - not just "typical" signage sizes. The footer
+    is always a horizontal banner across the full width at the bottom; the aspect ratio R = target_w
+    / target_h picks the template for the area above it (see the module docstring's table and each
+    `_*_zones` helper's own docstring for why its geometry can't degenerate): `_wide_zones` for R >=
+    WIDE_RATIO, `_grid_zones` for GRID_RATIO <= R < WIDE_RATIO, `_stack_zones` for R < GRID_RATIO."""
     if target_w <= 0 or target_h <= 0:
         raise OpError("target width/height must be positive")
     m = MARGIN_FRAC * min(target_w, target_h)
@@ -111,29 +196,19 @@ def zone_frames(target_w: float, target_h: float) -> dict[str, dict]:
     footer = _rect(m, m, target_w - 2 * m, footer_h)
     upper_y0 = m + footer_h + gap
     upper_h = target_h - m - upper_y0
-    # upper_h/text_w etc. are all fixed proportions of target_w/target_h by construction (the
-    # margin/gap/footer fractions are relative to the SAME dimensions they're subtracted from), so
-    # they cannot go non-positive for any target_w, target_h > 0 - already checked above.
+    # upper_h is a fixed fraction of target_h (margin/gap/footer are all fractions of min(target_w,
+    # target_h) <= target_h), so it cannot go non-positive for any target_w, target_h > 0 - already
+    # checked above; each _*_zones helper's own docstring shows why its ZONES can't degenerate either.
 
-    if target_w >= target_h:
-        product_w = PRODUCT_COL_FRAC * target_w
-        product = _rect(m, upper_y0, product_w, upper_h)
-        text_x0 = m + product_w + gap
-        text_w = target_w - m - text_x0
-        header_h = HEADER_OF_UPPER_FRAC * upper_h
-        header = _rect(text_x0, upper_y0 + upper_h - header_h, text_w, header_h)
-        main_text = _rect(text_x0, upper_y0, text_w, upper_h - header_h - gap)
+    r = target_w / target_h
+    if r >= WIDE_RATIO:
+        zones = _wide_zones(m, gap, target_w, upper_y0, upper_h)
+    elif r >= GRID_RATIO:
+        zones = _grid_zones(m, gap, target_w, upper_y0, upper_h)
     else:
-        avail = upper_h - 2 * gap
-        header_h = 0.18 * avail
-        product_h = 0.55 * avail
-        main_h = avail - header_h - product_h
-        top = upper_y0 + upper_h
-        header = _rect(m, top - header_h, target_w - 2 * m, header_h)
-        product = _rect(m, top - header_h - gap - product_h, target_w - 2 * m, product_h)
-        main_text = _rect(m, upper_y0, target_w - 2 * m, main_h)
-
-    return {ZONE_HEADER: header, ZONE_PRODUCT: product, ZONE_MAIN_TEXT: main_text, ZONE_FOOTER: footer}
+        zones = _stack_zones(m, gap, target_w, upper_y0, upper_h)
+    zones[ZONE_FOOTER] = footer
+    return zones
 
 
 def _layer_top_ids(scene: dict) -> list[str]:
@@ -224,7 +299,7 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
     know what was classified where, or what was skipped."""
     idx = scene_ops._index(scene)
     zones, _ = classify_zones(scene)
-    frames = zone_frames(target_w, target_h)
+    frames = calculate_zone_rects(target_w, target_h)
     page_w, page_h = float(scene["page"]["width"]), float(scene["page"]["height"])
     fit_scale = min(target_w / page_w, target_h / page_h) if page_w > 0 and page_h > 0 else 1.0
 

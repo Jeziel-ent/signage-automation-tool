@@ -63,45 +63,70 @@ def portrait_scene() -> dict:
     }
 
 
-# --------------------------------------------------------------------- zone_frames
+# --------------------------------------------------------------------- calculate_zone_rects
 
-def test_zone_frames_landscape_are_pairwise_disjoint_and_inside_the_page():
-    frames = oa.zone_frames(900.0, 300.0)
+def _assert_disjoint_and_in_bounds(frames: dict, target_w: float, target_h: float):
+    names = list(frames)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            assert rect_overlap_area(frames[names[i]], frames[names[j]]) < TOL, (names[i], names[j])
+    for f in frames.values():
+        assert f["w"] > 0 and f["h"] > 0
+        assert f["x"] >= -TOL and f["y"] >= -TOL
+        assert f["x"] + f["w"] <= target_w + TOL
+        assert f["y"] + f["h"] <= target_h + TOL
+
+
+def test_calculate_zone_rects_wide_template_is_pairwise_disjoint_and_inside_the_page():
+    # R = 900/300 = 3.0 >= WIDE_RATIO
+    frames = oa.calculate_zone_rects(900.0, 300.0)
     assert set(frames) == {oa.ZONE_HEADER, oa.ZONE_PRODUCT, oa.ZONE_MAIN_TEXT, oa.ZONE_FOOTER}
-    names = list(frames)
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            assert rect_overlap_area(frames[names[i]], frames[names[j]]) < TOL, (names[i], names[j])
-    for f in frames.values():
-        assert f["w"] > 0 and f["h"] > 0
-        assert f["x"] >= 0 and f["y"] >= 0
-        assert f["x"] + f["w"] <= 900.0 + TOL
-        assert f["y"] + f["h"] <= 300.0 + TOL
+    _assert_disjoint_and_in_bounds(frames, 900.0, 300.0)
 
 
-def test_zone_frames_portrait_fallback_is_also_disjoint_and_inside_the_page():
-    frames = oa.zone_frames(300.0, 900.0)
-    names = list(frames)
-    for i in range(len(names)):
-        for j in range(i + 1, len(names)):
-            assert rect_overlap_area(frames[names[i]], frames[names[j]]) < TOL, (names[i], names[j])
-    for f in frames.values():
-        assert f["w"] > 0 and f["h"] > 0
-        assert f["x"] + f["w"] <= 300.0 + TOL
-        assert f["y"] + f["h"] <= 900.0 + TOL
+def test_calculate_zone_rects_stack_template_is_also_disjoint_and_inside_the_page():
+    # R = 300/900 = 0.33 < GRID_RATIO
+    frames = oa.calculate_zone_rects(300.0, 900.0)
+    _assert_disjoint_and_in_bounds(frames, 300.0, 900.0)
+
+
+def test_calculate_zone_rects_grid_template_is_also_disjoint_and_inside_the_page():
+    # R = 60/60 = 1.0, exactly the GRID_RATIO boundary (GRID_RATIO <= R < WIDE_RATIO)
+    frames = oa.calculate_zone_rects(60.0, 60.0)
+    _assert_disjoint_and_in_bounds(frames, 60.0, 60.0)
+    # the defining feature of the grid template: product and main_text are an equal-width pair of
+    # cells side by side (same y/h), unlike the wide or stack templates
+    assert frames[oa.ZONE_PRODUCT]["w"] == pytest.approx(frames[oa.ZONE_MAIN_TEXT]["w"], abs=1e-6)
+    assert frames[oa.ZONE_PRODUCT]["y"] == pytest.approx(frames[oa.ZONE_MAIN_TEXT]["y"], abs=1e-6)
+    assert frames[oa.ZONE_PRODUCT]["h"] == pytest.approx(frames[oa.ZONE_MAIN_TEXT]["h"], abs=1e-6)
+
+
+@pytest.mark.parametrize("w,h,expect_ratio_at_least", [
+    (90.0, 40.0, oa.WIDE_RATIO), (120.0, 36.0, oa.WIDE_RATIO), (48.0, 96.0, None), (60.0, 60.0, oa.GRID_RATIO),
+])
+def test_calculate_zone_rects_across_the_tasks_own_arbitrary_target_sizes(w, h, expect_ratio_at_least):
+    frames = oa.calculate_zone_rects(w, h)
+    _assert_disjoint_and_in_bounds(frames, w, h)
+    if expect_ratio_at_least is not None:
+        assert w / h >= expect_ratio_at_least
 
 
 @pytest.mark.parametrize("w,h", [(0, 100), (100, 0), (-5, 100), (100, -5)])
-def test_zone_frames_rejects_non_positive_targets(w, h):
+def test_calculate_zone_rects_rejects_non_positive_targets(w, h):
     with pytest.raises(OpError, match="must be positive"):
-        oa.zone_frames(w, h)
+        oa.calculate_zone_rects(w, h)
 
 
-@pytest.mark.parametrize("w,h", [(50, 50), (10000, 10), (10, 10000), (1.0, 1.0)])
-def test_zone_frames_never_degenerates_across_a_wide_range_of_aspect_ratios(w, h):
-    frames = oa.zone_frames(w, h)
+@pytest.mark.parametrize("w,h", [
+    (50, 50), (10000, 10), (10, 10000), (1.0, 1.0),           # the original range
+    (90, 40), (120, 36), (48, 96), (60, 60), (0.01, 0.01),    # extreme/non-standard sizes, one per template
+    (100000.0, 1.0), (1.0, 100000.0),                         # extreme aspect ratios in both directions
+])
+def test_calculate_zone_rects_never_degenerates_across_a_wide_range_of_aspect_ratios(w, h):
+    frames = oa.calculate_zone_rects(w, h)
     for f in frames.values():
         assert f["w"] > 0 and f["h"] > 0
+    _assert_disjoint_and_in_bounds(frames, w, h)
 
 
 # --------------------------------------------------------------------- classify_zones
@@ -277,3 +302,31 @@ def test_classify_zones_treats_a_page_covering_container_as_background_even_with
     ops = oa.convert_orientation(scene, 900.0, 300.0)
     out = scene_ops.apply_ops(scene, ops)
     assert box_of(out, "pc") == {"x": 0.0, "y": 0.0, "w": 900.0, "h": 300.0}
+@pytest.mark.parametrize("target_w,target_h", [
+    (90.0, 40.0),    # wide (R=2.25)
+    (120.0, 36.0),   # wide (R=3.33)
+    (48.0, 96.0),    # stack (R=0.5)
+    (60.0, 60.0),    # grid (R=1.0)
+    (90.0, 60.0),    # grid (R=1.5)
+])
+def test_convert_orientation_across_arbitrary_target_sizes_has_no_overlap_and_stays_in_bounds(target_w, target_h):
+    scene = portrait_scene()
+    ops = oa.convert_orientation(scene, target_w, target_h)
+    out = scene_ops.apply_ops(scene, ops)
+    assert out["page"] == {"width": target_w, "height": target_h}
+
+    zones, _ = oa.classify_zones(scene)
+    named = [(z, i) for z in (oa.ZONE_HEADER, oa.ZONE_PRODUCT, oa.ZONE_MAIN_TEXT, oa.ZONE_FOOTER) for i in zones[z]]
+    for _, node_id in named:
+        assert within_page(out, node_id, tol=1e-2), (target_w, target_h, node_id)
+    boxes = [(zone, nid, box_of(out, nid)) for zone, nid in named]
+    for a in range(len(boxes)):
+        for b in range(a + 1, len(boxes)):
+            za, ia, ba = boxes[a]
+            zb, ib, bb = boxes[b]
+            assert rect_overlap_area(ba, bb) < 1e-2, f"{ia} ({za}) overlaps {ib} ({zb}) at {target_w}x{target_h}"
+
+    # atomic group resize: the footer's two shapes (addr, contact) are moved together in ONE op,
+    # not two independent ones - this is what keeps their relative layout instead of re-deriving it
+    footer_ops = [op for op in ops if op["op"] == "resize" and set(op["ids"]) == {"addr", "contact"}]
+    assert len(footer_ops) == 1
