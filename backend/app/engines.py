@@ -19,7 +19,7 @@ from pathlib import Path
 
 from . import corel_util
 from .corel_watchdog import Watchdog
-from .layout import MIN_TEXT_PT, Obj, compute_layout, find_contact_ids, find_shopname_ids, load_brand_rule, to_mm
+from .layout import MIN_TEXT_PT, TAMIL_FONT, Obj, compute_layout, find_contact_ids, find_shopname_ids, is_tamil, load_brand_rule, to_mm
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +102,52 @@ class CorelEngine:
             return (round(c.CMYKCyan), round(c.CMYKMagenta), round(c.CMYKYellow), round(c.CMYKBlack))
         except Exception:
             return None
+
+    # Fonts already verified (see CLAUDE.md "Shop name replacement") to actually
+    # carry Tamil glyphs and stick when written via COM on this machine - not the
+    # full installed-font list (querying that per shape would mean a PowerShell
+    # round-trip per text object), just the ones this codebase already trusts.
+    _KNOWN_TAMIL_FONTS = {"nirmala ui", "nirmala text"}
+
+    @staticmethod
+    def _ensure_tamil_font_renders(shape, text: str | None, warnings: list[str]) -> None:
+        """Real masters' own PRE-EXISTING Tamil text (the shop-name/footer lines
+        untouched by shop-name/contact replacement - e.g. a v2-UI job that never
+        passes shop_name_local) is typically tagged "Arial" in its own COM Font
+        property, relying on Windows' automatic font-linking to silently
+        substitute a real Tamil-capable font at render time (see CLAUDE.md
+        "Shop name replacement" - every cached real dalmia file's Tamil content
+        reports font="Arial" this way). That substitution is a Windows/renderer
+        behavior, not a CorelDRAW guarantee, and confirmed NOT to happen for this
+        export path on this machine: a real Agarpathi job's untouched Tamil
+        shopname text (job 43ddf0d9e704 / shop 638555963892) rendered as tofu
+        boxes in both the exported PNG and the editor's scene-export slice,
+        despite compute_layout never touching that shape's text or font because
+        no replacement was requested for it.
+
+        Fixes this the same verified way replacement text already is (see
+        `_set_replacement_text`): if a shape's own text is Tamil and its current
+        font isn't already one this codebase has confirmed renders Tamil
+        correctly, force it to `TAMIL_FONT` and read the font back to confirm
+        the write actually stuck - CorelDRAW does not raise on an unrecognized
+        font name, it silently keeps the old one, so trusting the call without
+        reading back would hide exactly this failure mode again.
+        """
+        if not is_tamil(text):
+            return
+        try:
+            story = shape.Text.Story
+            current = (story.Font or "").strip().lower()
+            if current in CorelEngine._KNOWN_TAMIL_FONTS:
+                return
+            story.Font = TAMIL_FONT
+            if story.Font != TAMIL_FONT:
+                warnings.append(
+                    f"Tamil text still tagged {current!r} after trying to set {TAMIL_FONT!r} "
+                    f"- it may render as tofu boxes; check the font is installed"
+                )
+        except Exception as e:
+            warnings.append(f"could not verify/fix Tamil font on an untouched text shape: {e}")
 
     @staticmethod
     def _set_replacement_text(shape, placed) -> None:
@@ -234,6 +280,13 @@ class CorelEngine:
                     kind = {self.SHAPE_TEXT: "text", self.SHAPE_BITMAP: "bitmap",
                             self.SHAPE_GROUP: "group"}.get(int(s.Type), "shape")
                     text = self._shape_text(s) if kind == "text" else None
+                    if kind == "text":
+                        # Fix BEFORE reading SizeWidth/SizeHeight below - changing
+                        # the font can itself change the shape's rendered size,
+                        # and every downstream placement calculation should see
+                        # the size the shape will actually export at, not the
+                        # (possibly tofu-boxed) pre-fix one.
+                        self._ensure_tamil_font_renders(s, text, warnings)
                     oid = str(i)
                     shapes_by_id[oid] = s
                     objs.append(Obj(oid, s.Name or f"object_{i+1}", kind,
