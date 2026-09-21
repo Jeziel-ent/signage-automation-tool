@@ -1583,6 +1583,74 @@ with a raw `AttributeError`-derived message rather than a clear one).
 Neither module is imported by any page/route - this is registry +
 op-semantics groundwork, not a feature a designer can use yet.
 
+## Orientation adaptation (`backend/app/orientation_adapter.py`) — foundation only, not wired into any UI
+
+Built on top of "Product slots" above: re-lays an editor scene out for a very
+different target aspect/orientation (the motivating case is portrait ->
+landscape) by moving each SLOT KIND into a purpose-built zone of the new
+page, rather than the plain uniform-scale-and-centre `layout.py` falls back
+to for an untagged master. Zones: `header` (brand_title, top of a
+right-hand text column), `product` (product_image - the PowerClip
+CONTAINER's id when the image is nested, per "Product slots" above, never
+the inner shape's, so the whole clipped result moves as one), `main_text`
+(product_title, middle of the text column), `footer` (address + contact,
+one horizontal banner across the full width at the bottom - reusing the
+same "the shop name belongs in the bottom bar" placement already
+established in "Wide-board panel sequence" rather than inventing a new
+convention), `background` (any unslotted top-level shape covering
+`product_engine.BG_AREA_RATIO` of the page - stretched to exactly fill the
+new page, the `bg` role from `layout.py`), and `other` (everything else
+unslotted - scaled by the page's own uniform fit factor with its centre
+kept at the same proportional position, `layout.py`'s `text`/`logo`
+fallback). For a wide (landscape) target the product column sits on the
+left with the text column to its right (header over main_text); for a
+tall target the same four zones stack top-to-bottom instead - only the
+landscape template is exercised by the required no-overlap/in-bounds
+tests, so the portrait fallback is the less-tested path.
+
+**No new op type.** `convert_orientation(scene, target_w_mm, target_h_mm)`
+returns a `page` op plus one `resize` op per non-empty named zone, each
+covering every shape assigned to that zone in one op (`ids: [...]`) - the
+same shape scene_ops.py's existing `resize` already supports for the
+editor's own multi-selection drag-resize, so it already does everything
+asked for here for free: it repositions AND rescales the group together
+(preserving whatever relative layout/non-overlap they already had) and
+scales `text.size_pt` proportionally to height (`_scale`) - "adjusted font
+sizes" falls out of reusing `resize`, it needed no separate mechanism.
+A locked shape (or one on a locked layer) is left out of its zone's op
+entirely rather than making the whole list fail to apply -
+`classify_zones(scene)` (a separate query function, mirroring
+`product_engine.map_slots`) reports zone membership plus a warning for
+each shape this happened to, alongside `map_slots`'s own warnings.
+
+**Honest limits, matching this codebase's usual caveats elsewhere**:
+grouping the footer's address/contact text and resizing it as one rigid
+unit is a scale+reposition, not real text reflow/line-wrapping (there is
+no typesetting here, same limit as `CorelEngine`'s own text handling - see
+"Text-fit"); the `other` zone's per-shape fallback is only checked to stay
+on the page, not to avoid the four named zones, so a master with a lot of
+untagged decoration could still end up with `other` content overlapping
+`header`/`product`/etc. - a real, documented gap, not silently assumed
+away. Not wired into any page, route or the CorelDRAW replay path (like
+"Product slots", this is scene-model groundwork only) - applying the
+returned ops still goes through the ordinary `scene_ops.apply_ops`/editor
+autosave/export-replay path, and (again like `swap_image`/
+`update_product_slot`) plain `resize`/`page` ops already replay through
+COM (`export_replay.py`) exactly like a manual editor resize, so nothing
+new was needed there.
+
+`backend/tests/test_orientation_adapter.py` (25 tests): pairwise-disjoint,
+in-bounds zone rectangles across a wide range of aspect ratios (including
+both the landscape and portrait templates); slot->zone classification on a
+synthetic portrait scene with a PowerClip-nested product image, a hidden
+shape, an untagged "other" shape, and a locked slot shape; and full
+`convert_orientation` + `apply_ops` integration - no overlap or
+out-of-bounds positioning among the four named zones, the background
+stretched to exactly fill the new page, font sizes changed (not zeroed),
+the PowerClip child staying fully inside its container after the
+container's resize, a locked shape left untouched instead of raising, and
+a scene with no slots at all still applying cleanly.
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —
@@ -2128,13 +2196,16 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 347 passed as of this writing (that includes
+`pytest` from `backend/` — 372 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
-`test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`, and
-`test_product_engine.py` - see "Product slots" above); `npm test` from
-`frontend/` runs 90 more (`ops.test.mjs` against the shared golden cases,
-`model.test.mjs`, `product_engine.test.mjs`). Note that the
+`test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`,
+`test_product_engine.py` - see "Product slots" above - and
+`test_orientation_adapter.py` - see "Orientation adaptation" above);
+`npm test` from `frontend/` runs 90 more (`ops.test.mjs` against the
+shared golden cases, `model.test.mjs`, `product_engine.test.mjs`) -
+`orientation_adapter.py` has no frontend mirror (this task's scope was
+backend-only). Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a
