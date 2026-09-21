@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { applyOps, buildIndex } from "./ops.js";
-import { flattenLeaves, resolveTarget, hitTest, buildRows, planDrop, marqueeSelect, cloneWithNewIds, unionBox, snapTargets, snapMove, snapResize, nearest } from "./model.js";
+import { applyOps, buildIndex, findNode } from "./ops.js";
+import { flattenLeaves, resolveTarget, hitTest, buildRows, planDrop, marqueeSelect, cloneWithNewIds, unionBox, snapTargets, snapMove, snapResize, nearest, livePowerclip, renderItems, planNodes, dragTargets } from "./model.js";
 import { fmt, toUnit, fromUnit, niceStep, rulerTicks } from "./units.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -198,4 +198,70 @@ test("missingFonts lists only edited text in fonts that are not installed", () =
   assert.deepEqual(missingFonts(scene, { available: false, fonts: [] }), []);      // no list: no false alarms
   assert.equal(fmtBytes(121267), "121 KB");
   assert.equal(fmtBytes(13607467), "13.6 MB");
+});
+
+// ---------------------------------------------------------------- live PowerClips
+
+const img = (id, x, y, w, h, extra = {}) => ({ id, kind: "shape", type: "curve", x, y, w, h, visible: true, locked: false, image: { file: id + ".png" }, ...extra });
+const pcScene = (frameRect = true, kidExtra = {}) => ({
+  page: { width: 200, height: 100 },
+  layers: [{
+    id: "L", visible: true, locked: false,
+    children: [
+      img("bg", 0, 0, 200, 100),
+      {
+        id: "pc", kind: "powerclip", type: "curve", x: 10, y: 10, w: 50, h: 30, visible: true, locked: false, image: { file: "pc.png" }, frame_rect: frameRect,
+        children: [img("k1", -20, 0, 120, 80), { id: "g", kind: "group", type: "group", x: 0, y: 0, w: 40, h: 40, visible: true, locked: false, image: null, children: [img("k2", 5, 5, 10, 10, kidExtra)] }],
+      },
+    ],
+  }],
+});
+
+test("livePowerclip: rectangular frame whose contents all have images", () => {
+  assert.equal(livePowerclip(pcScene().layers[0].children[1]), true);
+});
+
+test("livePowerclip: falls back to the flat image for a non-rect frame or a child without an image", () => {
+  assert.equal(livePowerclip(pcScene(false).layers[0].children[1]), false);
+  assert.equal(livePowerclip(pcScene(true, { image: null }).layers[0].children[1]), false);
+  assert.equal(livePowerclip(pcScene(true, { image: null, visible: false }).layers[0].children[1]), true); // a hidden child needs no image
+  const old = pcScene(); delete old.layers[0].children[1].frame_rect;
+  assert.equal(livePowerclip(old.layers[0].children[1]), false);
+});
+
+test("renderItems: a live PowerClip draws its contents inside a clip instead of its flat image", () => {
+  const items = renderItems(pcScene());
+  assert.equal(items.length, 2);
+  assert.equal(items[0].leaf.id, "bg");
+  assert.equal(items[1].clip.id, "pc");
+  assert.deepEqual(items[1].items.map((i) => i.leaf.id), ["k1", "k2"]);              // group flattened, order kept
+  assert.deepEqual(planNodes(items).map((n) => n.id), ["bg", "pc", "k1", "k2"]);
+  const flat = renderItems(pcScene(false));
+  assert.deepEqual(flat.map((i) => (i.leaf || i.clip).id), ["bg", "pc"]);
+  assert.ok(flat[1].leaf);
+});
+
+test("renderItems: hidden container or hidden child is not drawn", () => {
+  const s = pcScene(); s.layers[0].children[1].children[0].visible = false;
+  assert.deepEqual(renderItems(s)[1].items.map((i) => i.leaf.id), ["k2"]);
+  s.layers[0].children[1].visible = false;
+  assert.equal(renderItems(s).length, 1);
+});
+
+test("dragTargets: a live container updates its clip and all contents; a flat one only itself", () => {
+  const s = pcScene();
+  assert.deepEqual(dragTargets(s.layers[0].children[1]).map((n) => n.id), ["pc", "k1", "k2"]);
+  assert.deepEqual(dragTargets(pcScene(false).layers[0].children[1]).map((n) => n.id), ["pc"]);
+  assert.deepEqual(dragTargets(s.layers[0].children[1].children[1]).map((n) => n.id), ["k2"]);
+});
+
+test("nested move/resize ops carry absolute coordinates and keep the frame fixed", () => {
+  const s = pcScene();
+  const moved = applyOps(s, [{ op: "move", ids: ["k1"], dx: 7, dy: -3 }]);
+  const k = findNode(moved, "k1"), pc = findNode(moved, "pc");
+  assert.deepEqual([k.x, k.y, k.w, k.h], [-13, -3, 120, 80]);
+  assert.deepEqual([pc.x, pc.y, pc.w, pc.h], [10, 10, 50, 30]);
+  assert.equal(livePowerclip(pc), true);                                            // stays live after an edit
+  const resized = applyOps(s, [{ op: "resize", ids: ["k1"], from: { x: -20, y: 0, w: 120, h: 80 }, to: { x: -20, y: 0, w: 60, h: 40 } }]);
+  assert.deepEqual([findNode(resized, "k1").w, findNode(resized, "k1").h], [60, 40]);
 });

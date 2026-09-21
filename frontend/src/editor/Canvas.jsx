@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { buildIndex, mapBox } from "./ops.js";
-import { clipChildAt, flattenLeaves, hitTest, insidePowerclip, leavesOf, marqueeSelect, resolveTarget, snapMove, snapResize, snapTargets, unionBox } from "./model.js";
+import { clipChildAt, contentLeaves, dragTargets, flattenLeaves, hitTest, insidePowerclip, livePowerclip, marqueeSelect, planNodes, renderItems, resolveTarget, snapMove, snapResize, snapTargets, unionBox } from "./model.js";
 import { toScene, zoomAt } from "./view.js";
 import TextEditor from "./TextEditor.jsx";
 
@@ -37,32 +37,57 @@ export function resizeBox(handle, start, dx, dy, free) {
   return { x: west ? x + w - nw : x, y: south ? y + h - nh : y, w: nw, h: nh };
 }
 
-// Every leaf's <image>. Memoised on the leaves array so pointer-move re-renders of
-// the overlay never touch the (potentially several hundred) images. `hideId`
-// (the node currently under a live text/font preview - see Canvas's own
-// textPreview rendering below) is skipped entirely rather than just covered,
-// so the live SVG <text> preview is the only thing visible for that shape,
-// not CorelDRAW's stale render peeking out from underneath or through any
-// transparent pixels in it.
-const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRefs, hideId }) {
-  return leaves.map((n) =>
-    n.image && n.id !== hideId ? (
-      <image
-        key={n.id}
-        ref={(el) => {
-          if (el) imgRefs.current.set(n.id, el);
-          else imgRefs.current.delete(n.id);
-        }}
-        data-id={n.id}
-        href={assetBase + n.image.file}
-        x={n.x}
-        y={pageH - n.y - n.h}
-        width={n.w}
-        height={n.h}
-        preserveAspectRatio="none"
-      />
-    ) : null,
-  );
+// Every drawn image. Memoised on the plan so pointer-move re-renders of the overlay never
+// touch the (potentially several hundred) images. A live PowerClip (model.js livePowerclip) is
+// drawn as its own contents inside `<clipPath id="powerclip-<id>">` matching the frame, so the
+// contents can be moved/resized with real pixels; its clip rectangle is registered as
+// imgRefs["clip:<id>"] so a drag can resize the frame too. `hideId` (the node currently under a
+// live text/font preview - see Canvas's own textPreview rendering below) is skipped entirely
+// rather than just covered, so the live SVG <text> preview is the only thing visible for that
+// shape, not CorelDRAW's stale render peeking out from underneath.
+const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs, hideId }) {
+  const draw = (list) =>
+    list.map((it) => {
+      if (it.clip) {
+        const c = it.clip;
+        const clipId = `powerclip-${c.id}`;
+        return (
+          <g key={"clip" + c.id} data-powerclip={c.id}>
+            <clipPath id={clipId}>
+              <rect
+                ref={(el) => {
+                  if (el) imgRefs.current.set("clip:" + c.id, el);
+                  else imgRefs.current.delete("clip:" + c.id);
+                }}
+                x={c.x}
+                y={pageH - c.y - c.h}
+                width={c.w}
+                height={c.h}
+              />
+            </clipPath>
+            <g clipPath={`url(#${clipId})`}>{draw(it.items)}</g>
+          </g>
+        );
+      }
+      const n = it.leaf;
+      return n.image && n.id !== hideId ? (
+        <image
+          key={n.id}
+          ref={(el) => {
+            if (el) imgRefs.current.set(n.id, el);
+            else imgRefs.current.delete(n.id);
+          }}
+          data-id={n.id}
+          href={assetBase + n.image.file}
+          x={n.x}
+          y={pageH - n.y - n.h}
+          width={n.w}
+          height={n.h}
+          preserveAspectRatio="none"
+        />
+      ) : null;
+    });
+  return draw(items);
 });
 
 /** PowerClip containers above `id` (their rendered image is what a nested edit makes stale). */
@@ -86,16 +111,19 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   const pageH = scene.page.height;
   const idx = useMemo(() => buildIndex(scene), [scene]);
   const leaves = useMemo(() => flattenLeaves(scene), [scene]);
+  const plan = useMemo(() => renderItems(scene), [scene]);
+  const planImgNodes = useMemo(() => planNodes(plan), [plan]);
   const selNodes = useMemo(() => sel.map((id) => idx.get(id)?.node).filter(Boolean), [sel, idx]);
   const selBox = useMemo(() => unionBox(selNodes), [selNodes]);
-  // A PowerClip child can be moved/resized/text-edited (ops.js checkEditable allowPowerclip) but its
-  // pixels live inside the container's single CorelDRAW-rendered image, so only the outline moves live;
-  // the image refreshes after Save and Generate (the container is marked stale by the op).
+  // A PowerClip child can be moved/resized/text-edited (ops.js checkEditable allowPowerclip). In a live
+  // PowerClip (rect frame, scene v2 child images) its pixels are drawn by the canvas itself, so they
+  // follow the drag; otherwise they live in the container's single flat render and only the outline
+  // moves until Save and Generate.
   const selInClip = selNodes.length > 0 && selNodes.every((n) => insidePowerclip(idx, n.id));
   const selLocked = selNodes.some((n) => n.locked || idx.get(n.id).layer.locked);
 
   const latest = useRef({});
-  latest.current = { scene, view, pageH, idx, leaves, sel, ctx, alphaMaps, assetBase, selBox, selNodes, selLocked };
+  latest.current = { scene, view, pageH, idx, leaves, planImgNodes, sel, ctx, alphaMaps, assetBase, selBox, selNodes, selLocked };
 
   useEffect(() => {
     const el = rootRef.current;
@@ -109,8 +137,8 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   }, [onSize]);
 
   useEffect(() => {
-    alphaMaps.preload(leaves.filter((n) => n.image).map((n) => ({ url: assetBase + n.image.file, aspect: n.w / Math.max(n.h, 1e-6) })));
-  }, [leaves, assetBase, alphaMaps]);
+    alphaMaps.preload([...leaves, ...planImgNodes].filter((n) => n.image).map((n) => ({ url: assetBase + n.image.file, aspect: n.w / Math.max(n.h, 1e-6) })));
+  }, [leaves, planImgNodes, assetBase, alphaMaps]);
 
   // wheel = zoom about the cursor (needs a non-passive listener to preventDefault); shift+wheel pans sideways
   useEffect(() => {
@@ -136,6 +164,20 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   const sceneAt = (p) => toScene(latest.current.view, latest.current.pageH, p.x, p.y);
 
   const alphaAt = (n, u, v) => {
+    if (livePowerclip(n)) {
+      // The flat render goes stale once its contents are edited, so a live PowerClip is hit where any
+      // of its own (visible) contents has a pixel; inside the frame only, which the box test already ensures.
+      const mx = n.x + u * n.w;
+      const my = n.y + (1 - v) * n.h;
+      let unknown = false;
+      for (const c of contentLeaves(n)) {
+        if (mx < c.x || mx > c.x + c.w || my < c.y || my > c.y + c.h) continue;
+        const a = alphaAt(c, (mx - c.x) / Math.max(c.w, 1e-6), 1 - (my - c.y) / Math.max(c.h, 1e-6));
+        if (a === null) unknown = true;
+        else if (a >= 16) return 255;
+      }
+      return unknown ? null : 0;
+    }
     if (!n.image) return null;
     const { alphaMaps: am, assetBase: ab } = latest.current;
     const url = ab + n.image.file;
@@ -153,15 +195,17 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   };
 
   const setImg = (id, box) => {
-    const el = imgRefs.current.get(id);
-    if (!el) return;
-    el.setAttribute("x", box.x);
-    el.setAttribute("y", latest.current.pageH - box.y - box.h);
-    el.setAttribute("width", box.w);
-    el.setAttribute("height", box.h);
+    // the image of a leaf, and/or the clip rectangle of a live PowerClip container
+    for (const el of [imgRefs.current.get(id), imgRefs.current.get("clip:" + id)]) {
+      if (!el) continue;
+      el.setAttribute("x", box.x);
+      el.setAttribute("y", latest.current.pageH - box.y - box.h);
+      el.setAttribute("width", box.w);
+      el.setAttribute("height", box.h);
+    }
   };
   // Re-derive every image's box from the newest scene (after a commit, or to undo a cancelled preview).
-  const syncImages = () => latest.current.leaves.forEach((n) => setImg(n.id, n));
+  const syncImages = () => latest.current.planImgNodes.forEach((n) => setImg(n.id, n));
 
   // Snap lines for a drag: page edges/centre + edges/centres of the other objects in the same context.
   const buildTargets = (ids, c) => {
@@ -190,7 +234,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
       const m = sceneAt(p);
       if (m.x >= selBox.x && m.x <= selBox.x + selBox.w && m.y >= selBox.y && m.y <= selBox.y + selBox.h) {
         svg.setPointerCapture(e.pointerId);
-        drag.current = { type: "move", startP: p, ids: sel.slice(), nodes: selNodes, leaves: [], startBox: selBox, targets: snap ? buildTargets(sel, ctx) : null, started: false };
+        drag.current = { type: "move", startP: p, ids: sel.slice(), nodes: selNodes, leaves: selNodes.flatMap(dragTargets), startBox: selBox, targets: snap ? buildTargets(sel, ctx) : null, started: false };
         return;
       }
     }
@@ -213,14 +257,14 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
     const nodes = next.map((id) => idx.get(id)?.node).filter(Boolean);
     const locked = nodes.some((n) => n.locked || idx.get(n.id).layer.locked);
     if (!nodes.length || locked) return;
-    drag.current = { type: "move", startP: p, ids: next, nodes, leaves: nodes.flatMap(leavesOf), startBox: unionBox(nodes), targets: snap ? buildTargets(next, nextCtx) : null, started: false };
+    drag.current = { type: "move", startP: p, ids: next, nodes, leaves: nodes.flatMap(dragTargets), startBox: unionBox(nodes), targets: snap ? buildTargets(next, nextCtx) : null, started: false };
   }
 
   function onHandleDown(e, handle) {
     e.stopPropagation();
     if (e.button !== 0 || !selBox || selLocked) return;
     svgRef.current.setPointerCapture(e.pointerId);
-    drag.current = { type: "resize", handle, startP: local(e), startBox: selBox, ids: sel.slice(), leaves: selInClip ? [] : selNodes.flatMap(leavesOf), targets: snap ? buildTargets(sel, ctx) : null, started: false };
+    drag.current = { type: "resize", handle, startP: local(e), startBox: selBox, ids: sel.slice(), leaves: selNodes.flatMap(dragTargets), targets: snap ? buildTargets(sel, ctx) : null, started: false };
   }
 
   function onPointerMove(e) {
@@ -327,7 +371,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
       if (!child) return onToast("Nothing to select inside this PowerClip at that point.");
       onSelect([child.id], top.id);
       if (child.text) onEditText(child.id);
-      else onToast("Selected inside the PowerClip - drag it or its handles to move/resize; the clipped image refreshes after Save and Generate.");
+      else onToast(livePowerclip(top) ? "Selected inside the PowerClip - drag it or its handles to move/resize it live." : "Selected inside the PowerClip - drag it or its handles to move/resize; the clipped image refreshes after Save and Generate.");
     } else if (top.text) {
       onEditText(top.id);
     }
@@ -372,7 +416,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
           <rect x={4 / view.zoom} y={4 / view.zoom} width={pageW} height={pageH} fill="rgba(0,0,0,0.28)" />
           <rect x="0" y="0" width={pageW} height={pageH} fill="#ffffff" />
           <g style={{ visibility: showRender && scene.page_image ? "hidden" : "visible" }}>
-            <SceneImages leaves={leaves} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideId={textPreview && textPreview.id} />
+            <SceneImages items={plan} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideId={textPreview && textPreview.id} />
           </g>
           {showRender && scene.page_image && (
             <image href={assetBase + scene.page_image.file} x="0" y="0" width={pageW} height={pageH} preserveAspectRatio="none" style={{ pointerEvents: "none" }} />
@@ -400,7 +444,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
             return <rect key={n.id} pointerEvents="none" x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-red)" strokeWidth="1" strokeDasharray="4 3" />;
           })}
 
-        {[...selNodes, ...selNodes.flatMap((n) => ancestryOf(idx, n.id))].filter((n, i, a) => n.stale && a.indexOf(n) === i).map((n) => {
+        {[...selNodes, ...selNodes.flatMap((n) => ancestryOf(idx, n.id))].filter((n, i, a) => n.stale && !livePowerclip(n) && a.indexOf(n) === i).map((n) => {
           const b = sbox(n);
           return <rect key={"stale" + n.id} pointerEvents="none" x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-warn)" strokeDasharray="5 3" />;
         })}

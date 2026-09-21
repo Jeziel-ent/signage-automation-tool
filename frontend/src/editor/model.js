@@ -19,6 +19,64 @@ export function flattenLeaves(scene) {
   return out;
 }
 
+/**
+ * A PowerClip whose contents can be drawn live: its frame is an axis-aligned rectangle (so a client-side
+ * clip to its box is exact - `frame_rect`, recorded by the scene export) and every visible leaf inside
+ * has its own image (scene version >= 2). Anything else keeps the single flat CorelDRAW render.
+ */
+export function livePowerclip(n) {
+  if (!n || n.kind !== "powerclip" || n.frame_rect !== true || !(n.children || []).length) return false;
+  const ok = (children) =>
+    children.every((c) => {
+      if (c.visible === false) return true;
+      if (c.kind === "group") return ok(c.children || []);
+      if (c.kind === "powerclip") return livePowerclip(c) || !!c.image;
+      return !!c.image;
+    });
+  return ok(n.children);
+}
+
+/**
+ * Drawing plan, bottom -> top: {leaf: node} for a plain image, or {clip: container, items: [...]} for a
+ * live PowerClip (its contents drawn inside a clip to the frame, replacing the flat image). Hidden
+ * layers/ancestors are skipped like flattenLeaves.
+ */
+export function renderItems(scene) {
+  const walk = (children, visible) => {
+    const out = [];
+    for (const n of children) {
+      const v = visible && n.visible !== false;
+      if (!v) continue;
+      if (n.kind === "group") out.push(...walk(n.children || [], v));
+      else if (livePowerclip(n)) out.push({ clip: n, items: walk(n.children, v) });
+      else out.push({ leaf: n });
+    }
+    return out;
+  };
+  return scene.layers.flatMap((l) => walk(l.children, l.visible !== false));
+}
+
+/** Every drawn image node in a plan (live-clip contents included), plus the live containers themselves. */
+export function planNodes(items) {
+  return items.flatMap((it) => (it.leaf ? [it.leaf] : [it.clip, ...planNodes(it.items)]));
+}
+
+/** Leaf images under `node`, through groups and live PowerClips (not the containers themselves). */
+export function contentLeaves(node) {
+  if (node.kind === "group" || livePowerclip(node)) return (node.children || []).filter((c) => c.visible !== false).flatMap(contentLeaves);
+  return [node];
+}
+
+/**
+ * What to update while `node` is dragged: its leaf images, and for a live PowerClip also the container
+ * itself (its clip rectangle) plus the contents, which are all mapped with the same transform.
+ */
+export function dragTargets(node) {
+  if (node.kind === "group") return (node.children || []).flatMap(dragTargets);
+  if (livePowerclip(node)) return [node, ...(node.children || []).flatMap(dragTargets)];
+  return [node];
+}
+
 /** Leaves under `node` (the node itself if it is one). */
 export function leavesOf(node) {
   if (node.kind === "group") return (node.children || []).flatMap(leavesOf);

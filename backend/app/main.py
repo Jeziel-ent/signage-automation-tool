@@ -541,6 +541,14 @@ def _scene_progress(shop_id: str) -> dict:
     return {"status": "building", "step": step, "progress_pct": pct}
 
 
+def _needs_powerclip_images(scene: dict) -> bool:
+    """A scene cached before version 2 has PowerClips whose children carry no images, so the
+    editor could only outline them; rebuild it once (boards without a PowerClip are untouched)."""
+    if scene.get("version", 1) >= 2:
+        return False
+    return any(n.get("kind") == "powerclip" for n in scene_ops.iter_nodes(scene))
+
+
 @app.get("/api/editor/{job_id}/{shop_id}/scene")
 def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool = False):
     _editor_shop(job_id, shop_id)
@@ -553,6 +561,10 @@ def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool =
             raise HTTPException(503 if state.get("low_memory") else 500, state["error"])
         if scene_path.is_file() and not rebuild:
             scene = json.loads(scene_path.read_text(encoding="utf-8"))
+            if _needs_powerclip_images(scene):
+                _scene_builds[shop_id] = {"status": "building"}
+                _pool.submit(_scene_build_worker, job_id, shop_id)
+                return JSONResponse({"status": "building", "step": "queued", "progress_pct": 1}, status_code=202)
             scene["ops"] = db.get_editor_ops(shop_id)
             scene["asset_base"] = f"/api/editor/{job_id}/{shop_id}/asset/"
             return scene

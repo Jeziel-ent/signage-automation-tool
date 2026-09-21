@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from app import scene_export
+from app import scene_export, scene_ops
 from app.scene_ops import apply_ops
 
 _next_id = iter(range(1, 10_000))
@@ -166,9 +166,13 @@ def test_walk_page_structure_kinds_and_leaves():
     text = by_id[f"s{s['top_text'].StaticID}"]
     assert text["text"] == {"kind": "artistic", "content": "SHOP NAME", "font": "Nirmala UI", "size_pt": 120.0}
     leaf_ids = {n["id"] for n, _ in leaves}
-    # group is structure only; the powerclip is one image; its content is not a separate leaf
+    # group is structure only; the powerclip keeps ONE flat image of the clipped result (fallback)
+    # AND each of its children is a leaf with its own image, so the editor can draw them live
+    # inside a client-side clip
     assert f"s{s['group'].StaticID}" not in leaf_ids
-    assert f"s{s['clip'].StaticID}" in leaf_ids and f"s{s['clip_child'].StaticID}" not in leaf_ids
+    assert f"s{s['clip'].StaticID}" in leaf_ids and f"s{s['clip_child'].StaticID}" in leaf_ids
+    order = [n["id"] for n, _ in leaves]
+    assert order.index(f"s{s['clip_child'].StaticID}") < order.index(f"s{s['clip'].StaticID}")  # children first, container last
     assert {f"s{s['child_a'].StaticID}", f"s{s['child_b'].StaticID}"} <= leaf_ids
     assert by_id[f"s{s['hidden'].StaticID}"]["visible"] is False
 
@@ -277,3 +281,51 @@ def test_paragraph_text_is_labelled_as_such():
     leaves = []
     node = scene_export.walk_shape(shape, leaves)
     assert node["text"]["kind"] == "paragraph"
+
+
+def test_scene_version_2_and_old_cached_scenes_with_a_powerclip_are_rebuilt_once():
+    from app import main
+    assert main._needs_powerclip_images({"version": 1, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "powerclip", "children": []}]}]})
+    assert not main._needs_powerclip_images({"version": 2, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "powerclip", "children": []}]}]})
+    assert not main._needs_powerclip_images({"version": 1, "layers": [{"id": "L1", "children": [{"id": "a", "kind": "shape"}]}]})  # no PowerClip: keep the cache
+
+
+def test_bitmap_inside_a_powerclip_is_exported_via_a_duplicate_moved_out_of_the_clip(tmp_path):
+    # ExportBitmap by selection raises for a PowerClip's bitmap child (verified live); the fallback
+    # exports a duplicate on the layer and deletes it again.
+    bmp = Shape(5, 300, 300, 80, 60)
+    clip = Shape(RECT, 300, 300, 60, 60, powerclip=[bmp])
+    doc = FakeDoc(Page([Layer("L", [clip])]), fail_on=[bmp.StaticID])
+    events = []
+    dup = Shape(5, 300, 300, 80, 60)
+    bmp.Duplicate = lambda: dup
+    dup.MoveToLayer = lambda layer: events.append("moved")
+    dup.Delete = lambda: events.append("deleted")
+    bmp.Layer = "the-layer"
+    _attach(doc)
+    _select_hook(dup, doc)
+    scene = scene_export.export_scene(doc, tmp_path)
+    node = next(n for n in scene_ops.iter_nodes(scene) if n["id"] == f"s{bmp.StaticID}")
+    assert node["image"] == {"file": f"s{bmp.StaticID}.png", "format": "png"}
+    assert events == ["moved", "deleted"]
+    assert not scene["stats"]["image_failures"]
+
+
+def test_a_failing_non_bitmap_still_reports_a_failure_instead_of_duplicating(tmp_path):
+    curve = Shape(4, 300, 300, 80, 60)                       # type 4 -> not vector-exportable, not a bitmap
+    doc = FakeDoc(Page([Layer("L", [Shape(RECT, 0, 0, 90, 90, powerclip=[curve])])]), fail_on=[curve.StaticID])
+    curve.Duplicate = lambda: (_ for _ in ()).throw(AssertionError("must not duplicate a non-bitmap"))
+    _attach(doc)
+    scene = scene_export.export_scene(doc, tmp_path)
+    assert any(str(curve.StaticID) in f for f in scene["stats"]["image_failures"])
+
+
+def test_powerclip_records_whether_its_frame_is_an_axis_aligned_rectangle(tmp_path):
+    rect = Shape(RECT, 0, 0, 60, 60, powerclip=[Shape(RECT, 10, 10, 20, 20)])
+    ellipse = Shape(2, 100, 0, 60, 60, powerclip=[Shape(RECT, 110, 10, 20, 20)])
+    doc = FakeDoc(Page([Layer("L", [rect, ellipse])]))
+    _attach(doc)
+    scene = scene_export.export_scene(doc, tmp_path)
+    by_id = {n["id"]: n for n in scene_ops.iter_nodes(scene)}
+    assert by_id[f"s{rect.StaticID}"]["frame_rect"] is True
+    assert by_id[f"s{ellipse.StaticID}"]["frame_rect"] is False

@@ -102,6 +102,39 @@ def _node(shape, kind: str, type_: str) -> dict:
     return n
 
 
+def _frame_is_rect(shape, type_: str) -> bool:
+    """True when the PowerClip frame is an axis-aligned rectangle, i.e. clipping to its bounding box
+    is exact - the editor draws the contents live only then. A rectangle drawn as a curve counts:
+    every node sits on a corner of the bounding box."""
+    if abs(_safe(lambda: float(shape.RotationAngle), 0.0)) > 0.01:
+        return False
+    if type_ == "rectangle":
+        return True
+    if type_ != "curve":
+        return False
+
+    def check() -> bool:
+        nodes = shape.Curve.Nodes
+        n = int(nodes.Count)
+        if n < 4 or n > 5:
+            return False
+        x0, y0 = float(shape.LeftX), float(shape.BottomY)
+        x1, y1 = x0 + float(shape.SizeWidth), y0 + float(shape.SizeHeight)
+        tol = 0.05
+        corners = set()
+        for i in range(1, n + 1):
+            nd = nodes.Item(i)
+            x, y = float(nd.PositionX), float(nd.PositionY)
+            cx = 0 if abs(x - x0) < tol else 1 if abs(x - x1) < tol else None
+            cy = 0 if abs(y - y0) < tol else 1 if abs(y - y1) < tol else None
+            if cx is None or cy is None:
+                return False
+            corners.add((cx, cy))
+        return len(corners) == 4
+
+    return bool(_safe(check, False))
+
+
 def walk_shape(shape, leaves: list) -> dict:
     """Builds the node for `shape` (recursively). Appends (node, shape) to `leaves`
     for every shape that needs its own rendered image."""
@@ -109,8 +142,15 @@ def walk_shape(shape, leaves: list) -> dict:
     powerclip = _safe(lambda: shape.PowerClip)
     if powerclip is not None:
         node = _node(shape, "powerclip", type_)
-        node["children"] = [walk_shape(c, []) for c in reversed(_children(powerclip))]
-        leaves.append((node, shape))          # one image for the whole clipped result
+        node["frame_rect"] = _frame_is_rect(shape, type_)
+        # Each child is a leaf with its own (unclipped) image so the editor can draw them live
+        # inside a client-side clip and move/resize them without a CorelDRAW round trip. The
+        # container keeps its single flat image of the clipped result as the fallback (non-rect
+        # frames, rotated frames, or a scene whose children failed to render). Child order in
+        # `leaves` is bottom -> top, container last - the id-assignment order (see
+        # export_replay.index_doc) is unchanged because ids are read in walk order, not export order.
+        node["children"] = [walk_shape(c, leaves) for c in reversed(_children(powerclip))]
+        leaves.append((node, shape))          # ... and one image for the whole clipped result
         return node
     if type_ == "group":
         node = _node(shape, "group", type_)
@@ -158,6 +198,34 @@ def _select_only(doc, shape) -> None:
     shape.AddToSelection()
 
 
+def _export_png(doc, shape, node: dict, path: Path, px_w: int, px_h: int) -> None:
+    def go():
+        flt = doc.ExportBitmap(
+            str(path), CDR_PNG, CDR_SELECTION, CDR_RGB_IMAGE,
+            px_w, px_h, 96, 96, 1, False, True, True, False, 0, None, None,
+        )
+        flt.Finish()
+
+    try:
+        go()
+        return
+    except Exception:
+        if node["type"] != "bitmap":
+            raise
+    # A bitmap INSIDE a PowerClip cannot be exported by selection (ExportBitmap raises E_FAIL for
+    # every size/transparency setting - verified live on a real board; curves, groups and text in
+    # the same PowerClip export fine). A duplicate moved out onto the layer exports like any
+    # top-level bitmap; it is deleted again straight after, so the document is unchanged.
+    dup = shape.Duplicate()
+    try:
+        layer = _safe(lambda: shape.Layer) or _safe(lambda: doc.ActivePage.ActiveLayer)
+        dup.MoveToLayer(layer)
+        _select_only(doc, dup)
+        go()
+    finally:
+        _safe(lambda: dup.Delete())
+
+
 def _export_leaf(doc, node: dict, shape, img_dir: Path) -> None:
     """Renders one leaf to img_dir and sets node["image"]. Temporarily makes a hidden
     shape visible (a hidden shape exports as nothing) and restores it afterwards."""
@@ -179,11 +247,7 @@ def _export_leaf(doc, node: dict, shape, img_dir: Path) -> None:
             p.unlink(missing_ok=True)
         px_w, px_h = plan_png_size(node["w"], node["h"])
         p = img_dir / f"{node['id']}.png"
-        flt = doc.ExportBitmap(
-            str(p), CDR_PNG, CDR_SELECTION, CDR_RGB_IMAGE,
-            px_w, px_h, 96, 96, 1, False, True, True, False, 0, None, None,
-        )
-        flt.Finish()
+        _export_png(doc, shape, node, p, px_w, px_h)
         node["image"] = {"file": p.name, "format": "png"}
     finally:
         if not was_visible:
@@ -251,7 +315,7 @@ def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = Non
         failed.append(f"page image: {e}")
 
     scene = {
-        "version": 1,
+        "version": 2,                      # 2: PowerClip children carry their own images
         "unit": "mm",
         "page": {"width": round(page_w, 4), "height": round(page_h, 4)},
         "page_image": page_image,
