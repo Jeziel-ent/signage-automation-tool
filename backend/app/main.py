@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
-from . import corel_supervisor, corel_util, db, export_replay, fonts, scene_export, scene_ops
+from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
 from .batch_import import parse_shop_lines
 from .engines import get_engine
 from .layout import to_mm
@@ -633,6 +633,31 @@ def editor_replayed(job_id: str, shop_id: str):
         return scene_ops.apply_ops(scene, db.get_editor_ops(shop_id))
     except scene_ops.OpError as e:
         raise HTTPException(422, str(e))
+
+
+class ConvertOrientationRequest(BaseModel):
+    scene: dict
+    target_w: float
+    target_h: float
+
+
+@app.post("/api/scene/convert-orientation")
+def convert_orientation(body: ConvertOrientationRequest):
+    """Re-lays a scene out for a different target page size (mm) - see orientation_adapter.py.
+
+    Stateless and not tied to a job/shop id: the caller sends the scene JSON it already has (the
+    editor's current, possibly-unsaved, in-memory scene - not necessarily what's on disk), gets back
+    the transformed scene plus the op list that produced it, and merges those ops into its own
+    undo/op timeline exactly like a locally-generated `resize`/`page` op - nothing here writes to
+    disk or the `editor_ops` table itself."""
+    try:
+        ops = orientation_adapter.convert_orientation(body.scene, body.target_w, body.target_h)
+        scene = scene_ops.apply_ops(body.scene, ops)
+    except scene_ops.OpError as e:
+        raise HTTPException(422, str(e))
+    except (KeyError, TypeError, ValueError) as e:
+        raise HTTPException(422, f"malformed scene: {e}")
+    return {"scene": scene, "ops": ops}
 
 
 @app.get("/api/fonts")

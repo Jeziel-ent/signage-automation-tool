@@ -255,3 +255,25 @@ def test_convert_orientation_to_a_same_size_portrait_target_still_applies_cleanl
     ops = oa.convert_orientation(scene, scene["page"]["width"], scene["page"]["height"])
     out = scene_ops.apply_ops(scene, ops)          # must not raise
     assert out["page"] == {"width": 400.0, "height": 1000.0}
+
+
+def test_classify_zones_treats_a_page_covering_container_as_background_even_with_a_heuristic_slot_nested_inside():
+    # A real untagged master's whole board can be one page-sized PowerClip that also happens to
+    # contain a modest bitmap product_engine's heuristic alone would call a product_image slot -
+    # background must win for the CONTAINER regardless (found live on job 16bfc025ca11).
+    scene = {
+        "page": {"width": 1000.0, "height": 500.0},
+        "layers": [{"id": "L1", "name": "L1", "visible": True, "locked": False, "children": [
+            {"id": "pc", "kind": "powerclip", "type": "rectangle", "name": "", "x": 0, "y": 0, "w": 1000, "h": 500,
+             "rotation": 0, "visible": True, "locked": False, "frame_rect": True, "children": [
+                {"id": "small", "kind": "shape", "type": "bitmap", "name": "", "x": 100, "y": 100, "w": 100, "h": 100,
+                 "rotation": 0, "visible": True, "locked": False},
+            ]},
+        ]}],
+    }
+    zones, _ = oa.classify_zones(scene)
+    assert zones[oa.ZONE_BACKGROUND] == ["pc"]
+    assert zones[oa.ZONE_PRODUCT] == []
+    ops = oa.convert_orientation(scene, 900.0, 300.0)
+    out = scene_ops.apply_ops(scene, ops)
+    assert box_of(out, "pc") == {"x": 0.0, "y": 0.0, "w": 900.0, "h": 300.0}

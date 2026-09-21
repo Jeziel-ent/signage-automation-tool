@@ -42,6 +42,10 @@ body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 .ed-pagesize { display: inline-flex; align-items: center; gap: 4px; color: var(--color-gray-600); }
 .ed-pagesize input { width: 76px; padding: 4px 6px; text-align: right; }
 
+.ed-orientation { display: inline-flex; align-items: center; gap: 4px; }
+.ed-orientation-custom { display: inline-flex; align-items: center; gap: 4px; margin-left: 4px; }
+.ed-orientation-custom input { width: 64px; padding: 4px 6px; text-align: right; }
+
 .ed-icon-btn {
   display: inline-flex; align-items: center; gap: 4px;
   font: inherit; padding: 4px 8px; border-radius: var(--radius-sm);

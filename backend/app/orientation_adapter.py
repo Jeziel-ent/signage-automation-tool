@@ -162,32 +162,52 @@ def classify_zones(scene: dict) -> tuple[dict[str, list[str]], list[str]]:
     """Which top-level shape ids belong to each zone (see the module docstring), plus warnings -
     product_engine.map_slots's own warnings (a tag that couldn't become a slot), and one line per
     shape a zone would have moved/resized but which is locked (or on a locked layer) and so was left
-    out of `convert_orientation`'s ops instead."""
+    out of `convert_orientation`'s ops instead.
+
+    Background is decided FIRST, from each top-level shape's OWN geometry, before any slot is
+    considered - not merely "whatever a zone didn't already claim". A real, untagged master's whole
+    board is often one page-sized PowerClip (see CLAUDE.md "Designer dataset analysis" - real masters
+    are untagged) that happens to also contain a modest-sized bitmap product_engine's heuristic alone
+    would call a `product_image` slot; deciding background second would then squeeze the ENTIRE
+    board's artwork into a small product-column rectangle because a small bitmap somewhere inside it
+    looked plausible in isolation. Found live on a real generated board (job 16bfc025ca11): the
+    heuristic slot for a small bitmap nested in a page-sized PowerClip pulled the whole container into
+    the `product` zone instead of `background`. A slot whose top id is already claimed as background
+    this way is dropped, not reassigned - its content is handled wholesale by the background stretch."""
     idx = scene_ops._index(scene)
-    slots, warnings = pe.map_slots(scene)
+    page_w, page_h = float(scene["page"]["width"]), float(scene["page"]["height"])
+    page_area = page_w * page_h
+    top_ids = _layer_top_ids(scene)
+
+    def is_page_covering(tid: str) -> bool:
+        node = idx[tid]["node"]
+        return page_area > 0 and node["w"] * node["h"] >= pe.BG_AREA_RATIO * page_area
+
     zones: dict[str, list[str]] = {z: [] for z in ZONES}
     used: set[str] = set()
+    for tid in top_ids:
+        if idx[tid]["node"].get("visible") is not False and is_page_covering(tid):
+            zones[ZONE_BACKGROUND].append(tid)
+            used.add(tid)
+
+    slots, warnings = pe.map_slots(scene)
     for slot in slots:
         top_id = _slot_top_id(slot)
+        if top_id in used:
+            continue     # its visible content is inside a shape already claimed as the page background
         zone = _KIND_TO_ZONE[slot.kind]
         if top_id not in zones[zone]:
             zones[zone].append(top_id)
         used.add(top_id)
 
-    page_w, page_h = float(scene["page"]["width"]), float(scene["page"]["height"])
-    page_area = page_w * page_h
-    for tid in _layer_top_ids(scene):
+    for tid in top_ids:
         if tid in used:
             continue
         node = idx[tid]["node"]
         if node.get("visible") is False:
             continue
         used.add(tid)
-        area = node["w"] * node["h"]
-        if page_area > 0 and area >= pe.BG_AREA_RATIO * page_area:
-            zones[ZONE_BACKGROUND].append(tid)
-        else:
-            zones[ZONE_OTHER].append(tid)
+        zones[ZONE_OTHER].append(tid)
 
     for zone in (ZONE_HEADER, ZONE_PRODUCT, ZONE_MAIN_TEXT, ZONE_FOOTER, ZONE_BACKGROUND):
         locked = [i for i in zones[zone] if _is_locked(idx, i)]

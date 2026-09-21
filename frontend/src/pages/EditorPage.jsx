@@ -6,6 +6,7 @@ import LayersPanel from "../editor/LayersPanel.jsx";
 import PropertiesPanel from "../editor/PropertiesPanel.jsx";
 import PageResizeDialog from "../editor/PageResizeDialog.jsx";
 import ExportDialog from "../editor/ExportDialog.jsx";
+import OrientationControl from "../editor/OrientationControl.jsx";
 import { DIM, LeftDimension, LeftRuler, RULER, TopDimension, TopRuler } from "../editor/Rulers.jsx";
 import { Fit, Redo, Undo, ZoomIn, ZoomOut } from "../editor/icons.jsx";
 import { AlphaMaps } from "../editor/alphaMaps.js";
@@ -41,6 +42,7 @@ export default function EditorPage() {
   const [pageKey, setPageKey] = useState(0);
   const [showExport, setShowExport] = useState(false);
   const [editing, setEditing] = useState(null); // id of the text object being typed into
+  const [converting, setConverting] = useState(false); // an orientation-conversion request is in flight
   const lastNudge = useRef({ at: 0 });
   const alphaMaps = useMemo(() => new AlphaMaps(), []);
   const clip = useRef(null);
@@ -185,6 +187,54 @@ export default function EditorPage() {
       return true;
     },
     [scene, cursor, ops, say],
+  );
+
+  // A whole batch of ops as ONE undo step (e.g. orientation conversion's page + per-zone resizes).
+  // Deliberately not `opsList.forEach(commit)`: commit()'s setOps updater slices on the CURRENT
+  // `cursor`, which is still the stale, pre-batch value for every call made in the same render pass -
+  // a second commit() in the same tick would slice off the first call's op instead of extending it.
+  // Applying/appending the whole list in one pair of state updates avoids that entirely.
+  const commitMany = useCallback(
+    (opsList) => {
+      if (!scene || !opsList.length) return false;
+      try {
+        applyOps(scene, opsList);
+      } catch (e) {
+        say(e.message.replace(/^op #\d+ \(\w+\): /, ""));
+        return false;
+      }
+      setOps((o) => [...o.slice(0, cursor), ...opsList]);
+      setCursor((c) => c + opsList.length);
+      return true;
+    },
+    [scene, cursor, say],
+  );
+
+  const convertOrientation = useCallback(
+    async (targetW, targetH, label) => {
+      if (!scene || converting) return;
+      setConverting(true);
+      try {
+        const r = await fetch("/api/scene/convert-orientation", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ scene, target_w: targetW, target_h: targetH }),
+        });
+        if (!r.ok) throw new Error(((await r.json()).detail) || `HTTP ${r.status}`);
+        const { ops: newOps } = await r.json();
+        if (commitMany(newOps)) {
+          setSel([]);
+          setCtx(null);
+          setView(fitView(size, { width: targetW, height: targetH }));
+          say(`Converted to ${label} - Ctrl+Z to undo`);
+        }
+      } catch (e) {
+        say(`Could not convert orientation: ${e.message}`);
+      } finally {
+        setConverting(false);
+      }
+    },
+    [scene, converting, commitMany, size, say],
   );
 
   const undo = useCallback(() => setCursor((c) => Math.max(0, c - 1)), []);
@@ -420,6 +470,8 @@ export default function EditorPage() {
         <select className="ed-select" value={unit} onChange={(e) => setUnit(e.target.value)} aria-label="Units">
           {UNIT_NAMES.map((u) => <option key={u}>{u}</option>)}
         </select>
+        <span className="ed-sep" />
+        <OrientationControl unit={unit} disabled={converting} onConvert={convertOrientation} />
         <span className="ed-sep" />
         <label className="ed-check" title="Snap to page edges/centre and other objects while dragging (hold Alt to bypass)">
           <input type="checkbox" checked={snap} onChange={(ev) => setSnap(ev.target.checked)} /> Snap

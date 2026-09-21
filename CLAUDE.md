@@ -1583,7 +1583,7 @@ with a raw `AttributeError`-derived message rather than a clear one).
 Neither module is imported by any page/route - this is registry +
 op-semantics groundwork, not a feature a designer can use yet.
 
-## Orientation adaptation (`backend/app/orientation_adapter.py`) — foundation only, not wired into any UI
+## Orientation adaptation (`backend/app/orientation_adapter.py`, `POST /api/scene/convert-orientation`, editor `OrientationControl`)
 
 Built on top of "Product slots" above: re-lays an editor scene out for a very
 different target aspect/orientation (the motivating case is portrait ->
@@ -1597,12 +1597,27 @@ the inner shape's, so the whole clipped result moves as one), `main_text`
 one horizontal banner across the full width at the bottom - reusing the
 same "the shop name belongs in the bottom bar" placement already
 established in "Wide-board panel sequence" rather than inventing a new
-convention), `background` (any unslotted top-level shape covering
+convention), `background` (any top-level shape covering
 `product_engine.BG_AREA_RATIO` of the page - stretched to exactly fill the
 new page, the `bg` role from `layout.py`), and `other` (everything else
 unslotted - scaled by the page's own uniform fit factor with its centre
 kept at the same proportional position, `layout.py`'s `text`/`logo`
-fallback). For a wide (landscape) target the product column sits on the
+fallback). **Background is decided FIRST, from each top-level shape's own
+geometry, before any slot is considered** - found live wiring this up
+against a real generated board (job 16bfc025ca11): a real, untagged
+master's whole board is often one page-sized PowerClip (real masters are
+untagged - see "Designer dataset analysis") that also happens to contain a
+modest bitmap `product_engine`'s heuristic alone would call a
+`product_image` slot; deciding background second squeezed the ENTIRE
+board's artwork into the small product column because that one nested
+bitmap looked like a plausible product photo in isolation. Fixed by
+classifying page-covering top-level shapes as background up front; a slot
+whose top id is already claimed that way is dropped, not reassigned - its
+content is handled wholesale by the background stretch. Covered by
+`test_classify_zones_treats_a_page_covering_container_as_background_even_with_a_heuristic_slot_nested_inside`
+and reverified against the real board (the whole-board PowerClip stretched
+to exactly fill the new page, independent of the unrelated small bitmap
+nested inside it, which got its own zone). For a wide (landscape) target the product column sits on the
 left with the text column to its right (header over main_text); for a
 tall target the same four zones stack top-to-bottom instead - only the
 landscape template is exercised by the required no-overlap/in-bounds
@@ -1631,25 +1646,87 @@ no typesetting here, same limit as `CorelEngine`'s own text handling - see
 on the page, not to avoid the four named zones, so a master with a lot of
 untagged decoration could still end up with `other` content overlapping
 `header`/`product`/etc. - a real, documented gap, not silently assumed
-away. Not wired into any page, route or the CorelDRAW replay path (like
-"Product slots", this is scene-model groundwork only) - applying the
-returned ops still goes through the ordinary `scene_ops.apply_ops`/editor
-autosave/export-replay path, and (again like `swap_image`/
-`update_product_slot`) plain `resize`/`page` ops already replay through
-COM (`export_replay.py`) exactly like a manual editor resize, so nothing
-new was needed there.
+away. Not wired into the CorelDRAW replay path specifically (plain
+`resize`/`page` ops already replay through COM - `export_replay.py` -
+exactly like a manual editor resize, so nothing new was needed there), and
+not into the OLD `App.jsx`/`/api/jobs` flow at all - only the new-UI
+editor.
 
-`backend/tests/test_orientation_adapter.py` (25 tests): pairwise-disjoint,
+`backend/tests/test_orientation_adapter.py` (26 tests): pairwise-disjoint,
 in-bounds zone rectangles across a wide range of aspect ratios (including
 both the landscape and portrait templates); slot->zone classification on a
 synthetic portrait scene with a PowerClip-nested product image, a hidden
-shape, an untagged "other" shape, and a locked slot shape; and full
+shape, an untagged "other" shape, a locked slot shape, and the
+page-covering-container-wins-background case above; and full
 `convert_orientation` + `apply_ops` integration - no overlap or
 out-of-bounds positioning among the four named zones, the background
 stretched to exactly fill the new page, font sizes changed (not zeroed),
 the PowerClip child staying fully inside its container after the
 container's resize, a locked shape left untouched instead of raising, and
 a scene with no slots at all still applying cleanly.
+
+### API: `POST /api/scene/convert-orientation`
+
+Stateless - takes `{scene, target_w, target_h}` (mm, like the rest of the
+scene model) and returns `{scene, ops}`; not tied to a job/shop id or the
+`editor_ops` table, so the caller sends whatever scene it already has
+(including unsaved edits) and merges the returned `ops` into its own
+undo/op timeline itself, exactly like a locally-generated `resize`/`page`
+op - nothing here writes to disk. `orientation_adapter.OpError`s (bad
+target size) and malformed-scene `KeyError`/`TypeError`/`ValueError`s both
+come back as 422. `backend/tests/test_orientation_api.py` (9 tests): the
+happy path (including that reapplying the returned `ops` to the ORIGINAL
+posted scene reproduces the returned `scene` exactly - the endpoint isn't
+just plausible-looking, it's internally consistent), the PowerClip
+container-not-inner-shape case, non-positive targets, a malformed scene, a
+locked shape, and a scene with no recognizable slots.
+
+### Editor UI: `OrientationControl` (`frontend/src/editor/OrientationControl.jsx`)
+
+A toolbar dropdown next to the page-size control: "Landscape (90 × 30
+in)", "Portrait (30 × 90 in)", or "Custom dimensions…" (two inputs in the
+editor's current unit). Picking one POSTs the editor's current scene to
+the endpoint above and merges the returned ops into the undo timeline via
+a new `commitMany` in `EditorPage.jsx` - deliberately NOT
+`opsList.forEach(commit)`: `commit()`'s `setOps` updater slices on the
+CURRENT `cursor`, which is still the stale, pre-batch value for every call
+made inside the same render pass, so a second `commit()` call in the same
+tick would slice off the first call's op instead of extending it (the
+first op would silently disappear). `commitMany` validates and appends
+the whole list in one pair of state updates instead, so the entire
+conversion is one undo step (Ctrl+Z reverts it in one go). Selection is
+cleared and the view re-fits to the new page afterward, since the old
+zoom/pan was framed for a very different aspect ratio. The canvas needed
+no changes at all for this: it already re-derives `scene` (and so every
+clip path, image box and selection outline) from `base`/`ops`/`cursor` on
+every render, so appending the orientation ops updates the live SVG the
+same way any other edit does.
+
+**Verified live against a real generated board** (job 16bfc025ca11, the
+AL MADEENA PowerClip board from "Fix scene export dropping vector shapes
+inside PowerClips") via curl against the running API (no Playwright, so
+the React control itself was not click-tested in a browser this session -
+only unit/integration-tested and confirmed to build): converting its
+2286×762mm scene to a 6096×2032mm (240×80in) target correctly stretched
+the whole-board PowerClip to fill the new page exactly and moved every
+other top-level shape into its zone, with 0 errors - this is the same run
+that caught the background-precedence bug above, i.e. this feature was
+wired against real data, not only synthetic fixtures, before being called
+done.
+
+**A process note, not a code issue**: verifying this needed the backend
+restarted several times while iterating, and `uvicorn --reload` on
+Windows kept leaving ORPHANED worker processes still bound to port 8000
+after their parent was killed (`--reload`'s Windows implementation spawns
+the real server as a `multiprocessing` child that inherits a duplicated
+socket handle; killing the parent doesn't release that handle if the
+child is still alive) - three generations of stale workers ended up
+simultaneously answering on :8000, so requests kept hitting old code
+despite the file on disk and a freshly-started process both being correct.
+Fixed for this session by killing every leftover `python.exe` and
+restarting `uvicorn` WITHOUT `--reload` for manual verification; not a
+code change, just worth knowing if a future session sees new code
+"not sticking" after a restart.
 
 ## Batch import (`backend/app/batch_import.py`)
 
@@ -2196,16 +2273,17 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 372 passed as of this writing (that includes
+`pytest` from `backend/` — 382 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
 `test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`,
-`test_product_engine.py` - see "Product slots" above - and
-`test_orientation_adapter.py` - see "Orientation adaptation" above);
-`npm test` from `frontend/` runs 90 more (`ops.test.mjs` against the
-shared golden cases, `model.test.mjs`, `product_engine.test.mjs`) -
-`orientation_adapter.py` has no frontend mirror (this task's scope was
-backend-only). Note that the
+`test_product_engine.py` - see "Product slots" above -,
+`test_orientation_adapter.py` and `test_orientation_api.py` - see
+"Orientation adaptation" above); `npm test` from `frontend/` runs 90 more
+(`ops.test.mjs` against the shared golden cases, `model.test.mjs`,
+`product_engine.test.mjs`) - `orientation_adapter.py` itself still has no
+frontend mirror (only its API/UI wiring is JS; the geometry stays
+backend-only, unlike product_engine.py which is mirrored). Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a
