@@ -35,6 +35,7 @@ export default function EditorPage() {
   const [pointer, setPointer] = useState(null);
   const [snap, setSnap] = useState(true);
   const [fonts, setFonts] = useState({ available: false, fonts: [] });
+  const [fontPreview, setFontPreview] = useState(null); // {id, font} while the Font field has an uncommitted change - live canvas preview only, never an op
   const [shop, setShop] = useState(null);
   const [pageChange, setPageChange] = useState(null); // {w, h} in mm while the page-size dialog is open
   const [pageKey, setPageKey] = useState(0);
@@ -191,6 +192,7 @@ export default function EditorPage() {
   const select = useCallback((ids, nextCtx) => {
     setSel(ids);
     setCtx(nextCtx);
+    setFontPreview(null); // an uncommitted font preview belongs to the previously selected text only
   }, []);
 
   // -------------------------------------------------------------- autosave
@@ -449,6 +451,7 @@ export default function EditorPage() {
               showRender={showRender}
               snap={snap}
               fonts={fonts}
+              fontPreview={fontPreview}
               editingId={editing}
               onEditText={startEdit}
               onTextApply={applyText}
@@ -463,7 +466,7 @@ export default function EditorPage() {
           </div>
         </div>
         <aside className="ed-side">
-          <PropertiesPanel scene={scene} sel={sel} unit={unit} onCommit={commit} fonts={fonts} />
+          <PropertiesPanel scene={scene} sel={sel} unit={unit} onCommit={commit} fonts={fonts} onFontPreview={setFontPreview} />
           <LayersPanel scene={scene} sel={sel} ctx={ctx} onSelect={select} onCommit={commit} nextId={() => `n${Date.now().toString(36)}g${++idCounter.current}`} />
         </aside>
       </div>

@@ -11,7 +11,7 @@ const fmtField = (mm, unit) => {
 };
 
 /** Right panel 1: size/position of the selection (centre reference point, like CorelDRAW's default), stacking order, text. */
-export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts }) {
+export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onFontPreview }) {
   const idx = useMemo(() => buildIndex(scene), [scene]);
   const nodes = useMemo(() => sel.map((id) => idx.get(id)?.node).filter(Boolean), [sel, idx]);
   const box = useMemo(() => unionBox(nodes), [nodes]);
@@ -154,13 +154,15 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts }) {
           </>
         )}
 
-        {active === "text" && hasText && <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} fonts={fonts} />}
+        {active === "text" && hasText && (
+          <TextFields key={single.id} node={single} locked={locked} onCommit={onCommit} fonts={fonts} onFontPreview={onFontPreview} />
+        )}
       </div>
     </section>
   );
 }
 
-function TextFields({ node, locked, onCommit, fonts }) {
+function TextFields({ node, locked, onCommit, fonts, onFontPreview }) {
   const known = fonts && fonts.available ? new Set(fonts.fonts.map((f) => f.toLowerCase())) : null;
   const installed = (name) => !known || known.has(name.toLowerCase());
   const [fontError, setFontError] = useState("");
@@ -184,7 +186,16 @@ function TextFields({ node, locked, onCommit, fonts }) {
       <div className="ed-grid2">
         <label className="ed-field">
           <span>Font</span>
-          <input list="ed-fonts" value={font} disabled={locked} onChange={(e) => setFont(e.target.value)} onBlur={() => {
+          <input list="ed-fonts" value={font} disabled={locked} onChange={(e) => {
+            const v = e.target.value;
+            setFont(v);
+            // Immediate, uncommitted live preview - the canvas can't re-typeset CorelDRAW's
+            // own render, but it can overlay the shape's text in the chosen font (an actual
+            // SVG <text> with that font-family) so a pick is seen right away, not only after
+            // blur commits the real `text` op.
+            onFontPreview && onFontPreview(v ? { id: node.id, font: v } : null);
+          }} onBlur={() => {
+            onFontPreview && onFontPreview(null);
             if (!font || font === t.font) return setFontError("");
             if (!installed(font)) {
               setFontError(`"${font}" is not installed on this machine - CorelDRAW would silently ignore it and keep the old font. Pick an installed font.`);

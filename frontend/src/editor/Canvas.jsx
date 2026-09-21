@@ -60,7 +60,7 @@ const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRef
   );
 });
 
-export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
+export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, fontPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
   const imgRefs = useRef(new Map());
@@ -374,6 +374,29 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
             <g key={"stale" + n.id} pointerEvents="none">
               <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-warn)" strokeDasharray="5 3" />
               <text x={b.x + 3} y={b.y - 4} className="ed-stale-label">edited - preview refreshes after Save and Generate</text>
+            </g>
+          );
+        })}
+
+        {fontPreview && selNodes.filter((n) => n.id === fontPreview.id && n.text).map((n) => {
+          // Live, uncommitted font preview: the canvas can't re-typeset CorelDRAW's own
+          // render, so this overlays the shape's own text as a real SVG <text> in the
+          // chosen font-family, right over its (now stale-looking) image - removed the
+          // instant the Font field blurs (committed or not), never itself an operation.
+          const b = sbox(n);
+          const fontSizePx = Math.max(8, (n.text.size_pt || 24) * view.zoom * (96 / 72) * 0.5);
+          return (
+            <g key={"fontpreview" + n.id} pointerEvents="none">
+              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="var(--color-white)" />
+              <text
+                x={b.x + b.w / 2}
+                y={b.y + b.h / 2}
+                textAnchor="middle"
+                dominantBaseline="central"
+                style={{ fontFamily: `"${fontPreview.font}", "Nirmala UI", Arial, sans-serif`, fontSize: fontSizePx }}
+              >
+                {n.text.content}
+              </text>
             </g>
           );
         })}

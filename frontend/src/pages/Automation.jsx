@@ -8,7 +8,7 @@ const UNITS = ["in", "cm", "mm", "ft"];
 // None ("leave the master's own text alone") at the API boundary, so the
 // form can safely send "" for a field the user left untouched.
 const emptyShopForm = () => ({
-  name: "", width: "", width_unit: "in", height: "", height_unit: "in", reference: "",
+  name: "", width: "", width_unit: "in", height: "", height_unit: "in",
   phone: "", gst: "", address: "",
 });
 
@@ -194,7 +194,6 @@ export default function Automation() {
                 <th>Unit</th>
                 <th>Height</th>
                 <th>Unit</th>
-                <th>Reference</th>
                 <th>Phone</th>
                 <th>GST</th>
                 <th>Address</th>
@@ -211,7 +210,6 @@ export default function Automation() {
                   <td>{s.width_unit}</td>
                   <td>{s.height}</td>
                   <td>{s.height_unit}</td>
-                  <td>{s.reference || "—"}</td>
                   <td>{s.phone || "—"}</td>
                   <td>{s.gst || "—"}</td>
                   <td className="shop-address-cell">{s.address || "—"}</td>
@@ -277,13 +275,6 @@ function NewShopRow({ seqNo, form, setForm, onAdd }) {
             <option key={u}>{u}</option>
           ))}
         </select>
-      </td>
-      <td>
-        <input
-          placeholder="optional"
-          value={form.reference}
-          onChange={(e) => setForm({ ...form, reference: e.target.value })}
-        />
       </td>
       <td>
         <input

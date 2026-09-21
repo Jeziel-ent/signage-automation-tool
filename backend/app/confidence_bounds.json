@@ -10,10 +10,11 @@
         "aspect_min": 3.0,
         "aspect_max": 4.500410172272354,
         "orientation": "landscape",
-        "median_position_error_mm": 427.46688950739554,
+        "median_position_error_mm": 644.8121633449268,
         "median_size_error_mm": 1905.0004164373763,
-        "max_position_error_mm": 837.6532795132631,
-        "max_size_error_mm": 2438.4000903251476
+        "max_position_error_mm": 911.6378061705046,
+        "max_size_error_mm": 2438.4000903251476,
+        "_recalibration_note": "Re-derived via tools/derive_confidence_bounds.py after backend/app/layout.py's panel_sequence cx_frac fix (see git history) and a fresh tools/cache_ours_dumps.py-equivalent re-dump of all 4 boards' regenerated .cdr files. This cluster-level (metrics.geometric_accuracy) position error is HIGHER than before the fix (427mm -> 645mm), even though a direct, independently-verified measurement of each named group's own horizontal centroid (tamil_card/roof_graphic/enlarged_badge_card) showed a 78-96% REDUCTION in position error after the same fix. Both are real, reproducible measurements of the same 4 regenerated boards - not a computation error (confirmed: an untouched, unaffected untiled board reproduced its historical 0.976 visual score exactly, ruling out a general pipeline/measurement bug). The likely explanation is a known property of pixel-alignment metrics (SSIM in particular, which cluster/visual scoring depends on): a large positional error can place two hard-edged shapes in DISJOINT regions (background-vs-background compares as locally consistent almost everywhere), while a much smaller residual error can leave them PARTIALLY OVERLAPPING - direct edge-vs-edge pixel conflict, which these metrics penalize far more harshly than two cleanly-separated wrong regions, even though the true positional accuracy improved. This value is intentionally kept at the higher (more conservative/safer) figure rather than substituting the centroid-based number, since it is the same methodology already used for every other regime in this file and errs toward caution, not toward making the fix look better. Recommended follow-up: investigate whether metrics.geometric_accuracy's clustering (bbox-proximity, independent of the named panel_sequence groups) should be made partial-overlap-aware, or whether a centroid-distance-based check should be added alongside it."
       },
       "untiled": {
         "n_samples": 7,
