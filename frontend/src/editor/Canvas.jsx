@@ -375,12 +375,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
 
         {selNodes.filter((n) => n.stale).map((n) => {
           const b = sbox(n);
-          return (
-            <g key={"stale" + n.id} pointerEvents="none">
-              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-warn)" strokeDasharray="5 3" />
-              <text x={b.x + 3} y={b.y - 4} className="ed-stale-label">edited - preview refreshes after Save and Generate</text>
-            </g>
-          );
+          return <rect key={"stale" + n.id} pointerEvents="none" x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-warn)" strokeDasharray="5 3" />;
         })}
 
         {textPreview && selNodes.filter((n) => n.id === textPreview.id && n.text).map((n) => {
@@ -388,14 +383,18 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
           // own render, so while either field is being edited, this replaces the shape's
           // (now hidden - see SceneImages' hideId) image with a real SVG <text> showing the
           // in-progress content in the in-progress font-family. Removed the instant either
-          // field blurs (committed or not), never itself an operation. Falls back through
-          // Nirmala UI/Nirmala Text (the Windows Indic UI fonts this app's own engine relies
-          // on for Tamil - see backend CLAUDE.md "Shop name replacement") so complex scripts
-          // like Tamil still render something legible even if the exact picked font is only
-          // Latin-capable or not installed in this browser.
+          // field blurs (committed or not), never itself an operation. The fallback stack
+          // covers every Tamil-capable font this project has ever relied on or measured:
+          // Nirmala UI/Nirmala Text ship with Windows and are what the backend engine itself
+          // uses (see CLAUDE.md "Shop name replacement"); Noto Sans Tamil is fetched as a web
+          // font (editor.css) specifically so this BROWSER preview isn't limited to whatever
+          // happens to be installed locally, unlike the backend's real CorelDRAW output;
+          // Latha/InaiMathi/Lohit Tamil cover whichever of them a given browser/OS does have.
+          // xml:lang="ta" tells the renderer this may be Tamil script, for engines that pick
+          // shaping/rendering behavior by declared language rather than font alone.
           const b = sbox(n);
           const previewFont = textPreview.font || n.text.font || "";
-          const fontFamily = `"${previewFont}", "Nirmala UI", "Nirmala Text", Arial, sans-serif`;
+          const fontFamily = `"${previewFont}", "Nirmala UI", "Nirmala Text", "Noto Sans Tamil", "Latha", "InaiMathi", "Lohit Tamil", sans-serif`;
           const fontSizePx = Math.max(8, (n.text.size_pt || 24) * view.zoom * (96 / 72) * 0.5);
           const lines = String(textPreview.content ?? "").split(/\r\n|\r|\n/);
           const lineHeight = fontSizePx * 1.2;
@@ -403,7 +402,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
           return (
             <g key={"textpreview" + n.id} pointerEvents="none">
               <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-red)" strokeDasharray="3 3" opacity="0.6" />
-              <text x={b.x + b.w / 2} textAnchor="middle" style={{ fontFamily, fontSize: fontSizePx }}>
+              <text x={b.x + b.w / 2} textAnchor="middle" xmlLang="ta" style={{ fontFamily, fontSize: fontSizePx }}>
                 {lines.map((line, i) => (
                   <tspan key={i} x={b.x + b.w / 2} y={startY + i * lineHeight}>{line || " "}</tspan>
                 ))}

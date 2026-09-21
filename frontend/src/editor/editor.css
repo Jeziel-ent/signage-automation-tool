@@ -1,3 +1,11 @@
+/* Tamil web font for the canvas's live text/font preview (Canvas.jsx) - the
+   backend's own CorelDRAW engine relies on locally-installed Windows fonts
+   (Nirmala UI) and never uses this, but the browser-side preview isn't
+   bound by what's installed on the machine, so a fetched web font gives
+   Tamil script a legible fallback here even when none of the other names
+   in the stack are installed locally. */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Tamil:wght@400;700&display=swap');
+
 /* Editor (Phase C) - built on the tokens in theme.css. */
 body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 
@@ -62,7 +70,6 @@ body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 .ed-handle { fill: var(--color-black); stroke: var(--color-white); stroke-width: 1; }
 .ed-handle:hover { fill: var(--color-red); }
 .ed-ctx-label { font-size: 11px; fill: var(--color-red); font-family: var(--font-sans); }
-.ed-stale-label { font-size: 11px; fill: var(--color-warn); font-family: var(--font-sans); }
 
 .ed-side { display: flex; flex-direction: column; min-height: 0; background: var(--color-white); border-left: 1px solid var(--color-gray-200); }
 .ed-panel { padding: var(--space-3); border-bottom: 1px solid var(--color-gray-200); }
