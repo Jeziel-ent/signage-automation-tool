@@ -27,5 +27,28 @@
     "excluded_outliers": [
       "12 - 120 X 60 Inch - 2 Nos Double Side GSB - TAMILNADU STEELS.cdr"
     ]
+  },
+  "agarpathi": {
+    "master_mm": {
+      "w": 3657.6,
+      "h": 1219.2
+    },
+    "regimes": {
+      "untiled": {
+        "n_samples": 39,
+        "aspect_min": 1.2,
+        "aspect_max": 6.5,
+        "median_position_error_mm": 398.8,
+        "median_size_error_mm": 379.7,
+        "max_position_error_mm": 1781.8,
+        "max_size_error_mm": 492.4,
+        "_caveat": "position/size errors exclude the 'shopname' role - validate_all.py's greedy nearest-centre matcher can cross-pair Agarpathi's two separate shopname text objects (Tamil + English, at very different page positions), confirmed on the master-regenerated-as-itself sanity check (every other of 29 matched objects differed by 0.0mm, but shopname alone showed a ~1600mm 'error' equal to the real distance between the two text boxes - a matching artifact, not a placement error). This is a tooling gap in validate_all.py, not fixed here; shopname accuracy itself is unmeasured by these bounds and content_check.py's exact-text check remains the only verified signal for it. Even excluding shopname, error here is large (median ~380mm) - the generic per-object scale+centre engine does not reproduce Agarpathi's real hand-placed logo positions well across this landscape sample, unlike dalmia's much smaller untiled median (~116-139mm)."
+      }
+    },
+    "excluded_from_bounds": [
+      "16 - 12 X 4 Feet - Nonlit - AL MADEENA POOJA STORE.cdr (master regenerated as itself - trivial identity check, not a real resize)",
+      "72 - 12 X 4 Feet - Nonlit - SAI TREDSES STORES.cdr (0.0% diff - same page size as master, no resize occurred)"
+    ],
+    "_scope": "Family A (single-bitmap, master-structure-compatible) landscape boards only, restricted to sizes app.layout._tile_plan says would NOT tile. Family B (multi-bitmap composition, 11 boards), the 1 no-bitmap board, portrait/square boards, and tiling sizes are unvalidated - confidence_label correctly returns MANUAL for any of those via the missing 'tiled' regime or brand-mismatch checks."
   }
 }

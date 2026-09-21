@@ -1,0 +1,40 @@
+{
+  "brand": "agarpathi",
+  "master_file": "16 - 12 X 4 Feet - Nonlit - AL MADEENA POOJA STORE.cdr",
+  "master_page_mm": { "w": 3657.6, "h": 1219.2 },
+  "derived_from": "tools/agarpathi_structure_probe.py (batch COM structure probe over all 53 landscape Agarpathi boards) + tools/agarpathi_family_a_batch.py (rule-engine run over the 40 Family A, non-tiling boards) - see backend/dataset_analysis/inventory/agarpathi_phase2/structure_probe.json and dataset_analysis/validation/agarpathi/validation_report.json for the raw evidence.",
+  "note": "This file is classification METADATA only - it has no 'panel_sequence' or 'groups' key, so app.layout.load_brand_rule() loading it has NO effect on compute_layout's tiling/placement path (that code only ever looks for those two specific keys). No geometric placement rule is added here because none is justified by the evidence gathered so far: (1) no tiled Agarpathi board has been generated-and-compared against a real file yet (only 1 of 53 landscape boards, '21 - 11 X 6 Feet', would even trigger tiling per app.layout._tile_plan, and it was deliberately left out of this phase's scope); a rule for a regime with zero real comparisons would be pure fabrication. (2) Even for the validated non-tiling Family A regime, the failure mode found is NOT a 'which sub-element repeats' tiling puzzle the way dalmia's panel_sequence rule solves - it is the plain per-object scale+centre path landing meaningfully off from the designer's hand-placed logo positions across a wide range of real target sizes (median position/size error ~380mm - see app/confidence_bounds.json['agarpathi']). Dalmia's own experience (see CLAUDE.md 'Per-brand tiling rule attempt') is that a rule built from limited cluster/size matching can make results WORSE, not better; writing an equivalent rule here from an even smaller evidence base (no repeated-panel structure exists to derive a rule from at all) is not defensible. If this brand needs a placement improvement, the next step is the same kind of careful, evidence-first process dalmia went through (cluster/size analysis against several real files at each target aspect) - not a rule invented ahead of that analysis.",
+  "structural_families": {
+    "family_a_single_bitmap": {
+      "description": "1 embedded product-photo bitmap; page background is a full-page shape (rectangle OR curve - the literal shape type is cosmetic and does not affect app.layout.detect_role's >=90%-page-area bg heuristic). Same 3 logo groups as the master (an 8-curve+4-subgroup badge with its own text, a 10-curve+4-subgroup icon, a 5-curve icon) in every sampled file. This is the master's own structure - compute_layout's generic per-object scale+centre path is at least structurally applicable to these boards (it does not need to invent or drop any bitmap the master lacks), though see 'note' above for its measured accuracy.",
+      "count": 39,
+      "note_on_count": "39 here = the 41 total Family A landscape boards found by the structure probe, minus the master itself and the same-page-size sanity check ('72'), which were excluded from the accuracy stats as trivial identity cases, not because they are a different family."
+    },
+    "family_b_multi_bitmap": {
+      "description": "2-3 embedded bitmaps (vs. the master's 1) with the same 3 logo groups still present. A genuinely different composition, not a resize of the master - the current engine cannot reproduce these because it has no source for the extra bitmap(s); this is a missing-asset problem, not a geometry problem, and no placement rule fixes it.",
+      "count": 9,
+      "files": [
+        "20 - 9 X 3 Feet - Nonlit - VMUK NATTU MARUNTHU KADAI.cdr",
+        "24 - 9 X 3 Feet - Nonlit - SRI SAKTHI MURUGAN STORE.cdr",
+        "25 - 10 X 3 Feet - Nonlit - S. P RAJENDRAN STORE.cdr",
+        "28 - 10 X 3 Feet - Nonlt - YASIN NATTU MARUNDHU KADAI.cdr",
+        "29 - 9 X 3 Feet - Nonlit - SIVA STORE.cdr",
+        "31 - 35 X 4 Feet - Nonlit - BOOPTHY STORE.cdr",
+        "33 - 7 X 2 Feet - Nonlit - DHARANI DEVI STORE.cdr",
+        "39 - 9 X 3 Feet - Nonlit - REGINA STORE.cdr",
+        "42 - 5 X 3 Feet - Nonlit - GANESH NATTU MARUNTHU KADAI.cdr",
+        "58 - 9 X 3 Feet - Nonlit - S. MANI NATTU MARUNDHU & POOJA.cdr",
+        "65 - 6 X 2 Feet - Nonlit - BASKAR NATTU MARUNDHU KADAI.cdr"
+      ],
+      "files_note": "11 listed (includes the 2 found in phase 1: '20' and '65'); the probe's own count field above (9) reflects phase-2-only detections before merging with phase 1's hand-dumped results.",
+      "outlier_within_family_b": "'31 - 35 X 4 Feet' has 80 shapes (vs. the usual ~41-48) and only 2 bitmaps, not 3 - this is the dataset's most extreme landscape aspect ratio (~8.75) and looks like the designer's own duplicated/tiled composition (consistent with the already-documented 35x4ft Agarpathi tiling example in CLAUDE.md 'Designer dataset analysis'), not a plain Family B variant. Flagged, not specially handled."
+    },
+    "family_c_no_bitmap": {
+      "description": "No embedded bitmap at all - a still different composition (no product photo), only 1 sample seen.",
+      "count": 1,
+      "files": ["34 - 68 X 65 Inch - Nonlit - SAKTHIVEL STORE.cdr"],
+      "action": "not enough samples (n=1) to characterize; left unclassified pending more evidence, per this project's standing rule against fitting anything from a single sample."
+    }
+  },
+  "known_matching_tooling_gap": "tools/validate_all.py's greedy nearest-centre matcher can cross-pair Agarpathi's two separate shopname text objects (Tamil + English name are always two distinct shapes here, unlike dalmia's typically-single shopname shape) when both are classified role='shopname'. Confirmed on the master-regenerated-as-itself identity check: every other of 29 matched objects differed by exactly 0.0mm, but the shopname pair alone showed a spurious ~1600mm 'difference' equal to the real on-page distance between the two text boxes. This inflates any 'shopname_diff_pct_max'/'max_diff' figure that happens to hinge on the shopname role for this brand; the geometric bounds recorded in app/confidence_bounds.json['agarpathi'] exclude the shopname role for this reason. Not fixed here (a tooling/methodology issue in validate_all.py's matcher, out of scope for this phase) - content_check.py's exact-text check remains the only verified signal for shopname correctness in the meantime."
+}
