@@ -59,6 +59,12 @@ def _worse(a: str, b: str) -> str:
     return a if _RANK[a] >= _RANK[b] else b
 
 
+def _orientation(w: float, h: float, tol: float = 0.02) -> str:
+    if abs(w - h) / max(w, h) <= tol:
+        return "square"
+    return "landscape" if w > h else "portrait"
+
+
 def confidence_label(width_mm: float, height_mm: float, brand: str,
                       content_check: dict | None = None, layout_checks: list[dict] | None = None,
                       bounds: dict | None = None) -> dict:
@@ -88,9 +94,24 @@ def confidence_label(width_mm: float, height_mm: float, brand: str,
     regime = "tiled" if tiled else "untiled"
     rb = brand_bounds["regimes"].get(regime)
 
+    request_orientation = _orientation(width_mm, height_mm)
     if rb is None:
         label = _worse(label, MANUAL)
         reasons.append(f"no validated {regime} samples for {brand!r} at all - would be pure extrapolation")
+    elif rb.get("orientation") and rb["orientation"] != request_orientation:
+        # A bare aspect-ratio range (max/min, orientation-agnostic) can coincidentally
+        # contain a portrait or square request even when every sample that produced
+        # it was landscape (or vice versa) - found live on Agarpathi, where several
+        # portrait boards' aspect ratios happened to fall inside bounds derived
+        # entirely from landscape data, despite zero portrait boards ever being
+        # validated. Only enforced when a regime explicitly records its orientation
+        # (older/synthetic bounds without that key keep the prior aspect-only check).
+        label = _worse(label, MANUAL)
+        reasons.append(
+            f"validated {regime} samples for {brand!r} are all {rb['orientation']}, but this request is "
+            f"{request_orientation} - aspect ratio {aspect:.2f} happens to fall in the validated numeric "
+            f"range, but orientation itself was never validated - would be extrapolation"
+        )
     elif not (rb["aspect_min"] <= aspect <= rb["aspect_max"]):
         label = _worse(label, MANUAL)
         reasons.append(
