@@ -137,7 +137,7 @@ def _check_editable(idx: dict, node_id: str, allow_powerclip: bool = False) -> N
             raise OpError(f"{n['id']!r} is locked")
         p = idx[n["id"]]["parent"]
         if p is not None and p.get("kind") == "powerclip" and not allow_powerclip:
-            raise OpError(f"{node_id!r} is inside a PowerClip (contents are read-only in v1)")
+            raise OpError(f"{node_id!r} is inside a PowerClip - only text, move and resize can be applied to its contents")
         n = p
 
 

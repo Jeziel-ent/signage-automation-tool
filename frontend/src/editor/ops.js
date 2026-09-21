@@ -81,7 +81,7 @@ function checkEditable(idx, id, allowPowerclip = false) {
   while (n) {
     if (n.locked) throw new OpError(`'${n.id}' is locked`);
     const p = idx.get(n.id).parent;
-    if (p && p.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip (contents are read-only in v1)`);
+    if (p && p.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip - only text, move and resize can be applied to its contents`);
     n = p;
   }
 }
