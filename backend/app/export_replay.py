@@ -242,6 +242,10 @@ class Replayer:
 
     # --------------------------------------------------------- operations
     def _op_move(self, op, before):
+        # A PowerClip child is moved like any other shape: scene coordinates are the absolute page
+        # coordinates CorelDRAW reports for it (scene_export reads LeftX/BottomY the same way), so a
+        # dx/dy translation needs no conversion to the container's origin, and the clip frame itself
+        # is not touched. Unverified against a real PowerClip - verify() compares the result.
         for i in scene_ops._top_ids(before, op["ids"]):
             self._shape(i).Move(float(op["dx"]), float(op["dy"]))
 
@@ -505,7 +509,10 @@ def verify(page, expected: dict, limit: int = 20) -> dict:
                 note(f"{here}: visibility differs")
             if w["type"] == "text" and (g["text"] or "").strip() != (w["text"] or "").strip():
                 note(f"{here}: text differs")
-            if w["kind"] == "group":
+            if w["kind"] in ("group", "powerclip"):
+                # PowerClip contents are compared too: nested text/move/resize edits (scene_ops.py's
+                # PowerClip exception) are the least-verified COM behaviour here, so a mismatch
+                # must surface in report.verification rather than pass silently.
                 cmp(g["children"], w["children"], here)
 
     got_layers = [{"name": l["name"], "children": [_canon(c) for c in l["children"]]} for l in layers]

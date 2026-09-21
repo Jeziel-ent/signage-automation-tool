@@ -1,5 +1,5 @@
 {
- "_doc": "Shared by backend/tests/test_scene_ops.py and frontend/src/editor/ops.test.mjs. Expected values are hand-computed, not generated. A tree projection is [id, x, y, w, h] with a 6th element holding the children's projections for groups/powerclips. Tolerance 1e-3. base3/powerclip_cases/powerclip_errors: a PowerClip child (\"pct\", text) can take the `text` op (content/font/size_pt) - the one, narrow exception to PowerClip contents otherwise being read-only.",
+ "_doc": "Shared by backend/tests/test_scene_ops.py and frontend/src/editor/ops.test.mjs. Expected values are hand-computed, not generated. A tree projection is [id, x, y, w, h] with a 6th element holding the children's projections for groups/powerclips. Tolerance 1e-3. base3/powerclip_cases/powerclip_errors: a PowerClip child (\"pct\", text) can take `text`, `move` and `resize` ops (child coordinates are absolute page coordinates; the container is marked stale) - the narrow exception to PowerClip contents otherwise being read-only. expect_boxes: {id: [x,y,w,h]}.",
  "base": {
   "page": {
    "width": 200,
@@ -1194,15 +1194,13 @@
    "error": "unknown id"
   },
   {
-   "name": "PowerClip contents are read-only",
+   "name": "PowerClip contents cannot be deleted or restructured (only text/move/resize are allowed)",
    "ops": [
     {
-     "op": "move",
+     "op": "delete",
      "ids": [
       "pcc"
-     ],
-     "dx": 1,
-     "dy": 1
+     ]
     }
    ],
    "error": "PowerClip"
@@ -1557,47 +1555,157 @@
    "expect_stale": [
     "pct"
    ]
-  }
- ],
- "powerclip_errors": [
+  },
   {
-   "name": "move is still blocked inside a PowerClip",
+   "name": "move a PowerClip child translates only that child and marks the container stale",
    "ops": [
     {
      "op": "move",
      "ids": [
-      "pct"
+      "pcc"
      ],
-     "dx": 1,
-     "dy": 1
+     "dx": 5,
+     "dy": -2
     }
    ],
-   "error": "PowerClip"
+   "expect_boxes": {
+    "pcc": [
+     20,
+     24,
+     20,
+     10
+    ],
+    "pct": [
+     15,
+     15,
+     30,
+     10
+    ],
+    "pc": [
+     10,
+     10,
+     50,
+     30
+    ]
+   },
+   "expect_stale": [
+    "pc"
+   ]
   },
   {
-   "name": "resize is still blocked inside a PowerClip",
+   "name": "resize a PowerClip child scales it (and its text size) about the given boxes; the clip frame is untouched",
    "ops": [
     {
      "op": "resize",
      "ids": [
-      "pcc"
+      "pct"
      ],
      "from": {
       "x": 15,
-      "y": 26,
-      "w": 20,
+      "y": 15,
+      "w": 30,
       "h": 10
      },
      "to": {
-      "x": 15,
-      "y": 26,
-      "w": 10,
-      "h": 10
+      "x": 20,
+      "y": 15,
+      "w": 60,
+      "h": 20
      }
     }
    ],
-   "error": "PowerClip"
+   "expect_boxes": {
+    "pct": [
+     20,
+     15,
+     60,
+     20
+    ],
+    "pcc": [
+     15,
+     26,
+     20,
+     10
+    ],
+    "pc": [
+     10,
+     10,
+     50,
+     30
+    ]
+   },
+   "expect_text": {
+    "pct": {
+     "size_pt": 40
+    }
+   },
+   "expect_stale": [
+    "pc"
+   ]
   },
+  {
+   "name": "moving the PowerClip itself carries its children with it",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "pc"
+     ],
+     "dx": 3,
+     "dy": 4
+    }
+   ],
+   "expect_boxes": {
+    "pc": [
+     13,
+     14,
+     50,
+     30
+    ],
+    "pct": [
+     18,
+     19,
+     30,
+     10
+    ],
+    "pcc": [
+     18,
+     30,
+     20,
+     10
+    ]
+   }
+  },
+  {
+   "name": "moving a container and its own child together moves the child once",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "pc",
+      "pct"
+     ],
+     "dx": 3,
+     "dy": 4
+    }
+   ],
+   "expect_boxes": {
+    "pc": [
+     13,
+     14,
+     50,
+     30
+    ],
+    "pct": [
+     18,
+     19,
+     30,
+     10
+    ]
+   }
+  }
+ ],
+ "powerclip_errors": [
   {
    "name": "delete is still blocked inside a PowerClip",
    "ops": [
@@ -1620,6 +1728,17 @@
     }
    ],
    "error": "not a text object"
+  },
+  {
+   "name": "order is still blocked inside a PowerClip",
+   "ops": [
+    {
+     "op": "order",
+     "id": "pct",
+     "mode": "front"
+    }
+   ],
+   "error": "PowerClip"
   }
  ]
 }

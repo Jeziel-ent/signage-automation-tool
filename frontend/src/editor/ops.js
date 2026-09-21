@@ -71,10 +71,9 @@ function topIds(idx, ids) {
   return out;
 }
 
-// allowPowerclip=true is the one, narrow exception - the `text` op passes it
-// so a PowerClip child's own text/font can be edited without opening up
-// move/resize/reorder/group/delete/visibility on it too (see ops.py's
-// docstring mirror for why those stay off-limits).
+// allowPowerclip=true is the narrow exception - only `text`, `move` and `resize`
+// pass it, so a PowerClip child can be edited in place without opening up
+// order/reorder/group/ungroup/delete on it (see scene_ops.py's docstring).
 function checkEditable(idx, id, allowPowerclip = false) {
   const e = idx.get(id);
   if (e.layer.locked) throw new OpError(`'${id}' is on a locked layer`);
@@ -85,6 +84,11 @@ function checkEditable(idx, id, allowPowerclip = false) {
     if (p && p.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip (contents are read-only in v1)`);
     n = p;
   }
+}
+
+/** A child moved/resized inside a PowerClip: the container's rendered image is now out of date. */
+function markClipStale(idx, id) {
+  for (let p = idx.get(id).parent; p; p = idx.get(p.id).parent) if (p.kind === "powerclip") p.stale = true;
 }
 
 function refreshChain(scene, startParent) {
@@ -169,9 +173,12 @@ const APPLY = {
     const ids = topIds(idx, op.ids);
     const dx = Number(field(op, "dx"));
     const dy = Number(field(op, "dy"));
-    ids.forEach((i) => checkEditable(idx, i));
+    ids.forEach((i) => checkEditable(idx, i, true));
     const parents = ids.map((i) => idx.get(i).parent);
-    ids.forEach((i) => translate(idx.get(i).node, dx, dy));
+    ids.forEach((i) => {
+      translate(idx.get(i).node, dx, dy);
+      markClipStale(idx, i);
+    });
     parents.forEach((p) => refreshChain(s, p));
   },
 
@@ -181,9 +188,12 @@ const APPLY = {
     const frm = bboxArg(op.from, "from");
     const to = bboxArg(op.to, "to");
     if (to.w < MIN_SIZE || to.h < MIN_SIZE) throw new OpError("target width/height must be positive");
-    ids.forEach((i) => checkEditable(idx, i));
+    ids.forEach((i) => checkEditable(idx, i, true));
     const parents = ids.map((i) => idx.get(i).parent);
-    ids.forEach((i) => scaleSubtree(idx.get(i).node, frm, to));
+    ids.forEach((i) => {
+      scaleSubtree(idx.get(i).node, frm, to);
+      markClipStale(idx, i);
+    });
     parents.forEach((p) => refreshChain(s, p));
   },
 

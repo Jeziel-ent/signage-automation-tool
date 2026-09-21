@@ -16,15 +16,17 @@ Scene shape (all lengths in mm, origin bottom-left like CorelDRAW):
             "image": {"file", "format"} | None,      # leaf shapes only
             "text": {"content", "font", "size_pt"},  # text shapes only
             "children": [node, ...]}                 # group / powerclip
-`children` lists are bottom -> top (draw order). A PowerClip is mostly atomic:
-its contents are listed for the layers tree, selectable, and their TEXT can be
-edited (`text` op) - see `_check_editable`'s `allow_powerclip` - but nothing
-else (move/resize/reorder/group/delete/visibility) can target a PowerClip
-child; those still apply to the clipped result as one object. Narrower than
-full PowerClip editing on purpose: there is no real board in this project's
-dataset that contains a PowerClip to verify move/resize-inside-a-clip
-against, whereas text content/font is the same edit already verified for
-every other text object, just applied one level deeper.
+`children` lists are bottom -> top (draw order). A PowerClip's contents are
+listed for the layers tree, selectable, and can be edited in place: their TEXT
+(`text` op) and their position/size (`move`/`resize`) - see
+`_check_editable`'s `allow_powerclip`. Order/reorder/group/ungroup/delete
+still cannot target a PowerClip child (those change what is inside the clip,
+not how it looks). Child coordinates are absolute page coordinates like every
+other node, so a nested move is the same translation as a top-level one - the
+clip frame itself never changes. Moving/resizing a child marks its PowerClip
+`stale` (its rendered image no longer matches) until CorelDRAW re-renders it.
+No real board in this project's dataset contains a PowerClip, so none of this
+has been verified against real CorelDRAW.
 
 Operations (`op` key; every op is JSON and self-contained):
     move        {ids, dx, dy}
@@ -122,10 +124,10 @@ def _top_ids(idx: dict, ids: list[str]) -> list[str]:
 
 
 def _check_editable(idx: dict, node_id: str, allow_powerclip: bool = False) -> None:
-    """`allow_powerclip=True` is the one, narrow exception - the `text` op
-    passes it so a PowerClip child's own text/font can be edited without
-    opening up move/resize/reorder/group/delete/visibility on it too (see
-    this module's docstring for why those stay off-limits)."""
+    """`allow_powerclip=True` is the narrow exception - only `text`, `move` and
+    `resize` pass it, so a PowerClip child can be edited in place without
+    opening up order/reorder/group/ungroup/delete on it (see this module's
+    docstring)."""
     e = idx[node_id]
     if e["layer"].get("locked"):
         raise OpError(f"{node_id!r} is on a locked layer")
@@ -137,6 +139,15 @@ def _check_editable(idx: dict, node_id: str, allow_powerclip: bool = False) -> N
         if p is not None and p.get("kind") == "powerclip" and not allow_powerclip:
             raise OpError(f"{node_id!r} is inside a PowerClip (contents are read-only in v1)")
         n = p
+
+
+def _mark_clip_stale(idx: dict, node_id: str) -> None:
+    """A child moved/resized inside a PowerClip: the container's rendered image is now out of date."""
+    p = idx[node_id]["parent"]
+    while p is not None:
+        if p.get("kind") == "powerclip":
+            p["stale"] = True
+        p = idx[p["id"]]["parent"]
 
 
 def _refresh_chain(idx_scene: dict, start_parent: dict | None) -> None:
@@ -199,10 +210,11 @@ def _op_move(s, op):
     ids = _top_ids(idx, op.get("ids") or [])
     dx, dy = float(op["dx"]), float(op["dy"])
     for i in ids:
-        _check_editable(idx, i)
+        _check_editable(idx, i, allow_powerclip=True)
     parents = [idx[i]["parent"] for i in ids]
     for i in ids:
         _translate(idx[i]["node"], dx, dy)
+        _mark_clip_stale(idx, i)
     for p in parents:
         _refresh_chain(s, p)
 
@@ -214,10 +226,11 @@ def _op_resize(s, op):
     if to["w"] < MIN_SIZE or to["h"] < MIN_SIZE:
         raise OpError("target width/height must be positive")
     for i in ids:
-        _check_editable(idx, i)
+        _check_editable(idx, i, allow_powerclip=True)
     parents = [idx[i]["parent"] for i in ids]
     for i in ids:
         _scale(idx[i]["node"], frm, to)
+        _mark_clip_stale(idx, i)
     for p in parents:
         _refresh_chain(s, p)
 

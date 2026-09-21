@@ -65,6 +65,13 @@ const SceneImages = memo(function SceneImages({ leaves, assetBase, pageH, imgRef
   );
 });
 
+/** PowerClip containers above `id` (their rendered image is what a nested edit makes stale). */
+function ancestryOf(idx, id) {
+  const out = [];
+  for (let p = idx.get(id) && idx.get(id).parent; p; p = idx.get(p.id).parent) if (p.kind === "powerclip") out.push(p);
+  return out;
+}
+
 export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, textPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
@@ -81,10 +88,11 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   const leaves = useMemo(() => flattenLeaves(scene), [scene]);
   const selNodes = useMemo(() => sel.map((id) => idx.get(id)?.node).filter(Boolean), [sel, idx]);
   const selBox = useMemo(() => unionBox(selNodes), [selNodes]);
-  // A PowerClip child only accepts text edits (see ops.js checkEditable) - it is outlined
-  // and selectable, but never offered move/resize handles that would only be rejected.
-  const selInClip = selNodes.some((n) => insidePowerclip(idx, n.id));
-  const selLocked = selNodes.some((n) => n.locked || idx.get(n.id).layer.locked) || selInClip;
+  // A PowerClip child can be moved/resized/text-edited (ops.js checkEditable allowPowerclip) but its
+  // pixels live inside the container's single CorelDRAW-rendered image, so only the outline moves live;
+  // the image refreshes after Save and Generate (the container is marked stale by the op).
+  const selInClip = selNodes.length > 0 && selNodes.every((n) => insidePowerclip(idx, n.id));
+  const selLocked = selNodes.some((n) => n.locked || idx.get(n.id).layer.locked);
 
   const latest = useRef({});
   latest.current = { scene, view, pageH, idx, leaves, sel, ctx, alphaMaps, assetBase, selBox, selNodes, selLocked };
@@ -176,6 +184,16 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
     if (e.button !== 0) return;
     const p = local(e);
     const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    // A selected PowerClip child: pressing inside its own box drags IT (a plain pick would resolve to
+    // the whole PowerClip and replace the selection). Outside its box falls through to normal picking.
+    if (selInClip && !additive && selBox && !selLocked) {
+      const m = sceneAt(p);
+      if (m.x >= selBox.x && m.x <= selBox.x + selBox.w && m.y >= selBox.y && m.y <= selBox.y + selBox.h) {
+        svg.setPointerCapture(e.pointerId);
+        drag.current = { type: "move", startP: p, ids: sel.slice(), nodes: selNodes, leaves: [], startBox: selBox, targets: snap ? buildTargets(sel, ctx) : null, started: false };
+        return;
+      }
+    }
     const hit = pick(p);
     svg.setPointerCapture(e.pointerId);
     if (!hit) {
@@ -202,7 +220,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
     e.stopPropagation();
     if (e.button !== 0 || !selBox || selLocked) return;
     svgRef.current.setPointerCapture(e.pointerId);
-    drag.current = { type: "resize", handle, startP: local(e), startBox: selBox, ids: sel.slice(), leaves: selNodes.flatMap(leavesOf), targets: snap ? buildTargets(sel, ctx) : null, started: false };
+    drag.current = { type: "resize", handle, startP: local(e), startBox: selBox, ids: sel.slice(), leaves: selInClip ? [] : selNodes.flatMap(leavesOf), targets: snap ? buildTargets(sel, ctx) : null, started: false };
   }
 
   function onPointerMove(e) {
@@ -303,13 +321,13 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
       const inner = resolveTarget(idx, hit.leaf.id, top.id);
       onSelect([inner.targetId], top.id);
     } else if (top.kind === "powerclip") {
-      // Enter the PowerClip: select the child under the cursor (text first). Only its text is
-      // editable - it can't be moved or resized separately from the clipped result.
+      // Enter the PowerClip: select the child under the cursor (text first). Text opens the editor;
+      // anything else is selected so it can be moved/resized (handles) without leaving the clip.
       const child = clipChildAt(top, sceneAt(local(e)));
       if (!child) return onToast("Nothing to select inside this PowerClip at that point.");
       onSelect([child.id], top.id);
       if (child.text) onEditText(child.id);
-      else onToast("Inside a PowerClip only text can be edited - this object moves and resizes with the clipped result.");
+      else onToast("Selected inside the PowerClip - drag it or its handles to move/resize; the clipped image refreshes after Save and Generate.");
     } else if (top.text) {
       onEditText(top.id);
     }
@@ -382,7 +400,7 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
             return <rect key={n.id} pointerEvents="none" x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-red)" strokeWidth="1" strokeDasharray="4 3" />;
           })}
 
-        {selNodes.filter((n) => n.stale).map((n) => {
+        {[...selNodes, ...selNodes.flatMap((n) => ancestryOf(idx, n.id))].filter((n, i, a) => n.stale && a.indexOf(n) === i).map((n) => {
           const b = sbox(n);
           return <rect key={"stale" + n.id} pointerEvents="none" x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-warn)" strokeDasharray="5 3" />;
         })}

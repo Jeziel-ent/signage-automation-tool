@@ -134,6 +134,9 @@ def test_golden_powerclip_text_case(case):
         node = scene_ops.find_node(out, nid)
         for k, v in want.items():
             assert node["text"][k] == v
+    for nid, box in case.get("expect_boxes", {}).items():
+        n = scene_ops.find_node(out, nid)
+        assert [n["x"], n["y"], n["w"], n["h"]] == pytest.approx(box, abs=TOL), nid
     for nid in case.get("expect_stale", []):
         assert scene_ops.find_node(out, nid).get("stale") is True
 
@@ -142,3 +145,16 @@ def test_golden_powerclip_text_case(case):
 def test_golden_powerclip_errors(case):
     with pytest.raises(OpError, match=case["error"]):
         apply_ops(GOLDEN["base3"], case["ops"])
+
+
+def test_a_locked_powerclip_still_rejects_moving_its_child():
+    scene = copy.deepcopy(GOLDEN["base3"])
+    scene["layers"][0]["children"][0]["locked"] = True
+    with pytest.raises(OpError, match="locked"):
+        apply_ops(scene, [{"op": "move", "ids": ["pcc"], "dx": 1, "dy": 1}])
+
+
+def test_moving_a_powerclip_child_does_not_change_its_container_box():
+    out = apply_ops(GOLDEN["base3"], [{"op": "move", "ids": ["pcc"], "dx": 100, "dy": 100}])
+    pc = scene_ops.find_node(out, "pc")
+    assert [pc["x"], pc["y"], pc["w"], pc["h"]] == [10, 10, 50, 30]   # the clip frame never follows its contents

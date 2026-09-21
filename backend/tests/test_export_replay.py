@@ -516,8 +516,45 @@ def test_powerclip_child_text_edit_runs_the_tamil_font_fix():
     assert r.warnings == []
 
 
-def test_powerclip_child_still_rejects_non_text_ops():
+def _child_box(shape):
+    return [round(shape.LeftX, 3), round(shape.BottomY, 3), round(shape.SizeWidth, 3), round(shape.SizeHeight, 3)]
+
+
+def test_powerclip_child_move_replays_by_page_delta_and_leaves_the_clip_frame():
     doc, scene, inner = _doc_with_powerclip_text()
-    child_id = f"s{inner.StaticID}"
-    with pytest.raises(Exception, match="PowerClip"):
-        run([{"op": "move", "ids": [child_id], "dx": 5, "dy": 5}], doc, scene)
+    container = inner.parent
+    frame_before = _child_box(container)
+    _, r, _, v = run([{"op": "move", "ids": [f"s{inner.StaticID}"], "dx": 12.5, "dy": -4}], doc, scene)
+    assert _child_box(inner) == [822.5, 406.0, 80.0, 20.0]      # 810,410 + (12.5,-4)
+    assert _child_box(container) == frame_before                # the frame never follows its contents
+    assert v["ok"], v                                            # verify() now compares PowerClip contents
+    assert r.warnings == []
+
+
+def test_powerclip_child_resize_replays_position_and_size():
+    doc, scene, inner = _doc_with_powerclip_text()
+    cid = f"s{inner.StaticID}"
+    frm = {"x": 810, "y": 410, "w": 80, "h": 20}
+    to = {"x": 820, "y": 405, "w": 40, "h": 30}
+    _, r, expected, v = run([{"op": "resize", "ids": [cid], "from": frm, "to": to}], doc, scene)
+    assert _child_box(inner) == [820.0, 405.0, 40.0, 30.0]
+    child = next(c for c in scene_ops.find_node(expected, next(n["id"] for n in scene_ops.iter_nodes(expected) if n["kind"] == "powerclip"))["children"])
+    assert [child["x"], child["y"], child["w"], child["h"]] == [820.0, 405.0, 40.0, 30.0]
+    assert scene_ops.find_node(expected, next(n["id"] for n in scene_ops.iter_nodes(expected) if n["kind"] == "powerclip")).get("stale") is True
+    assert v["ok"], v
+
+
+def test_verify_catches_a_powerclip_child_that_did_not_end_up_where_the_edit_says():
+    doc, scene, inner = _doc_with_powerclip_text()
+    _, _, expected, _ = run([{"op": "move", "ids": [f"s{inner.StaticID}"], "dx": 10, "dy": 0}], doc, scene)
+    inner._x -= 40.0                                             # CorelDRAW put it somewhere else
+    result = er.verify(doc.ActivePage, expected)
+    assert not result["ok"] and any("x is" in m for m in result["mismatches"])
+
+
+def test_powerclip_child_still_rejects_order_and_delete():
+    doc, scene, inner = _doc_with_powerclip_text()
+    cid = f"s{inner.StaticID}"
+    for op in ({"op": "order", "id": cid, "mode": "front"}, {"op": "delete", "ids": [cid]}):
+        with pytest.raises(Exception, match="PowerClip"):
+            run([op], doc, scene)

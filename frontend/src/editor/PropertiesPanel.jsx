@@ -17,10 +17,11 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
   const box = useMemo(() => unionBox(nodes), [nodes]);
   const single = nodes.length === 1 ? nodes[0] : null;
   const locked = nodes.some((n) => n.locked || idx.get(n.id).layer.locked);
-  // Inside a PowerClip only the `text` op is accepted (ops.js checkEditable) - text stays
-  // editable, geometry/order inputs are disabled rather than offered and then rejected.
+  // Inside a PowerClip `text`, `move` and `resize` are accepted (ops.js checkEditable); order/reorder
+  // are not, so only the stacking-order buttons stay disabled there.
   const inClip = nodes.some((n) => insidePowerclip(idx, n.id));
-  const geomLocked = locked || inClip;
+  const geomLocked = locked;
+  const orderLocked = locked || inClip;
 
   const [f, setF] = useState({ w: "", h: "", x: "", y: "" });
   const [lockRatio, setLockRatio] = useState(true);
@@ -134,7 +135,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
             <label className="ed-check">
               <input type="checkbox" checked={lockRatio} disabled={geomLocked} onChange={(e) => setLockRatio(e.target.checked)} /> Keep proportions
             </label>
-            {inClip && <div className="ed-hint">Inside a PowerClip - size and position follow the clipped result; only its text can be edited (Text tab).</div>}
+            {inClip && <div className="ed-hint">Inside a PowerClip - resizing or moving this changes the clipped result; the preview image refreshes after Save and Generate.</div>}
             {single && single.rotation ? <div className="ed-hint">Rotation {single.rotation}° (already in the rendered image)</div> : null}
           </>
         )}
@@ -146,13 +147,14 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
               {input("y", "Y")}
             </div>
             <div className="ed-hint">Centre of the selection; origin is the page's bottom-left corner.</div>
+            {inClip && <div className="ed-hint">Stacking order can't be changed inside a PowerClip.</div>}
             {single ? (
               <div className="ed-order">
                 <span>Order</span>
-                <button className="ed-btn" disabled={geomLocked} onClick={() => order("front")}>To front</button>
-                <button className="ed-btn" disabled={geomLocked} onClick={() => order("forward")}>Forward</button>
-                <button className="ed-btn" disabled={geomLocked} onClick={() => order("backward")}>Backward</button>
-                <button className="ed-btn" disabled={geomLocked} onClick={() => order("back")}>To back</button>
+                <button className="ed-btn" disabled={orderLocked} onClick={() => order("front")}>To front</button>
+                <button className="ed-btn" disabled={orderLocked} onClick={() => order("forward")}>Forward</button>
+                <button className="ed-btn" disabled={orderLocked} onClick={() => order("backward")}>Backward</button>
+                <button className="ed-btn" disabled={orderLocked} onClick={() => order("back")}>To back</button>
               </div>
             ) : (
               <div className="ed-hint">Select a single object to change its stacking order.</div>

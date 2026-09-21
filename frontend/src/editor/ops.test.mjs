@@ -112,6 +112,10 @@ for (const c of GOLDEN.powerclip_cases) {
     for (const [id, want] of Object.entries(c.expect_text || {})) {
       for (const [k, v] of Object.entries(want)) assert.equal(findNode(out, id).text[k], v);
     }
+    for (const [id, box] of Object.entries(c.expect_boxes || {})) {
+      const n = findNode(out, id);
+      [n.x, n.y, n.w, n.h].forEach((v, k) => assert.ok(Math.abs(v - box[k]) < TOL, `${id}: ${[n.x, n.y, n.w, n.h]} != ${box}`));
+    }
     for (const id of c.expect_stale || []) assert.equal(findNode(out, id).stale, true);
   });
 }

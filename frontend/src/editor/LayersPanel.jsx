@@ -97,7 +97,7 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
               key={row.id}
               data-row={row.id}
               className={`ed-row${selected ? " selected" : ""}${row.isLayer ? " layer" : ""}${n.visible === false ? " hidden" : ""}${inCtx ? " ctx" : ""}${inClip ? " clip-child" : ""}${dropCls}`}
-              title={inClip ? "Inside a PowerClip - select it to edit its text; it can't be moved, reordered or deleted separately" : undefined}
+              title={inClip ? "Inside a PowerClip - select it to edit its text or move/resize it; it can't be reordered, grouped or deleted separately" : undefined}
               style={{ paddingLeft: 6 + row.depth * 16 }}
               draggable={row.isLayer || (!row.locked && !inClip)}
               onClick={(e) => clickRow(e, row)}
@@ -123,7 +123,7 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
               </span>
               {!row.isLayer && <span className="ed-kind"><KindIcon kind={n.kind} type={n.type} /></span>}
               <span className="ed-name" title={rowLabel(n)}>{row.isLayer ? n.name : rowLabel(n)}</span>
-              {n.stale && <span className="ed-badge" title="Text edited">edited</span>}
+              {n.stale && <span className="ed-badge" title="Edited - preview refreshes after Save and Generate">edited</span>}
               {row.locked && <span className="ed-lock" title="Locked"><Lock /></span>}
               {!row.isLayer && n.kind === "group" && (
                 <button className="ed-icon-only" title="Ungroup" onClick={(e) => { e.stopPropagation(); ungroup(n.id); }}><UngroupIcon /></button>
