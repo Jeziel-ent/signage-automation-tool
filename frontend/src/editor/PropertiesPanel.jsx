@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { buildIndex } from "./ops.js";
-import { unionBox } from "./model.js";
+import { insidePowerclip, unionBox } from "./model.js";
 import { fromUnit, toUnit, UNITS } from "./units.js";
 
 const FONTS = ["Arial", "Nirmala UI", "Yu Gothic Medium", "Segoe UI", "Times New Roman", "Calibri", "Verdana"];
@@ -17,6 +17,10 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
   const box = useMemo(() => unionBox(nodes), [nodes]);
   const single = nodes.length === 1 ? nodes[0] : null;
   const locked = nodes.some((n) => n.locked || idx.get(n.id).layer.locked);
+  // Inside a PowerClip only the `text` op is accepted (ops.js checkEditable) - text stays
+  // editable, geometry/order inputs are disabled rather than offered and then rejected.
+  const inClip = nodes.some((n) => insidePowerclip(idx, n.id));
+  const geomLocked = locked || inClip;
 
   const [f, setF] = useState({ w: "", h: "", x: "", y: "" });
   const [lockRatio, setLockRatio] = useState(true);
@@ -74,7 +78,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
       <span>{label}</span>
       <input
         value={f[field]}
-        disabled={locked}
+        disabled={geomLocked}
         onChange={(e) => setF((p) => ({ ...p, [field]: e.target.value }))}
         onBlur={() => commit(field)}
         onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()}
@@ -101,6 +105,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
         {single ? (single.name || single.type) : `${nodes.length} objects`}
         {single && <span className="ed-prop-sub"> · {single.kind === "shape" ? single.type : single.kind}</span>}
         {locked && <span className="ed-prop-sub"> · locked</span>}
+        {inClip && <span className="ed-prop-sub"> · in PowerClip</span>}
       </div>
 
       <div className="ed-tabs" role="tablist">
@@ -127,8 +132,9 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
               {input("h", "Height")}
             </div>
             <label className="ed-check">
-              <input type="checkbox" checked={lockRatio} onChange={(e) => setLockRatio(e.target.checked)} /> Keep proportions
+              <input type="checkbox" checked={lockRatio} disabled={geomLocked} onChange={(e) => setLockRatio(e.target.checked)} /> Keep proportions
             </label>
+            {inClip && <div className="ed-hint">Inside a PowerClip - size and position follow the clipped result; only its text can be edited (Text tab).</div>}
             {single && single.rotation ? <div className="ed-hint">Rotation {single.rotation}° (already in the rendered image)</div> : null}
           </>
         )}
@@ -143,10 +149,10 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
             {single ? (
               <div className="ed-order">
                 <span>Order</span>
-                <button className="ed-btn" disabled={locked} onClick={() => order("front")}>To front</button>
-                <button className="ed-btn" disabled={locked} onClick={() => order("forward")}>Forward</button>
-                <button className="ed-btn" disabled={locked} onClick={() => order("backward")}>Backward</button>
-                <button className="ed-btn" disabled={locked} onClick={() => order("back")}>To back</button>
+                <button className="ed-btn" disabled={geomLocked} onClick={() => order("front")}>To front</button>
+                <button className="ed-btn" disabled={geomLocked} onClick={() => order("forward")}>Forward</button>
+                <button className="ed-btn" disabled={geomLocked} onClick={() => order("backward")}>Backward</button>
+                <button className="ed-btn" disabled={geomLocked} onClick={() => order("back")}>To back</button>
               </div>
             ) : (
               <div className="ed-hint">Select a single object to change its stacking order.</div>

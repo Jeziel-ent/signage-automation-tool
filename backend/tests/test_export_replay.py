@@ -467,3 +467,57 @@ def test_export_raster_transparency_and_antialiasing():
     assert (png_white_noaa[8], png_white_noaa[10]) == (0, False)
     assert jpg[1] == 774 and jpg[10] is False           # JPEG is never transparent
 
+
+
+# ---- PowerClip child text (scene_ops.py's one narrow exception to PowerClip
+# contents being read-only; see corel_util.ensure_tamil_font_renders) ----
+
+class FPowerClip:
+    """CorelDRAW's Shape.PowerClip: exposes the clipped contents via .Shapes."""
+
+    def __init__(self, kids):
+        self._kids = kids
+
+    @property
+    def Shapes(self):
+        return Coll(self._kids)
+
+
+def _doc_with_powerclip_text(text="INNER", font="Arial"):
+    doc = build_doc()
+    top = doc.ActivePage._layers[1]
+    container = FShape(doc, 1, 800, 400, 100, 50)            # the clip frame (rectangle)
+    container.parent = top
+    inner = FShape(doc, 6, 810, 410, 80, 20, text=text)      # text clipped inside it
+    inner.Text.Story._font = font
+    inner.parent = container
+    container.PowerClip = FPowerClip([inner])
+    top._kids.append(container)
+    scene = {"page": {"width": 1000.0, "height": 500.0}, "layers": scene_export.walk_page(doc.ActivePage)[0]}
+    return doc, scene, inner
+
+
+def test_index_finds_powerclip_children_and_text_op_edits_them():
+    doc, scene, inner = _doc_with_powerclip_text()
+    child_id = f"s{inner.StaticID}"
+    assert child_id in er.index_doc(doc.ActivePage)[0]
+    _, r, _, _ = run([{"op": "text", "id": child_id, "content": "EDITED"}], doc, scene)
+    assert inner.Text.Story.Text == "EDITED"
+    assert r.warnings == []
+
+
+def test_powerclip_child_text_edit_runs_the_tamil_font_fix():
+    tamil = "அல் மதீனா"
+    doc, scene, inner = _doc_with_powerclip_text(font="Arial")
+    child_id = f"s{inner.StaticID}"
+    _, r, _, _ = run([{"op": "text", "id": child_id, "content": tamil}], doc, scene)
+    assert inner.Text.Story.Text == tamil
+    assert inner.Text.Story.Font == "Nirmala UI"     # was "Arial" - would render as tofu boxes
+    assert r.warnings == []
+
+
+def test_powerclip_child_still_rejects_non_text_ops():
+    doc, scene, inner = _doc_with_powerclip_text()
+    child_id = f"s{inner.StaticID}"
+    with pytest.raises(Exception, match="PowerClip"):
+        run([{"op": "move", "ids": [child_id], "dx": 5, "dy": 5}], doc, scene)

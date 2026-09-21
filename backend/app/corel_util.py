@@ -400,3 +400,58 @@ def run_with_timeout(fn, pid: int | None, op_name: str, timeout: float | None = 
     if timed_out.is_set():
         raise CorelTimeout(f"{op_name} did not respond within {t:.0f}s; instance force-killed")
     return result
+
+
+# Fonts already verified (see CLAUDE.md "Shop name replacement") to actually
+# carry Tamil glyphs and stick when written via COM on this machine - not the
+# full installed-font list (querying that per shape would mean a PowerShell
+# round-trip per text object), just the ones this codebase already trusts.
+_KNOWN_TAMIL_FONTS = {"nirmala ui", "nirmala text"}
+
+
+def ensure_tamil_font_renders(shape, text: str | None, warnings: list[str]) -> None:
+    """Real masters' own PRE-EXISTING Tamil text (the shop-name/footer lines
+    untouched by shop-name/contact replacement - e.g. a v2-UI job that never
+    passes shop_name_local, or a PowerClip child's text edited directly in the
+    editor) is typically tagged "Arial" in its own COM Font property, relying
+    on Windows' automatic font-linking to silently substitute a real
+    Tamil-capable font at render time (see CLAUDE.md "Shop name replacement" -
+    every cached real dalmia file's Tamil content reports font="Arial" this
+    way). That substitution is a Windows/renderer behavior, not a CorelDRAW
+    guarantee, and confirmed NOT to happen for this export path on this
+    machine: a real Agarpathi job's untouched Tamil shopname text (job
+    43ddf0d9e704 / shop 638555963892) rendered as tofu boxes in both the
+    exported PNG and the editor's scene-export slice, despite compute_layout
+    never touching that shape's text or font because no replacement was
+    requested for it.
+
+    Shared by app.engines.CorelEngine (every text shape read off the page
+    during generation) and app.export_replay.Replayer (a `text` op's target,
+    including one nested inside a PowerClip - see scene_ops.py's narrow
+    PowerClip-text exception) - one place to get this fix right for both.
+
+    Fixes this the same verified way replacement text already is: if a
+    shape's own text is Tamil and its current font isn't already one this
+    codebase has confirmed renders Tamil correctly, force it to
+    `layout.TAMIL_FONT` and read the font back to confirm the write actually
+    stuck - CorelDRAW does not raise on an unrecognized font name, it
+    silently keeps the old one, so trusting the call without reading back
+    would hide exactly this failure mode again.
+    """
+    from .layout import TAMIL_FONT, is_tamil  # local import: layout.py has no COM dependency of its own
+
+    if not is_tamil(text):
+        return
+    try:
+        story = shape.Text.Story
+        current = (story.Font or "").strip().lower()
+        if current in _KNOWN_TAMIL_FONTS:
+            return
+        story.Font = TAMIL_FONT
+        if story.Font != TAMIL_FONT:
+            warnings.append(
+                f"Tamil text still tagged {current!r} after trying to set {TAMIL_FONT!r} "
+                f"- it may render as tofu boxes; check the font is installed"
+            )
+    except Exception as e:
+        warnings.append(f"could not verify/fix Tamil font on a text shape: {e}")

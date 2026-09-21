@@ -1,56 +1,1625 @@
 {
-  "_doc": "Shared by backend/tests/test_scene_ops.py and frontend/src/editor/ops.test.mjs. Expected values are hand-computed, not generated. A tree projection is [id, x, y, w, h] with a 6th element holding the children's projections for groups/powerclips. Tolerance 1e-3.",
-  "base": {"page": {"width": 200, "height": 100}, "layers": [
-      {"id": "L1", "name": "Layer 1", "visible": true, "locked": false, "children": [{"id": "a", "kind": "shape", "type": "rectangle", "x": 0, "y": 0, "w": 100, "h": 100, "visible": true, "locked": false}, {"id": "g", "kind": "group", "type": "group", "x": 10, "y": 10, "w": 80, "h": 30, "visible": true, "locked": false, "children": [{"id": "b", "kind": "shape", "type": "curve", "x": 10, "y": 10, "w": 40, "h": 30, "visible": true, "locked": false}, {"id": "c", "kind": "shape", "type": "curve", "x": 50, "y": 10, "w": 40, "h": 20, "visible": true, "locked": false}]}, {"id": "t", "kind": "shape", "type": "text", "x": 20, "y": 60, "w": 40, "h": 10, "visible": true, "locked": false, "text": {"content": "SHOP", "font": "Arial", "size_pt": 20}}, {"id": "pc", "kind": "powerclip", "type": "rectangle", "x": 70, "y": 60, "w": 20, "h": 20, "visible": true, "locked": false, "children": [{"id": "pcc", "kind": "shape", "type": "curve", "x": 72, "y": 62, "w": 10, "h": 10, "visible": true, "locked": false}]}]}
-    ]},
-  "base2": {"page": {"width": 100, "height": 100}, "layers": [
-      {"id": "L1", "name": "Layer 1", "visible": true, "locked": false, "children": [{"id": "a", "kind": "shape", "type": "curve", "x": 0, "y": 0, "w": 50, "h": 50, "visible": true, "locked": false}]},
-      {"id": "L2", "name": "Layer 2", "visible": true, "locked": false, "children": [{"id": "b", "kind": "shape", "type": "curve", "x": 10, "y": 10, "w": 20, "h": 20, "visible": true, "locked": false}, {"id": "c", "kind": "shape", "type": "curve", "x": 40, "y": 40, "w": 20, "h": 20, "visible": true, "locked": false}]}
-    ]},
-  "cases": [
-    {"name": "move a group moves its children", "ops": [{"op": "move", "ids": ["g"], "dx": 5, "dy": -2}], "expect": [["a", 0, 0, 100, 100], ["g", 15, 8, 80, 30, [["b", 15, 8, 40, 30], ["c", 55, 8, 40, 20]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "moving a child refreshes the group's bbox", "ops": [{"op": "move", "ids": ["b"], "dx": 0, "dy": 20}], "expect": [["a", 0, 0, 100, 100], ["g", 10, 10, 80, 50, [["b", 10, 30, 40, 30], ["c", 50, 10, 40, 20]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "moving a group and its own child together moves the child once", "ops": [{"op": "move", "ids": ["g", "b"], "dx": 10, "dy": 0}], "expect": [["a", 0, 0, 100, 100], ["g", 20, 10, 80, 30, [["b", 20, 10, 40, 30], ["c", 60, 10, 40, 20]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "resizing a group scales its children about the box", "ops": [{"op": "resize", "ids": ["g"], "from": {"x": 10, "y": 10, "w": 80, "h": 30}, "to": {"x": 0, "y": 0, "w": 160, "h": 60}}], "expect": [["a", 0, 0, 100, 100], ["g", 0, 0, 160, 60, [["b", 0, 0, 80, 60], ["c", 80, 0, 80, 40]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "multi-object resize maps each object through the selection box; text size follows height", "ops": [{"op": "resize", "ids": ["a", "t"], "from": {"x": 0, "y": 0, "w": 100, "h": 100}, "to": {"x": 0, "y": 0, "w": 50, "h": 200}}], "expect": [["a", 0, 0, 50, 200], ["g", 10, 10, 80, 30, [["b", 10, 10, 40, 30], ["c", 50, 10, 40, 20]]], ["t", 10, 120, 20, 20], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]], "expect_text": {"t": {"size_pt": 40}}},
-    {"name": "order front", "ops": [{"op": "order", "id": "a", "mode": "front"}], "expect_ids": ["g", "t", "pc", "a"]},
-    {"name": "order back", "ops": [{"op": "order", "id": "pc", "mode": "back"}], "expect_ids": ["pc", "a", "g", "t"]},
-    {"name": "order backward swaps with the object below", "ops": [{"op": "order", "id": "t", "mode": "backward"}], "expect_ids": ["a", "t", "g", "pc"]},
-    {"name": "order forward on the topmost object is a no-op", "ops": [{"op": "order", "id": "pc", "mode": "forward"}], "expect_ids": ["a", "g", "t", "pc"]},
-    {"name": "reorder into a group grows the group's bbox", "ops": [{"op": "reorder", "id": "t", "parent": "g", "index": 1}], "expect": [["a", 0, 0, 100, 100], ["g", 10, 10, 80, 60, [["b", 10, 10, 40, 30], ["t", 20, 60, 40, 10], ["c", 50, 10, 40, 20]]], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "reorder out of a group shrinks it", "ops": [{"op": "reorder", "id": "c", "parent": "L1", "index": 0}], "expect": [["c", 50, 10, 40, 20], ["a", 0, 0, 100, 100], ["g", 10, 10, 40, 30, [["b", 10, 10, 40, 30]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "group puts the new group where the topmost member was", "ops": [{"op": "group", "ids": ["a", "t"], "group_id": "G2", "name": "Both"}], "expect": [["g", 10, 10, 80, 30, [["b", 10, 10, 40, 30], ["c", 50, 10, 40, 20]]], ["G2", 0, 0, 100, 100, [["a", 0, 0, 100, 100], ["t", 20, 60, 40, 10]]], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "ungroup replaces the group with its children in place", "ops": [{"op": "ungroup", "id": "g"}], "expect": [["a", 0, 0, 100, 100], ["b", 10, 10, 40, 30], ["c", 50, 10, 40, 20], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "group then ungroup round-trips", "ops": [{"op": "group", "ids": ["b", "c"], "group_id": "G3"}, {"op": "ungroup", "id": "G3"}], "expect": [["a", 0, 0, 100, 100], ["g", 10, 10, 80, 30, [["b", 10, 10, 40, 30], ["c", 50, 10, 40, 20]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "visibility of an object and of a layer", "ops": [{"op": "visibility", "id": "b", "visible": false}, {"op": "visibility", "id": "L1", "visible": false}], "expect_visible": {"b": false, "c": true, "L1": false}},
-    {"name": "text change marks the object stale", "ops": [{"op": "text", "id": "t", "content": "HELLO", "font": "Nirmala UI", "size_pt": 30}], "expect_text": {"t": {"content": "HELLO", "font": "Nirmala UI", "size_pt": 30}}, "expect_stale": ["t"]},
-    {"name": "deleting every child removes the empty group", "ops": [{"op": "delete", "ids": ["b", "c"]}], "expect_ids": ["a", "t", "pc"]},
-    {"name": "deleting one child shrinks the group", "ops": [{"op": "delete", "ids": ["c"]}], "expect": [["a", 0, 0, 100, 100], ["g", 10, 10, 40, 30, [["b", 10, 10, 40, 30]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]},
-    {"name": "paste appends new nodes on top of the parent", "ops": [{"op": "paste", "parent": "L1", "nodes": [{"id": "n1", "kind": "shape", "type": "curve", "x": 200, "y": 0, "w": 10, "h": 10, "visible": true, "locked": false}]}], "expect_ids": ["a", "g", "t", "pc", "n1"]},
-    {"name": "page size changes the page only", "ops": [{"op": "page", "width": 500, "height": 300}], "expect_page": [500, 300], "expect_ids": ["a", "g", "t", "pc"]},
-    {"name": "ops replay in order (move then undo-style inverse move)", "ops": [{"op": "move", "ids": ["a"], "dx": 7, "dy": 3}, {"op": "move", "ids": ["a"], "dx": -7, "dy": -3}], "expect_ids": ["a", "g", "t", "pc"], "expect": [["a", 0, 0, 100, 100], ["g", 10, 10, 80, 30, [["b", 10, 10, 40, 30], ["c", 50, 10, 40, 20]]], ["t", 20, 60, 40, 10], ["pc", 70, 60, 20, 20, [["pcc", 72, 62, 10, 10]]]]}
-  ],
-  "errors": [
-    {"name": "unknown id", "ops": [{"op": "move", "ids": ["nope"], "dx": 1, "dy": 1}], "error": "unknown id"},
-    {"name": "PowerClip contents are read-only", "ops": [{"op": "move", "ids": ["pcc"], "dx": 1, "dy": 1}], "error": "PowerClip"},
-    {"name": "grouping across parents", "ops": [{"op": "group", "ids": ["a", "b"], "group_id": "G9"}], "error": "same parent"},
-    {"name": "grouping needs two", "ops": [{"op": "group", "ids": ["a"], "group_id": "G9"}], "error": "at least two"},
-    {"name": "ungroup a non-group", "ops": [{"op": "ungroup", "id": "a"}], "error": "not a group"},
-    {"name": "text op on a non-text object", "ops": [{"op": "text", "id": "a", "size_pt": 12}], "error": "not a text"},
-    {"name": "paste with a clashing id", "ops": [{"op": "paste", "parent": "L1", "nodes": [{"id": "a", "kind": "shape", "type": "curve", "x": 0, "y": 0, "w": 1, "h": 1, "visible": true, "locked": false}]}], "error": "not unique"},
-    {"name": "non-positive resize", "ops": [{"op": "resize", "ids": ["a"], "from": {"x": 0, "y": 0, "w": 100, "h": 100}, "to": {"x": 0, "y": 0, "w": 0, "h": 5}}], "error": "positive"},
-    {"name": "moving a group into itself", "ops": [{"op": "reorder", "id": "g", "parent": "g", "index": 0}], "error": "into itself"},
-    {"name": "unknown op", "ops": [{"op": "explode"}], "error": "unknown op"}
-  ],
-  "layer_cases": [
-    {"name": "move the bottom layer to the top", "ops": [{"op": "layer_order", "id": "L1", "index": 1}], "expect_layers": ["L2", "L1"]},
-    {"name": "move the top layer to the bottom", "ops": [{"op": "layer_order", "id": "L2", "index": 0}], "expect_layers": ["L2", "L1"]},
-    {"name": "index is clamped", "ops": [{"op": "layer_order", "id": "L1", "index": 99}], "expect_layers": ["L2", "L1"]},
-    {"name": "same position is a no-op", "ops": [{"op": "layer_order", "id": "L1", "index": 0}], "expect_layers": ["L1", "L2"]},
-    {"name": "objects keep their layer and geometry when layers swap", "ops": [{"op": "layer_order", "id": "L1", "index": 1}, {"op": "move", "ids": ["b"], "dx": 5, "dy": 0}], "expect_layers": ["L2", "L1"], "expect_boxes": {"b": [15, 10, 20, 20], "a": [0, 0, 50, 50]}}
-  ],
-  "layer_errors": [
-    {"name": "layer_order on an object", "ops": [{"op": "layer_order", "id": "a", "index": 0}], "error": "not a layer"},
-    {"name": "reorder cannot move layers", "ops": [{"op": "reorder", "id": "L1", "parent": "L2", "index": 0}], "error": "layer_order"}
+ "_doc": "Shared by backend/tests/test_scene_ops.py and frontend/src/editor/ops.test.mjs. Expected values are hand-computed, not generated. A tree projection is [id, x, y, w, h] with a 6th element holding the children's projections for groups/powerclips. Tolerance 1e-3. base3/powerclip_cases/powerclip_errors: a PowerClip child (\"pct\", text) can take the `text` op (content/font/size_pt) - the one, narrow exception to PowerClip contents otherwise being read-only.",
+ "base": {
+  "page": {
+   "width": 200,
+   "height": 100
+  },
+  "layers": [
+   {
+    "id": "L1",
+    "name": "Layer 1",
+    "visible": true,
+    "locked": false,
+    "children": [
+     {
+      "id": "a",
+      "kind": "shape",
+      "type": "rectangle",
+      "x": 0,
+      "y": 0,
+      "w": 100,
+      "h": 100,
+      "visible": true,
+      "locked": false
+     },
+     {
+      "id": "g",
+      "kind": "group",
+      "type": "group",
+      "x": 10,
+      "y": 10,
+      "w": 80,
+      "h": 30,
+      "visible": true,
+      "locked": false,
+      "children": [
+       {
+        "id": "b",
+        "kind": "shape",
+        "type": "curve",
+        "x": 10,
+        "y": 10,
+        "w": 40,
+        "h": 30,
+        "visible": true,
+        "locked": false
+       },
+       {
+        "id": "c",
+        "kind": "shape",
+        "type": "curve",
+        "x": 50,
+        "y": 10,
+        "w": 40,
+        "h": 20,
+        "visible": true,
+        "locked": false
+       }
+      ]
+     },
+     {
+      "id": "t",
+      "kind": "shape",
+      "type": "text",
+      "x": 20,
+      "y": 60,
+      "w": 40,
+      "h": 10,
+      "visible": true,
+      "locked": false,
+      "text": {
+       "content": "SHOP",
+       "font": "Arial",
+       "size_pt": 20
+      }
+     },
+     {
+      "id": "pc",
+      "kind": "powerclip",
+      "type": "rectangle",
+      "x": 70,
+      "y": 60,
+      "w": 20,
+      "h": 20,
+      "visible": true,
+      "locked": false,
+      "children": [
+       {
+        "id": "pcc",
+        "kind": "shape",
+        "type": "curve",
+        "x": 72,
+        "y": 62,
+        "w": 10,
+        "h": 10,
+        "visible": true,
+        "locked": false
+       }
+      ]
+     }
+    ]
+   }
   ]
+ },
+ "base2": {
+  "page": {
+   "width": 100,
+   "height": 100
+  },
+  "layers": [
+   {
+    "id": "L1",
+    "name": "Layer 1",
+    "visible": true,
+    "locked": false,
+    "children": [
+     {
+      "id": "a",
+      "kind": "shape",
+      "type": "curve",
+      "x": 0,
+      "y": 0,
+      "w": 50,
+      "h": 50,
+      "visible": true,
+      "locked": false
+     }
+    ]
+   },
+   {
+    "id": "L2",
+    "name": "Layer 2",
+    "visible": true,
+    "locked": false,
+    "children": [
+     {
+      "id": "b",
+      "kind": "shape",
+      "type": "curve",
+      "x": 10,
+      "y": 10,
+      "w": 20,
+      "h": 20,
+      "visible": true,
+      "locked": false
+     },
+     {
+      "id": "c",
+      "kind": "shape",
+      "type": "curve",
+      "x": 40,
+      "y": 40,
+      "w": 20,
+      "h": 20,
+      "visible": true,
+      "locked": false
+     }
+    ]
+   }
+  ]
+ },
+ "cases": [
+  {
+   "name": "move a group moves its children",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "g"
+     ],
+     "dx": 5,
+     "dy": -2
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     15,
+     8,
+     80,
+     30,
+     [
+      [
+       "b",
+       15,
+       8,
+       40,
+       30
+      ],
+      [
+       "c",
+       55,
+       8,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "moving a child refreshes the group's bbox",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "b"
+     ],
+     "dx": 0,
+     "dy": 20
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     10,
+     10,
+     80,
+     50,
+     [
+      [
+       "b",
+       10,
+       30,
+       40,
+       30
+      ],
+      [
+       "c",
+       50,
+       10,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "moving a group and its own child together moves the child once",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "g",
+      "b"
+     ],
+     "dx": 10,
+     "dy": 0
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     20,
+     10,
+     80,
+     30,
+     [
+      [
+       "b",
+       20,
+       10,
+       40,
+       30
+      ],
+      [
+       "c",
+       60,
+       10,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "resizing a group scales its children about the box",
+   "ops": [
+    {
+     "op": "resize",
+     "ids": [
+      "g"
+     ],
+     "from": {
+      "x": 10,
+      "y": 10,
+      "w": 80,
+      "h": 30
+     },
+     "to": {
+      "x": 0,
+      "y": 0,
+      "w": 160,
+      "h": 60
+     }
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     0,
+     0,
+     160,
+     60,
+     [
+      [
+       "b",
+       0,
+       0,
+       80,
+       60
+      ],
+      [
+       "c",
+       80,
+       0,
+       80,
+       40
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "multi-object resize maps each object through the selection box; text size follows height",
+   "ops": [
+    {
+     "op": "resize",
+     "ids": [
+      "a",
+      "t"
+     ],
+     "from": {
+      "x": 0,
+      "y": 0,
+      "w": 100,
+      "h": 100
+     },
+     "to": {
+      "x": 0,
+      "y": 0,
+      "w": 50,
+      "h": 200
+     }
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     50,
+     200
+    ],
+    [
+     "g",
+     10,
+     10,
+     80,
+     30,
+     [
+      [
+       "b",
+       10,
+       10,
+       40,
+       30
+      ],
+      [
+       "c",
+       50,
+       10,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "t",
+     10,
+     120,
+     20,
+     20
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ],
+   "expect_text": {
+    "t": {
+     "size_pt": 40
+    }
+   }
+  },
+  {
+   "name": "order front",
+   "ops": [
+    {
+     "op": "order",
+     "id": "a",
+     "mode": "front"
+    }
+   ],
+   "expect_ids": [
+    "g",
+    "t",
+    "pc",
+    "a"
+   ]
+  },
+  {
+   "name": "order back",
+   "ops": [
+    {
+     "op": "order",
+     "id": "pc",
+     "mode": "back"
+    }
+   ],
+   "expect_ids": [
+    "pc",
+    "a",
+    "g",
+    "t"
+   ]
+  },
+  {
+   "name": "order backward swaps with the object below",
+   "ops": [
+    {
+     "op": "order",
+     "id": "t",
+     "mode": "backward"
+    }
+   ],
+   "expect_ids": [
+    "a",
+    "t",
+    "g",
+    "pc"
+   ]
+  },
+  {
+   "name": "order forward on the topmost object is a no-op",
+   "ops": [
+    {
+     "op": "order",
+     "id": "pc",
+     "mode": "forward"
+    }
+   ],
+   "expect_ids": [
+    "a",
+    "g",
+    "t",
+    "pc"
+   ]
+  },
+  {
+   "name": "reorder into a group grows the group's bbox",
+   "ops": [
+    {
+     "op": "reorder",
+     "id": "t",
+     "parent": "g",
+     "index": 1
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     10,
+     10,
+     80,
+     60,
+     [
+      [
+       "b",
+       10,
+       10,
+       40,
+       30
+      ],
+      [
+       "t",
+       20,
+       60,
+       40,
+       10
+      ],
+      [
+       "c",
+       50,
+       10,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "reorder out of a group shrinks it",
+   "ops": [
+    {
+     "op": "reorder",
+     "id": "c",
+     "parent": "L1",
+     "index": 0
+    }
+   ],
+   "expect": [
+    [
+     "c",
+     50,
+     10,
+     40,
+     20
+    ],
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     10,
+     10,
+     40,
+     30,
+     [
+      [
+       "b",
+       10,
+       10,
+       40,
+       30
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "group puts the new group where the topmost member was",
+   "ops": [
+    {
+     "op": "group",
+     "ids": [
+      "a",
+      "t"
+     ],
+     "group_id": "G2",
+     "name": "Both"
+    }
+   ],
+   "expect": [
+    [
+     "g",
+     10,
+     10,
+     80,
+     30,
+     [
+      [
+       "b",
+       10,
+       10,
+       40,
+       30
+      ],
+      [
+       "c",
+       50,
+       10,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "G2",
+     0,
+     0,
+     100,
+     100,
+     [
+      [
+       "a",
+       0,
+       0,
+       100,
+       100
+      ],
+      [
+       "t",
+       20,
+       60,
+       40,
+       10
+      ]
+     ]
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "ungroup replaces the group with its children in place",
+   "ops": [
+    {
+     "op": "ungroup",
+     "id": "g"
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "b",
+     10,
+     10,
+     40,
+     30
+    ],
+    [
+     "c",
+     50,
+     10,
+     40,
+     20
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "group then ungroup round-trips",
+   "ops": [
+    {
+     "op": "group",
+     "ids": [
+      "b",
+      "c"
+     ],
+     "group_id": "G3"
+    },
+    {
+     "op": "ungroup",
+     "id": "G3"
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     10,
+     10,
+     80,
+     30,
+     [
+      [
+       "b",
+       10,
+       10,
+       40,
+       30
+      ],
+      [
+       "c",
+       50,
+       10,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "visibility of an object and of a layer",
+   "ops": [
+    {
+     "op": "visibility",
+     "id": "b",
+     "visible": false
+    },
+    {
+     "op": "visibility",
+     "id": "L1",
+     "visible": false
+    }
+   ],
+   "expect_visible": {
+    "b": false,
+    "c": true,
+    "L1": false
+   }
+  },
+  {
+   "name": "text change marks the object stale",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "content": "HELLO",
+     "font": "Nirmala UI",
+     "size_pt": 30
+    }
+   ],
+   "expect_text": {
+    "t": {
+     "content": "HELLO",
+     "font": "Nirmala UI",
+     "size_pt": 30
+    }
+   },
+   "expect_stale": [
+    "t"
+   ]
+  },
+  {
+   "name": "deleting every child removes the empty group",
+   "ops": [
+    {
+     "op": "delete",
+     "ids": [
+      "b",
+      "c"
+     ]
+    }
+   ],
+   "expect_ids": [
+    "a",
+    "t",
+    "pc"
+   ]
+  },
+  {
+   "name": "deleting one child shrinks the group",
+   "ops": [
+    {
+     "op": "delete",
+     "ids": [
+      "c"
+     ]
+    }
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     10,
+     10,
+     40,
+     30,
+     [
+      [
+       "b",
+       10,
+       10,
+       40,
+       30
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  },
+  {
+   "name": "paste appends new nodes on top of the parent",
+   "ops": [
+    {
+     "op": "paste",
+     "parent": "L1",
+     "nodes": [
+      {
+       "id": "n1",
+       "kind": "shape",
+       "type": "curve",
+       "x": 200,
+       "y": 0,
+       "w": 10,
+       "h": 10,
+       "visible": true,
+       "locked": false
+      }
+     ]
+    }
+   ],
+   "expect_ids": [
+    "a",
+    "g",
+    "t",
+    "pc",
+    "n1"
+   ]
+  },
+  {
+   "name": "page size changes the page only",
+   "ops": [
+    {
+     "op": "page",
+     "width": 500,
+     "height": 300
+    }
+   ],
+   "expect_page": [
+    500,
+    300
+   ],
+   "expect_ids": [
+    "a",
+    "g",
+    "t",
+    "pc"
+   ]
+  },
+  {
+   "name": "ops replay in order (move then undo-style inverse move)",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "a"
+     ],
+     "dx": 7,
+     "dy": 3
+    },
+    {
+     "op": "move",
+     "ids": [
+      "a"
+     ],
+     "dx": -7,
+     "dy": -3
+    }
+   ],
+   "expect_ids": [
+    "a",
+    "g",
+    "t",
+    "pc"
+   ],
+   "expect": [
+    [
+     "a",
+     0,
+     0,
+     100,
+     100
+    ],
+    [
+     "g",
+     10,
+     10,
+     80,
+     30,
+     [
+      [
+       "b",
+       10,
+       10,
+       40,
+       30
+      ],
+      [
+       "c",
+       50,
+       10,
+       40,
+       20
+      ]
+     ]
+    ],
+    [
+     "t",
+     20,
+     60,
+     40,
+     10
+    ],
+    [
+     "pc",
+     70,
+     60,
+     20,
+     20,
+     [
+      [
+       "pcc",
+       72,
+       62,
+       10,
+       10
+      ]
+     ]
+    ]
+   ]
+  }
+ ],
+ "errors": [
+  {
+   "name": "unknown id",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "nope"
+     ],
+     "dx": 1,
+     "dy": 1
+    }
+   ],
+   "error": "unknown id"
+  },
+  {
+   "name": "PowerClip contents are read-only",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "pcc"
+     ],
+     "dx": 1,
+     "dy": 1
+    }
+   ],
+   "error": "PowerClip"
+  },
+  {
+   "name": "grouping across parents",
+   "ops": [
+    {
+     "op": "group",
+     "ids": [
+      "a",
+      "b"
+     ],
+     "group_id": "G9"
+    }
+   ],
+   "error": "same parent"
+  },
+  {
+   "name": "grouping needs two",
+   "ops": [
+    {
+     "op": "group",
+     "ids": [
+      "a"
+     ],
+     "group_id": "G9"
+    }
+   ],
+   "error": "at least two"
+  },
+  {
+   "name": "ungroup a non-group",
+   "ops": [
+    {
+     "op": "ungroup",
+     "id": "a"
+    }
+   ],
+   "error": "not a group"
+  },
+  {
+   "name": "text op on a non-text object",
+   "ops": [
+    {
+     "op": "text",
+     "id": "a",
+     "size_pt": 12
+    }
+   ],
+   "error": "not a text"
+  },
+  {
+   "name": "paste with a clashing id",
+   "ops": [
+    {
+     "op": "paste",
+     "parent": "L1",
+     "nodes": [
+      {
+       "id": "a",
+       "kind": "shape",
+       "type": "curve",
+       "x": 0,
+       "y": 0,
+       "w": 1,
+       "h": 1,
+       "visible": true,
+       "locked": false
+      }
+     ]
+    }
+   ],
+   "error": "not unique"
+  },
+  {
+   "name": "non-positive resize",
+   "ops": [
+    {
+     "op": "resize",
+     "ids": [
+      "a"
+     ],
+     "from": {
+      "x": 0,
+      "y": 0,
+      "w": 100,
+      "h": 100
+     },
+     "to": {
+      "x": 0,
+      "y": 0,
+      "w": 0,
+      "h": 5
+     }
+    }
+   ],
+   "error": "positive"
+  },
+  {
+   "name": "moving a group into itself",
+   "ops": [
+    {
+     "op": "reorder",
+     "id": "g",
+     "parent": "g",
+     "index": 0
+    }
+   ],
+   "error": "into itself"
+  },
+  {
+   "name": "unknown op",
+   "ops": [
+    {
+     "op": "explode"
+    }
+   ],
+   "error": "unknown op"
+  }
+ ],
+ "layer_cases": [
+  {
+   "name": "move the bottom layer to the top",
+   "ops": [
+    {
+     "op": "layer_order",
+     "id": "L1",
+     "index": 1
+    }
+   ],
+   "expect_layers": [
+    "L2",
+    "L1"
+   ]
+  },
+  {
+   "name": "move the top layer to the bottom",
+   "ops": [
+    {
+     "op": "layer_order",
+     "id": "L2",
+     "index": 0
+    }
+   ],
+   "expect_layers": [
+    "L2",
+    "L1"
+   ]
+  },
+  {
+   "name": "index is clamped",
+   "ops": [
+    {
+     "op": "layer_order",
+     "id": "L1",
+     "index": 99
+    }
+   ],
+   "expect_layers": [
+    "L2",
+    "L1"
+   ]
+  },
+  {
+   "name": "same position is a no-op",
+   "ops": [
+    {
+     "op": "layer_order",
+     "id": "L1",
+     "index": 0
+    }
+   ],
+   "expect_layers": [
+    "L1",
+    "L2"
+   ]
+  },
+  {
+   "name": "objects keep their layer and geometry when layers swap",
+   "ops": [
+    {
+     "op": "layer_order",
+     "id": "L1",
+     "index": 1
+    },
+    {
+     "op": "move",
+     "ids": [
+      "b"
+     ],
+     "dx": 5,
+     "dy": 0
+    }
+   ],
+   "expect_layers": [
+    "L2",
+    "L1"
+   ],
+   "expect_boxes": {
+    "b": [
+     15,
+     10,
+     20,
+     20
+    ],
+    "a": [
+     0,
+     0,
+     50,
+     50
+    ]
+   }
+  }
+ ],
+ "layer_errors": [
+  {
+   "name": "layer_order on an object",
+   "ops": [
+    {
+     "op": "layer_order",
+     "id": "a",
+     "index": 0
+    }
+   ],
+   "error": "not a layer"
+  },
+  {
+   "name": "reorder cannot move layers",
+   "ops": [
+    {
+     "op": "reorder",
+     "id": "L1",
+     "parent": "L2",
+     "index": 0
+    }
+   ],
+   "error": "layer_order"
+  }
+ ],
+ "base3": {
+  "page": {
+   "width": 100,
+   "height": 100
+  },
+  "layers": [
+   {
+    "id": "L1",
+    "name": "Layer 1",
+    "visible": true,
+    "locked": false,
+    "children": [
+     {
+      "id": "pc",
+      "kind": "powerclip",
+      "type": "rectangle",
+      "x": 10,
+      "y": 10,
+      "w": 50,
+      "h": 30,
+      "visible": true,
+      "locked": false,
+      "children": [
+       {
+        "id": "pct",
+        "kind": "shape",
+        "type": "text",
+        "x": 15,
+        "y": 15,
+        "w": 30,
+        "h": 10,
+        "visible": true,
+        "locked": false,
+        "text": {
+         "content": "OLD",
+         "font": "Arial",
+         "size_pt": 20
+        }
+       },
+       {
+        "id": "pcc",
+        "kind": "shape",
+        "type": "curve",
+        "x": 15,
+        "y": 26,
+        "w": 20,
+        "h": 10,
+        "visible": true,
+        "locked": false
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ },
+ "powerclip_cases": [
+  {
+   "name": "text op edits a PowerClip child's content",
+   "ops": [
+    {
+     "op": "text",
+     "id": "pct",
+     "content": "NEW SHOP"
+    }
+   ],
+   "expect_text": {
+    "pct": {
+     "content": "NEW SHOP"
+    }
+   },
+   "expect_stale": [
+    "pct"
+   ]
+  },
+  {
+   "name": "text op edits a PowerClip child's font (e.g. the Tamil-font fix applied one level deeper)",
+   "ops": [
+    {
+     "op": "text",
+     "id": "pct",
+     "font": "Nirmala UI"
+    }
+   ],
+   "expect_text": {
+    "pct": {
+     "font": "Nirmala UI"
+    }
+   },
+   "expect_stale": [
+    "pct"
+   ]
+  },
+  {
+   "name": "text op can change content and font together",
+   "ops": [
+    {
+     "op": "text",
+     "id": "pct",
+     "content": "NEW",
+     "font": "Nirmala UI",
+     "size_pt": 24
+    }
+   ],
+   "expect_text": {
+    "pct": {
+     "content": "NEW",
+     "font": "Nirmala UI",
+     "size_pt": 24
+    }
+   },
+   "expect_stale": [
+    "pct"
+   ]
+  }
+ ],
+ "powerclip_errors": [
+  {
+   "name": "move is still blocked inside a PowerClip",
+   "ops": [
+    {
+     "op": "move",
+     "ids": [
+      "pct"
+     ],
+     "dx": 1,
+     "dy": 1
+    }
+   ],
+   "error": "PowerClip"
+  },
+  {
+   "name": "resize is still blocked inside a PowerClip",
+   "ops": [
+    {
+     "op": "resize",
+     "ids": [
+      "pcc"
+     ],
+     "from": {
+      "x": 15,
+      "y": 26,
+      "w": 20,
+      "h": 10
+     },
+     "to": {
+      "x": 15,
+      "y": 26,
+      "w": 10,
+      "h": 10
+     }
+    }
+   ],
+   "error": "PowerClip"
+  },
+  {
+   "name": "delete is still blocked inside a PowerClip",
+   "ops": [
+    {
+     "op": "delete",
+     "ids": [
+      "pct"
+     ]
+    }
+   ],
+   "error": "PowerClip"
+  },
+  {
+   "name": "text op on a non-text PowerClip child still fails (unrelated to the PowerClip exception)",
+   "ops": [
+    {
+     "op": "text",
+     "id": "pcc",
+     "content": "x"
+    }
+   ],
+   "error": "not a text object"
+  }
+ ]
 }

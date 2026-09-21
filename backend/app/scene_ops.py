@@ -16,8 +16,15 @@ Scene shape (all lengths in mm, origin bottom-left like CorelDRAW):
             "image": {"file", "format"} | None,      # leaf shapes only
             "text": {"content", "font", "size_pt"},  # text shapes only
             "children": [node, ...]}                 # group / powerclip
-`children` lists are bottom -> top (draw order). A PowerClip is atomic in v1:
-its contents are listed for the layers tree but cannot be edited.
+`children` lists are bottom -> top (draw order). A PowerClip is mostly atomic:
+its contents are listed for the layers tree, selectable, and their TEXT can be
+edited (`text` op) - see `_check_editable`'s `allow_powerclip` - but nothing
+else (move/resize/reorder/group/delete/visibility) can target a PowerClip
+child; those still apply to the clipped result as one object. Narrower than
+full PowerClip editing on purpose: there is no real board in this project's
+dataset that contains a PowerClip to verify move/resize-inside-a-clip
+against, whereas text content/font is the same edit already verified for
+every other text object, just applied one level deeper.
 
 Operations (`op` key; every op is JSON and self-contained):
     move        {ids, dx, dy}
@@ -114,7 +121,11 @@ def _top_ids(idx: dict, ids: list[str]) -> list[str]:
     return out
 
 
-def _check_editable(idx: dict, node_id: str) -> None:
+def _check_editable(idx: dict, node_id: str, allow_powerclip: bool = False) -> None:
+    """`allow_powerclip=True` is the one, narrow exception - the `text` op
+    passes it so a PowerClip child's own text/font can be edited without
+    opening up move/resize/reorder/group/delete/visibility on it too (see
+    this module's docstring for why those stay off-limits)."""
     e = idx[node_id]
     if e["layer"].get("locked"):
         raise OpError(f"{node_id!r} is on a locked layer")
@@ -123,7 +134,7 @@ def _check_editable(idx: dict, node_id: str) -> None:
         if n.get("locked"):
             raise OpError(f"{n['id']!r} is locked")
         p = idx[n["id"]]["parent"]
-        if p is not None and p.get("kind") == "powerclip":
+        if p is not None and p.get("kind") == "powerclip" and not allow_powerclip:
             raise OpError(f"{node_id!r} is inside a PowerClip (contents are read-only in v1)")
         n = p
 
@@ -320,7 +331,7 @@ def _op_text(s, op):
     n = e["node"]
     if not n.get("text"):
         raise OpError(f"{op['id']!r} is not a text object")
-    _check_editable(idx, op["id"])
+    _check_editable(idx, op["id"], allow_powerclip=True)
     t = n["text"]
     if "content" in op and op["content"] is not None:
         t["content"] = str(op["content"])

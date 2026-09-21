@@ -92,6 +92,28 @@ export function marqueeSelect(scene, ctx, box) {
 // ------------------------------------------------------------- layers tree
 
 /** Flat rows for the layers panel, top of the stack first (Corel's Object Manager order). */
+/** True when `id` sits anywhere inside a PowerClip (contents there only accept the `text` op - see ops.js checkEditable). */
+export function insidePowerclip(idx, id) {
+  const e = idx.get(id);
+  for (let p = e && e.parent; p; p = idx.get(p.id).parent) if (p.kind === "powerclip") return true;
+  return false;
+}
+
+/** Topmost descendant of a PowerClip whose box contains the scene point (mm), preferring text; null if none. */
+export function clipChildAt(powerclip, pt) {
+  const hits = [];
+  const walk = (children) => {
+    for (let i = children.length - 1; i >= 0; i--) {
+      const c = children[i];
+      if (c.visible === false) continue;
+      if (c.children && c.children.length) walk(c.children);
+      else if (pt.x >= c.x && pt.x <= c.x + c.w && pt.y >= c.y && pt.y <= c.y + c.h) hits.push(c);
+    }
+  };
+  walk(powerclip.children || []);
+  return hits.find((c) => c.text) || hits[0] || null;
+}
+
 export function buildRows(scene, expanded) {
   const rows = [];
   const walk = (children, depth, layerId, parentLocked) => {

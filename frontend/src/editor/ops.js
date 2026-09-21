@@ -71,14 +71,18 @@ function topIds(idx, ids) {
   return out;
 }
 
-function checkEditable(idx, id) {
+// allowPowerclip=true is the one, narrow exception - the `text` op passes it
+// so a PowerClip child's own text/font can be edited without opening up
+// move/resize/reorder/group/delete/visibility on it too (see ops.py's
+// docstring mirror for why those stay off-limits).
+function checkEditable(idx, id, allowPowerclip = false) {
   const e = idx.get(id);
   if (e.layer.locked) throw new OpError(`'${id}' is on a locked layer`);
   let n = e.node;
   while (n) {
     if (n.locked) throw new OpError(`'${n.id}' is locked`);
     const p = idx.get(n.id).parent;
-    if (p && p.kind === "powerclip") throw new OpError(`'${id}' is inside a PowerClip (contents are read-only in v1)`);
+    if (p && p.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip (contents are read-only in v1)`);
     n = p;
   }
 }
@@ -269,7 +273,7 @@ const APPLY = {
     const e = need(idx, field(op, "id"));
     const n = e.node;
     if (!n.text) throw new OpError(`'${op.id}' is not a text object`);
-    checkEditable(idx, op.id);
+    checkEditable(idx, op.id, true);
     if (op.content != null) {
       n.text.content = String(op.content);
       n.stale = true;

@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { buildIndex, mapBox } from "./ops.js";
-import { flattenLeaves, hitTest, leavesOf, marqueeSelect, resolveTarget, snapMove, snapResize, snapTargets, unionBox } from "./model.js";
+import { clipChildAt, flattenLeaves, hitTest, insidePowerclip, leavesOf, marqueeSelect, resolveTarget, snapMove, snapResize, snapTargets, unionBox } from "./model.js";
 import { toScene, zoomAt } from "./view.js";
 import TextEditor from "./TextEditor.jsx";
 
@@ -81,7 +81,10 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   const leaves = useMemo(() => flattenLeaves(scene), [scene]);
   const selNodes = useMemo(() => sel.map((id) => idx.get(id)?.node).filter(Boolean), [sel, idx]);
   const selBox = useMemo(() => unionBox(selNodes), [selNodes]);
-  const selLocked = selNodes.some((n) => n.locked || idx.get(n.id).layer.locked);
+  // A PowerClip child only accepts text edits (see ops.js checkEditable) - it is outlined
+  // and selectable, but never offered move/resize handles that would only be rejected.
+  const selInClip = selNodes.some((n) => insidePowerclip(idx, n.id));
+  const selLocked = selNodes.some((n) => n.locked || idx.get(n.id).layer.locked) || selInClip;
 
   const latest = useRef({});
   latest.current = { scene, view, pageH, idx, leaves, sel, ctx, alphaMaps, assetBase, selBox, selNodes, selLocked };
@@ -300,7 +303,13 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
       const inner = resolveTarget(idx, hit.leaf.id, top.id);
       onSelect([inner.targetId], top.id);
     } else if (top.kind === "powerclip") {
-      onToast("PowerClip contents are read-only in this version - the clipped result moves and resizes as one object.");
+      // Enter the PowerClip: select the child under the cursor (text first). Only its text is
+      // editable - it can't be moved or resized separately from the clipped result.
+      const child = clipChildAt(top, sceneAt(local(e)));
+      if (!child) return onToast("Nothing to select inside this PowerClip at that point.");
+      onSelect([child.id], top.id);
+      if (child.text) onEditText(child.id);
+      else onToast("Inside a PowerClip only text can be edited - this object moves and resizes with the clipped result.");
     } else if (top.text) {
       onEditText(top.id);
     }

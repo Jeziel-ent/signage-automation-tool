@@ -125,3 +125,20 @@ def test_golden_layer_order(case):
 def test_golden_layer_errors(case):
     with pytest.raises(OpError, match=case["error"]):
         apply_ops(GOLDEN["base2"], case["ops"])
+
+
+@pytest.mark.parametrize("case", GOLDEN["powerclip_cases"], ids=lambda c: c["name"])
+def test_golden_powerclip_text_case(case):
+    out = apply_ops(GOLDEN["base3"], case["ops"])
+    for nid, want in case.get("expect_text", {}).items():
+        node = scene_ops.find_node(out, nid)
+        for k, v in want.items():
+            assert node["text"][k] == v
+    for nid in case.get("expect_stale", []):
+        assert scene_ops.find_node(out, nid).get("stale") is True
+
+
+@pytest.mark.parametrize("case", GOLDEN["powerclip_errors"], ids=lambda c: c["name"])
+def test_golden_powerclip_errors(case):
+    with pytest.raises(OpError, match=case["error"]):
+        apply_ops(GOLDEN["base3"], case["ops"])

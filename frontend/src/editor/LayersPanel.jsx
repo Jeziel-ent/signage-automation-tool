@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { buildIndex } from "./ops.js";
-import { buildRows, planDrop } from "./model.js";
+import { buildRows, insidePowerclip, planDrop } from "./model.js";
 import { Caret, Eye, EyeOff, GroupIcon, KindIcon, Lock, UngroupIcon } from "./icons.jsx";
 
 const TYPE_LABEL = { curve: "Curve", text: "Text", bitmap: "Bitmap", rectangle: "Rectangle", ellipse: "Ellipse", polygon: "Polygon", group: "Group", perfect_shape: "Perfect Shape", ole_object: "OLE Object", symbol: "Symbol", eps: "EPS" };
@@ -61,7 +61,7 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
     }
   }
 
-  const canGroup = sel.length >= 2 && sel.every((id) => idx.get(id) && idx.get(id).list === idx.get(sel[0]).list) && !sel.some((id) => idx.get(id).node.locked);
+  const canGroup = sel.length >= 2 && sel.every((id) => idx.get(id) && idx.get(id).list === idx.get(sel[0]).list) && !sel.some((id) => idx.get(id).node.locked || insidePowerclip(idx, id));
   const selGroup = sel.length === 1 && idx.get(sel[0]) && idx.get(sel[0]).node.kind === "group" ? sel[0] : null;
 
   const group = () => canGroup && onCommit({ op: "group", ids: sel, group_id: nextId(), name: "Group" });
@@ -91,13 +91,15 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
           const selected = sel.includes(row.id);
           const dropCls = drop && drop.id === row.id ? ` drop-${drop.zone}` : "";
           const inCtx = ctx && row.id === ctx;
+          const inClip = !row.isLayer && insidePowerclip(idx, row.id);
           return (
             <div
               key={row.id}
               data-row={row.id}
-              className={`ed-row${selected ? " selected" : ""}${row.isLayer ? " layer" : ""}${n.visible === false ? " hidden" : ""}${inCtx ? " ctx" : ""}${dropCls}`}
+              className={`ed-row${selected ? " selected" : ""}${row.isLayer ? " layer" : ""}${n.visible === false ? " hidden" : ""}${inCtx ? " ctx" : ""}${inClip ? " clip-child" : ""}${dropCls}`}
+              title={inClip ? "Inside a PowerClip - select it to edit its text; it can't be moved, reordered or deleted separately" : undefined}
               style={{ paddingLeft: 6 + row.depth * 16 }}
-              draggable={row.isLayer || !row.locked}
+              draggable={row.isLayer || (!row.locked && !inClip)}
               onClick={(e) => clickRow(e, row)}
               onDragStart={(e) => { dragId.current = row.id; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", row.id); }}
               onDragOver={(e) => {

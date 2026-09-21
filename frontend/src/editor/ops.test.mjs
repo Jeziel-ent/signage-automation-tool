@@ -105,3 +105,19 @@ for (const c of GOLDEN.layer_errors) {
     assert.throws(() => applyOps(GOLDEN.base2, c.ops), (e) => e instanceof OpError && e.message.includes(c.error));
   });
 }
+
+for (const c of GOLDEN.powerclip_cases) {
+  test(`golden powerclip: ${c.name}`, () => {
+    const out = applyOps(GOLDEN.base3, c.ops);
+    for (const [id, want] of Object.entries(c.expect_text || {})) {
+      for (const [k, v] of Object.entries(want)) assert.equal(findNode(out, id).text[k], v);
+    }
+    for (const id of c.expect_stale || []) assert.equal(findNode(out, id).stale, true);
+  });
+}
+
+for (const c of GOLDEN.powerclip_errors) {
+  test(`golden powerclip error: ${c.name}`, () => {
+    assert.throws(() => applyOps(GOLDEN.base3, c.ops), (e) => e instanceof OpError && e.message.includes(c.error));
+  });
+}

@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-from . import scene_export, scene_ops
+from . import corel_util, scene_export, scene_ops
 from .scene_ops import OpError
 
 ALL_FORMATS = ("cdr", "pdf", "png", "jpeg")
@@ -275,6 +275,13 @@ class Replayer:
                     f"font {patch['font']!r} was not applied (is it installed?) - CorelDRAW kept {actual!r}")
         if patch.get("size_pt") is not None:
             story.Size = float(patch["size_pt"])
+        # New text content can turn a shape Tamil (or a shape nested inside a
+        # PowerClip - scene_ops.py's one narrow exception to PowerClip
+        # contents otherwise being read-only - may already be Tamil and never
+        # explicitly requested a font change here): same verified fix
+        # app.engines.CorelEngine applies during generation, shared via
+        # corel_util so both places stay in sync.
+        corel_util.ensure_tamil_font_renders(shape, _safe(lambda: story.Text), self.warnings)
 
     def _op_page(self, op, before):
         self.page.SetSize(float(self.shadow["page"]["width"]), float(self.shadow["page"]["height"]))
