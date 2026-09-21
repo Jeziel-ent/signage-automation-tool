@@ -313,6 +313,11 @@ def test_panel_sequence_enlarges_badge_to_its_target_height_not_its_master_size(
 
 
 def test_panel_sequence_slots_are_evenly_spaced_left_to_right():
+    # SEQ_RULE's groups have no cx_table - this locks in the FALLBACK path
+    # (naive even-cell horizontal centering) used when a group's real
+    # horizontal position has never been measured, exercised by every
+    # hand-built fixture in this file. See the cx_table tests below for the
+    # measured-position path real dalmia boards now use.
     r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=SEQ_RULE))
     card_a = next(p for k, p in r.items() if k.startswith("card_a_tile"))
     filler = next(p for k, p in r.items() if k.startswith("filler_tile"))
@@ -323,6 +328,71 @@ def test_panel_sequence_slots_are_evenly_spaced_left_to_right():
     assert centres[0] == pytest.approx(3000 / 6, abs=1)
     assert centres[1] == pytest.approx(3000 / 2, abs=1)
     assert centres[2] == pytest.approx(3000 * 5 / 6, abs=1)
+
+
+def test_panel_sequence_uses_cx_table_instead_of_even_cell_spacing_when_present():
+    # Regression lock for the engine-accuracy fix: all 4 real wide dalmia
+    # boards showed every panel_sequence group landing 840-1100mm too far
+    # left because the horizontal centre was never measured (just assumed
+    # to be "cell i of n") - a group with its own cx_table now uses that
+    # measured fraction of new_w directly instead.
+    rule = {"panel_sequence": {
+        **SEQ_RULE["panel_sequence"],
+        "groups": [
+            {**SEQ_RULE["panel_sequence"]["groups"][0], "cx_table": [{"aspect": 3.0, "target_cx_frac": 0.5}]},
+            SEQ_RULE["panel_sequence"]["groups"][1],
+            SEQ_RULE["panel_sequence"]["groups"][2],
+        ],
+    }}
+    r = by_id(compute_layout(SEQ_OBJS, *SEQ_PAGE, 3000, 1000, tile=True, shopname_ids={"name"}, brand_rule=rule))
+    card_a = next(p for k, p in r.items() if k.startswith("card_a_tile"))
+    # cx_table says 0.5 (page centre), NOT its "cell 0 of 3" position (1/6)
+    assert card_a.x + card_a.w / 2 == pytest.approx(3000 * 0.5, abs=1)
+    # the other two groups have no cx_table - unaffected, still even-cell
+    filler = next(p for k, p in r.items() if k.startswith("filler_tile"))
+    assert filler.x + filler.w / 2 == pytest.approx(3000 / 2, abs=1)
+
+
+def test_interp_cx_frac_returns_none_without_a_cx_table():
+    from app.layout import _interp_cx_frac
+    assert _interp_cx_frac({"group_id": "x"}, 3.5) is None
+
+
+def test_interp_cx_frac_interpolates_between_two_nearest_aspects():
+    from app.layout import _interp_cx_frac
+    cfg = {"cx_table": [{"aspect": 3.0, "target_cx_frac": 0.2}, {"aspect": 5.0, "target_cx_frac": 0.4}]}
+    assert _interp_cx_frac(cfg, 4.0) == pytest.approx(0.3)  # exactly midway
+
+
+def test_interp_cx_frac_clamps_outside_range_instead_of_extrapolating():
+    from app.layout import _interp_cx_frac
+    cfg = {"cx_table": [{"aspect": 3.0, "target_cx_frac": 0.2}, {"aspect": 4.5, "target_cx_frac": 0.3}]}
+    assert _interp_cx_frac(cfg, 2.0) == pytest.approx(0.2)  # below range -> clamp to first
+    assert _interp_cx_frac(cfg, 6.0) == pytest.approx(0.3)  # above range -> clamp to last
+
+
+def test_panel_sequence_card_from_uses_the_borrowing_groups_own_cx_table_not_the_templates():
+    # enlarged_badge_card borrows tamil_card's size/scale (h/w/cy) but its
+    # horizontal position must be its OWN measured slot, not tamil_card's -
+    # each named group sits at a genuinely different page position. Uses
+    # the real card_from fixture (CARD_FROM_RULE, defined further below)
+    # rather than SEQ_RULE, which doesn't exercise card_from at all.
+    rule = {"panel_sequence": {
+        **CARD_FROM_RULE["panel_sequence"],
+        "groups": [
+            {**CARD_FROM_RULE["panel_sequence"]["groups"][0], "cx_table": [{"aspect": 3.0, "target_cx_frac": 0.1}]},
+            CARD_FROM_RULE["panel_sequence"]["groups"][1],
+            {**CARD_FROM_RULE["panel_sequence"]["groups"][2], "cx_table": [{"aspect": 3.0, "target_cx_frac": 0.9}]},
+        ],
+    }}
+    r = by_id(compute_layout(
+        CARD_FROM_OBJS, *CARD_FROM_PAGE, 3000, 1000, tile=True,
+        shopname_ids={"name"}, brand_rule=rule,
+    ))
+    tamil_bg = r["tamil_bg_tile0"]
+    borrowed_bg = next(p for k, p in r.items() if k.startswith("tamil_bg_tile") and k != "tamil_bg_tile0")
+    assert tamil_bg.x + tamil_bg.w / 2 == pytest.approx(3000 * 0.1, abs=1)  # template's own slot
+    assert borrowed_bg.x + borrowed_bg.w / 2 == pytest.approx(3000 * 0.9, abs=1)  # borrower's own slot, not the template's
 
 
 def test_panel_sequence_wins_over_groups_schema_when_both_present():

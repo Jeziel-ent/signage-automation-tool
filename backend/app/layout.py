@@ -432,6 +432,46 @@ def _place_brand_ruled_panel(panel_objs, roles, page_w, page_h, new_w, new_h, ax
 _SIZE_TABLE_KEYS = ("target_h_frac", "target_w_frac", "target_cy_frac")
 
 
+def _interp_cx_frac(cfg: dict, aspect: float) -> float | None:
+    """Optional per-group horizontal-centering fraction (of `new_w`),
+    measured the same way `target_cy_frac` is - stored as
+    `cfg["cx_table"]: [{"aspect", "target_cx_frac"}, ...]`.
+
+    Added after measuring all 4 real wide dalmia boards directly (not
+    inferred from the diff-percentage numbers): every one of the 3
+    panel_sequence groups landed 840-1100mm too far LEFT of its real
+    position on every board, while their vertical position (`target_cy_frac`)
+    was already accurate to within ~16mm. Root cause was
+    `_place_panel_sequence`'s horizontal placement for axis="x": it centred
+    each group inside an evenly-divided `new_w / n` cell (`cell_left = i *
+    cell_w`), which was never measured against a real file the way
+    `target_cy_frac`/`target_h_frac`/`target_w_frac` were - it was a
+    plausible-looking assumption, not verified data. The real files instead
+    keep each group's horizontal centre at a roughly constant, measured
+    fraction of the page width per aspect (closely tracking the master's
+    own proportional x-position for the first group), not "cell i of n."
+
+    Returns None if a group's config has no `cx_table` at all (older or
+    synthetic configs, including every hand-built fixture in
+    test_layout.py) - callers then fall back to the original naive
+    even-cell horizontal centering exactly as before, so nothing that
+    already passed regresses just because this field exists.
+    """
+    table = cfg.get("cx_table")
+    if not table:
+        return None
+    rows = sorted(table, key=lambda r: r["aspect"])
+    if aspect <= rows[0]["aspect"]:
+        return rows[0]["target_cx_frac"]
+    if aspect >= rows[-1]["aspect"]:
+        return rows[-1]["target_cx_frac"]
+    for a, b in zip(rows, rows[1:]):
+        if a["aspect"] <= aspect <= b["aspect"]:
+            t = (aspect - a["aspect"]) / (b["aspect"] - a["aspect"])
+            return a["target_cx_frac"] + (b["target_cx_frac"] - a["target_cx_frac"]) * t
+    return rows[-1]["target_cx_frac"]  # unreachable given the bounds checks above, kept as a safe fallback
+
+
 def _interp_size_table(table: list[dict], aspect: float) -> tuple[float, float, float]:
     """Linearly interpolate (target_h_frac, target_w_frac, target_cy_frac)
     between the two `size_table` entries nearest `aspect` - clamped to the
@@ -603,9 +643,18 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
             scales.append(scale)
             gw_s, gh_s = gw * scale, gh * scale
 
+            # cx is THIS (borrowing) group's own measured horizontal slot,
+            # not the template's - each named group sits at its own distinct
+            # page position (see _interp_cx_frac), only h/w/cy are borrowed
+            # from the template since the two cards measure out nearly
+            # identical in size.
+            cx_frac = _interp_cx_frac(cfg, target_aspect)
             if axis == "x":
-                cell_left = i * cell_w
-                x_offset = cell_left + (cell_w - gw_s) / 2 - bx0 * scale
+                if cx_frac is not None:
+                    x_offset = cx_frac * new_w - gw_s / 2 - bx0 * scale
+                else:
+                    cell_left = i * cell_w
+                    x_offset = cell_left + (cell_w - gw_s) / 2 - bx0 * scale
             else:
                 x_offset = (new_w - gw_s) / 2 - bx0 * scale
             y_offset = t_cy_frac * new_h - gh_s / 2 - by0 * scale
@@ -680,9 +729,13 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
         scales.append(scale)
         gw_s, gh_s = gw * scale, gh * scale
 
+        cx_frac = _interp_cx_frac(cfg, target_aspect)
         if axis == "x":
-            cell_left = i * cell_w
-            x_offset = cell_left + (cell_w - gw_s) / 2 - bx0 * scale
+            if cx_frac is not None:
+                x_offset = cx_frac * new_w - gw_s / 2 - bx0 * scale
+            else:
+                cell_left = i * cell_w
+                x_offset = cell_left + (cell_w - gw_s) / 2 - bx0 * scale
         else:
             x_offset = (new_w - gw_s) / 2 - bx0 * scale
         y_offset = target_cy_frac * new_h - gh_s / 2 - by0 * scale
