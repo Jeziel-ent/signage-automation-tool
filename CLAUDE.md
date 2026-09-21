@@ -1517,6 +1517,72 @@ tuple — any `(9, 49)` (optional `VT_DISPATCH`) argument needs an explicit
   "Example-based layout engine" above); writes
   `dataset_analysis/leave_one_out/<brand>/report.{md,json}`. Offline.
 
+## Product slots (`backend/app/product_engine.py`, `frontend/src/editor/product_engine.js`) — foundation only, not wired into any UI
+
+A registry mapping a scene's shapes (the editor's model - see "Phase C: editor
+v1") to semantic *product slots* for a future product-based automation flow:
+`product_image` (a bitmap, top-level or nested inside a PowerClip),
+`brand_title`/`product_title`/`address` (text, tag-only - like `shopname`
+before it, there is no reliable untagged signal for these), and `contact`
+(text carrying a "Phone No."/"GST NO." label - the same regex
+`layout.find_contact_ids` already uses, so an existing untagged master's
+contact block is found for free). A shape's slot is decided by a
+name-prefix tag in CorelDRAW's Object Manager (`product_image_1`,
+`brand_title`, ...), falling back to a heuristic only where one is safe: an
+untagged bitmap not covering ≥90% of the page (`BG_AREA_RATIO`, the same
+"is this the background" reasoning `_place_panel_sequence`'s panel/badge
+split and `metrics.py`'s full-bleed exemption already use elsewhere) is a
+product-image slot; an untagged text shape matching the contact regex is
+the contact slot. Tagging a group or PowerClip claims its *largest* bitmap
+(with a warning if it holds more than one) - any other bitmaps inside it
+still get their own heuristic slots, which is a real, accepted consequence
+of "tag claims one shape" rather than "tag claims a whole subtree", not a
+bug to fix here.
+
+Two new ops (`scene_ops.py` / mirrored in `ops.js`, same drift-guard
+pattern as every other op — shared golden cases in
+`tests/fixtures/ops_golden.json`'s `product_base`/`product_cases`/
+`product_errors`, generated once from the reference Python implementation
+rather than hand-computed like the older cases, because centred
+aspect-fit scaling isn't hand-arithmetic-friendly — the point is
+cross-language parity, not independent re-derivation of the formula):
+
+- **`swap_image`** `{id, asset:{name,w,h}, fit?, frame?, padding?}` - fits
+  a new image (given only as its *natural pixel size*; no actual bitmap
+  asset pipeline exists yet - see "Not built" below) into a *frame*, then
+  sets the shape's box to the fitted result and marks it (and any
+  PowerClip ancestor) `stale`. The frame is: the PowerClip's own box, when
+  the image sits inside one (an explicit `frame` that disagrees is
+  refused, not silently ignored - a stale client could otherwise fit into
+  the wrong box); otherwise an explicit `frame`, else the frame
+  *remembered* from an earlier swap of this same shape (`node.slot_frame`),
+  else the shape's own current box. Remembering the frame is what stops a
+  second swap from fitting into the *shrunk* result of the first one -
+  covered by a golden case (`10,10,50,30` remains the frame across two
+  chained swaps even though the first swap's own box ends up `10,12.5,50,25`).
+  `fit: "contain"` (default) shows the whole image; `"cover"` fills the
+  frame and lets the PowerClip clip the overflow, so it's refused outside
+  one. `padding` insets the frame on every side first.
+- **`update_product_slot`** `{id, kind, asset?/text?}` - the slot-aware
+  wrapper: `product_engine.map_slots(scene)` finds the slot for a node id
+  (or `slot_id` via `update_slot_op`), and this op takes `asset` for an
+  image slot or `text` for the other three (rejecting the wrong one for a
+  given `kind`, and any unknown `kind`) - a `product_image` slot delegates
+  straight to `swap_image`'s geometry; a text slot just replaces
+  `text.content` and marks the shape stale, like the existing `text` op.
+
+**Not built, deliberately, per this task's scope**: there is no bitmap
+asset pipeline (upload/storage/serving) - `asset` is just `{name, w, h}`,
+the natural pixel size a caller already knows, used only for the aspect
+ratio; and `export_replay.Replayer` has no COM handler for either op yet -
+`Replayer.apply` now refuses both with a clear "cannot be exported to
+CorelDRAW yet" `ReplayError` instead of crashing on the missing method (a
+real gap this surfaced and fixed, unrelated to the swap logic itself:
+before this, ANY future op with no `_op_<name>` handler would have failed
+with a raw `AttributeError`-derived message rather than a clear one).
+Neither module is imported by any page/route - this is registry +
+op-semantics groundwork, not a feature a designer can use yet.
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —
@@ -2062,11 +2128,13 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 190 passed as of this writing (that includes
+`pytest` from `backend/` — 347 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
-`test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`); `npm test` from `frontend/` runs 58 more
-(`ops.test.mjs` against the shared golden cases, `model.test.mjs`). Note that the
+`test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`, and
+`test_product_engine.py` - see "Product slots" above); `npm test` from
+`frontend/` runs 90 more (`ops.test.mjs` against the shared golden cases,
+`model.test.mjs`, `product_engine.test.mjs`). Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a

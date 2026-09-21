@@ -3,6 +3,12 @@
 // list; the visible scene is always applyOps(baseScene, ops). Both
 // implementations are run against backend/tests/fixtures/ops_golden.json
 // (see ops.test.mjs) so they cannot drift apart silently.
+//
+// product_engine.js (product slots: swap_image / update_product_slot) imports several helpers
+// from this file and this file calls back into it from the two ops below - a circular import that
+// is safe here because neither module calls the other at module-evaluation time, only from inside
+// functions invoked later (mirrors backend/app/scene_ops.py's lazy `from . import product_engine`).
+import * as productEngine from "./product_engine.js";
 
 export const MIN_SIZE = 0.001;
 const r = (v) => Math.round(Number(v) * 1e4) / 1e4;
@@ -44,7 +50,7 @@ export function* iterNodes(scene) {
   for (const layer of scene.layers) yield* walk(layer.children);
 }
 
-function need(idx, id) {
+export function need(idx, id) {
   const e = idx.get(id);
   if (!e) throw new OpError(`unknown id '${id}'`);
   return e;
@@ -150,7 +156,7 @@ export function mapBox(box, frm, to) {
   };
 }
 
-function bboxArg(b, what) {
+export function bboxArg(b, what) {
   const out = {};
   for (const k of ["x", "y", "w", "h"]) {
     const v = b == null ? NaN : Number(b[k]);
@@ -349,6 +355,51 @@ const APPLY = {
     if (!(w >= MIN_SIZE) || !(h >= MIN_SIZE)) throw new OpError("page size must be positive");
     s.page.width = r(w);
     s.page.height = r(h);
+  },
+
+  swap_image(s, op) {
+    const idx = buildIndex(s);
+    const e = need(idx, field(op, "id"));
+    const n = e.node;
+    if (!productEngine.isBitmap(n)) throw new OpError(`'${op.id}' is not an image shape`);
+    checkEditable(idx, op.id, true);
+    const asset = productEngine.checkAsset(op.asset);
+    const fit = op.fit || "contain";
+    const padding = Number(op.padding || 0);
+    const { frame, clipId } = productEngine.resolveFrame(idx, op.id, fit, op.frame ?? null);
+    const box = productEngine.aspectFit(asset.w, asset.h, frame, fit, padding);
+    n.x = box.x;
+    n.y = box.y;
+    n.w = box.w;
+    n.h = box.h;
+    n.image_asset = asset;
+    n.fit = fit;
+    if (padding) n.padding = padding;
+    else delete n.padding;
+    if (clipId == null) n.slot_frame = { x: r(frame.x), y: r(frame.y), w: r(frame.w), h: r(frame.h) };
+    else delete n.slot_frame;
+    n.stale = true;
+    markClipStale(idx, op.id);
+    refreshChain(s, e.parent);
+  },
+
+  update_product_slot(s, op) {
+    const idx = buildIndex(s);
+    const e = need(idx, field(op, "id"));
+    const n = e.node;
+    const kind = op.kind;
+    if (!productEngine.SLOT_KINDS.includes(kind)) throw new OpError(`unknown product slot kind '${kind}'`);
+    if (productEngine.IMAGE_KINDS.includes(kind)) {
+      if (op.text != null) throw new OpError(`a ${kind} slot takes 'asset', not 'text'`);
+      APPLY.swap_image(s, { ...op, op: "swap_image" });
+    } else {
+      if (!n.text) throw new OpError(`'${op.id}' is not a text object`);
+      if (op.asset != null) throw new OpError(`a ${kind} slot takes 'text', not 'asset'`);
+      checkEditable(idx, op.id, true);
+      if (op.text == null) throw new OpError("missing field 'text'");
+      n.text.content = String(op.text);
+      n.stale = true;
+    }
   },
 };
 

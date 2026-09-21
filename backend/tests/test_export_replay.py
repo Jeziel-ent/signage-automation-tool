@@ -627,3 +627,19 @@ def test_scene_check_ignores_text_extent_but_still_requires_text_to_be_text():
     inner.Type = 3                                      # ... but the id now names a non-text shape: not fine
     with pytest.raises(er.ReplayError, match="not in CorelDRAW"):
         er.Replayer(doc, scene, [])
+
+
+def test_replay_refuses_a_swap_image_op_with_a_clear_message_instead_of_an_attributeerror():
+    # product_engine.py's swap_image/update_product_slot ops update the editor's scene (canvas + saved
+    # op list) but have no COM replay yet - Replayer.apply must refuse them cleanly rather than
+    # crashing on the missing "_op_swap_image" method.
+    doc = FDoc(FPage([FLayer("Top")], 200.0, 200.0))
+    layer = doc.ActivePage._layers[0]
+    bmp = FShape(doc, 5, 10.0, 10.0, 20.0, 10.0)
+    bmp.parent = layer
+    layer._kids.append(bmp)
+    scene = {"page": {"width": 200.0, "height": 200.0}, "layers": scene_export.walk_page(doc.ActivePage)[0]}
+    node_id = scene["layers"][0]["children"][0]["id"]
+    ops = [{"op": "swap_image", "id": node_id, "asset": {"name": "a.png", "w": 40, "h": 20}}]
+    with pytest.raises(er.ReplayError, match="cannot be exported to CorelDRAW yet"):
+        er.Replayer(doc, scene, ops).run()

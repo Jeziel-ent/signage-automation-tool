@@ -43,6 +43,15 @@ Operations (`op` key; every op is JSON and self-contained):
     paste       {parent, nodes: [subtree, ...]}        also used for duplicate
     page        {width, height}                        page size only, objects stay
     layer_order {id, index}                            move a layer (index in the bottom -> top list)
+    swap_image  {id, asset:{name,w,h}, fit?, frame?, padding?}
+                                                        fits a new image into an image shape's frame
+                                                        (see product_engine.py); `frame` is only
+                                                        accepted outside a PowerClip - inside one the
+                                                        clip IS the frame, and a disagreeing `frame`
+                                                        is refused rather than silently ignored
+    update_product_slot {id, kind, asset?/text?}       swap_image for an image slot, or a text-only
+                                                        edit for brand_title/product_title/address/
+                                                        contact (see product_engine.map_slots)
 """
 from __future__ import annotations
 
@@ -420,11 +429,70 @@ def _op_layer_order(s, op):
     layers.insert(max(0, min(int(op["index"]), len(layers))), e["node"])
 
 
+def _op_swap_image(s, op):
+    # imported lazily: product_engine imports this module for its index/bbox helpers, so a
+    # top-level import here would be circular.
+    from . import product_engine as pe
+
+    idx = _index(s)
+    e = _need(idx, op["id"])
+    n = e["node"]
+    if not pe.is_bitmap(n):
+        raise OpError(f"{op['id']!r} is not an image shape")
+    _check_editable(idx, op["id"], allow_powerclip=True)
+    asset = pe.check_asset(op.get("asset"))
+    fit = op.get("fit", "contain")
+    padding = float(op.get("padding", 0.0))
+    frame, clip_id = pe.resolve_frame(idx, op["id"], fit, op.get("frame"))
+    box = pe.aspect_fit(asset["w"], asset["h"], frame, fit, padding)
+    n["x"], n["y"], n["w"], n["h"] = box["x"], box["y"], box["w"], box["h"]
+    n["image_asset"] = asset
+    n["fit"] = fit
+    if padding:
+        n["padding"] = padding
+    elif "padding" in n:
+        del n["padding"]
+    if clip_id is None:
+        n["slot_frame"] = {k: _r(v) for k, v in frame.items()}   # remembered so a later swap fits the same frame
+    elif "slot_frame" in n:
+        del n["slot_frame"]
+    n["stale"] = True                    # the shape's rendered image no longer matches the new asset
+    _mark_clip_stale(idx, op["id"])
+    _refresh_chain(s, e["parent"])
+
+
+def _op_update_product_slot(s, op):
+    from . import product_engine as pe
+
+    idx = _index(s)
+    e = _need(idx, op["id"])
+    n = e["node"]
+    kind = op.get("kind")
+    if kind not in pe.SLOT_KINDS:
+        raise OpError(f"unknown product slot kind {kind!r}")
+    if kind in pe.IMAGE_KINDS:
+        if "text" in op and op["text"] is not None:
+            raise OpError(f"a {kind} slot takes 'asset', not 'text'")
+        _op_swap_image(s, {**op, "op": "swap_image"})
+    else:
+        if not n.get("text"):
+            raise OpError(f"{op['id']!r} is not a text object")
+        if "asset" in op and op["asset"] is not None:
+            raise OpError(f"a {kind} slot takes 'text', not 'asset'")
+        _check_editable(idx, op["id"], allow_powerclip=True)
+        text = op.get("text")
+        if text is None:
+            raise OpError("missing field 'text'")
+        n["text"]["content"] = str(text)
+        n["stale"] = True
+
+
 _APPLY = {
     "move": _op_move, "resize": _op_resize, "order": _op_order, "reorder": _op_reorder,
     "visibility": _op_visibility, "group": _op_group, "ungroup": _op_ungroup,
     "text": _op_text, "delete": _op_delete, "paste": _op_paste, "page": _op_page,
-    "layer_order": _op_layer_order,
+    "layer_order": _op_layer_order, "swap_image": _op_swap_image,
+    "update_product_slot": _op_update_product_slot,
 }
 
 

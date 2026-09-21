@@ -125,3 +125,29 @@ for (const c of GOLDEN.powerclip_errors) {
     assert.throws(() => applyOps(GOLDEN.base3, c.ops), (e) => e instanceof OpError && e.message.includes(c.error));
   });
 }
+
+for (const c of GOLDEN.product_cases) {
+  test(`golden product: ${c.name}`, () => {
+    const out = applyOps(GOLDEN.product_base, c.ops);
+    for (const [id, box] of Object.entries(c.expect_boxes || {})) {
+      const n = findNode(out, id);
+      [n.x, n.y, n.w, n.h].forEach((v, k) => assert.ok(Math.abs(v - box[k]) < TOL, `${id}: ${[n.x, n.y, n.w, n.h]} != ${box}`));
+    }
+    for (const [id, want] of Object.entries(c.expect_text || {})) {
+      for (const [k, v] of Object.entries(want)) assert.equal(findNode(out, id).text[k], v);
+    }
+    for (const [id, want] of Object.entries(c.expect_asset || {})) assert.deepEqual(findNode(out, id).image_asset, want);
+    for (const [id, box] of Object.entries(c.expect_slot_frame || {})) {
+      const f = findNode(out, id).slot_frame;
+      [f.x, f.y, f.w, f.h].forEach((v, k) => assert.ok(Math.abs(v - box[k]) < TOL, `${id} slot_frame: ${[f.x, f.y, f.w, f.h]} != ${box}`));
+    }
+    for (const id of c.expect_no_slot_frame || []) assert.equal(findNode(out, id).slot_frame, undefined);
+    for (const id of c.expect_stale || []) assert.equal(findNode(out, id).stale, true);
+  });
+}
+
+for (const c of GOLDEN.product_errors) {
+  test(`golden product error: ${c.name}`, () => {
+    assert.throws(() => applyOps(GOLDEN.product_base, c.ops), (e) => e instanceof OpError && e.message.includes(c.error));
+  });
+}

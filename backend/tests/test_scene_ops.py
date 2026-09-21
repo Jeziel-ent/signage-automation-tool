@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from app import product_engine as pe
 from app import scene_ops
 from app.scene_ops import OpError, apply_ops
 
@@ -158,3 +159,57 @@ def test_moving_a_powerclip_child_does_not_change_its_container_box():
     out = apply_ops(GOLDEN["base3"], [{"op": "move", "ids": ["pcc"], "dx": 100, "dy": 100}])
     pc = scene_ops.find_node(out, "pc")
     assert [pc["x"], pc["y"], pc["w"], pc["h"]] == [10, 10, 50, 30]   # the clip frame never follows its contents
+
+
+# ------------------------------------------------------ product slots (app/product_engine.py)
+
+def test_map_slots_matches_the_golden_mapping_and_warnings():
+    slots, warnings = pe.map_slots(GOLDEN["product_base"])
+    got = [[s.slot_id, s.kind, s.node_id, s.container_id] for s in slots]
+    assert got == GOLDEN["product_slots"]["slots"]
+    assert warnings == GOLDEN["product_slots"]["warnings"]
+    # hidden shapes (directly, or via a hidden ancestor group) are never slots
+    ids = {s.node_id for s in slots}
+    assert "hiddenimg" not in ids
+    assert "hiddenphoto" not in ids
+
+
+@pytest.mark.parametrize("case", GOLDEN["product_cases"], ids=lambda c: c["name"])
+def test_golden_product_case(case):
+    out = apply_ops(GOLDEN["product_base"], case["ops"])
+    for nid, box in case.get("expect_boxes", {}).items():
+        n = scene_ops.find_node(out, nid)
+        assert [n["x"], n["y"], n["w"], n["h"]] == pytest.approx(box, abs=TOL), nid
+    for nid, want in case.get("expect_text", {}).items():
+        node = scene_ops.find_node(out, nid)
+        for k, v in want.items():
+            assert node["text"][k] == v
+    for nid, want in case.get("expect_asset", {}).items():
+        assert scene_ops.find_node(out, nid)["image_asset"] == want
+    for nid, box in case.get("expect_slot_frame", {}).items():
+        n = scene_ops.find_node(out, nid)
+        assert [n["slot_frame"]["x"], n["slot_frame"]["y"], n["slot_frame"]["w"], n["slot_frame"]["h"]] == pytest.approx(box, abs=TOL), nid
+    for nid in case.get("expect_no_slot_frame", []):
+        assert "slot_frame" not in scene_ops.find_node(out, nid)
+    for nid in case.get("expect_stale", []):
+        assert scene_ops.find_node(out, nid).get("stale") is True
+
+
+@pytest.mark.parametrize("case", GOLDEN["product_errors"], ids=lambda c: c["name"])
+def test_golden_product_error(case):
+    with pytest.raises(OpError, match=case["error"]):
+        apply_ops(GOLDEN["product_base"], case["ops"])
+
+
+def test_swap_image_does_not_mutate_the_powerclip_frame_itself():
+    out = apply_ops(GOLDEN["product_base"], [{"op": "swap_image", "id": "pcimg", "asset": {"name": "x.png", "w": 10, "h": 10}, "fit": "cover"}])
+    pc = scene_ops.find_node(out, "pc2")
+    assert [pc["x"], pc["y"], pc["w"], pc["h"]] == [250, 60, 40, 40]
+
+
+def test_update_slot_op_builds_the_same_op_swap_image_would():
+    direct = pe.swap_image_op(GOLDEN["product_base"], "gA", {"name": "y.png", "w": 20, "h": 10}, fit="contain")
+    via_slot = pe.update_slot_op(GOLDEN["product_base"], "product_image:gA", asset={"name": "y.png", "w": 20, "h": 10}, fit="contain")
+    assert via_slot["asset"] == direct["asset"]
+    assert via_slot["frame"] == direct["frame"]
+    assert via_slot["fit"] == direct["fit"] == "contain"

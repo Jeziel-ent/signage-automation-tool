@@ -232,7 +232,13 @@ class Replayer:
     def apply(self, op: dict) -> None:
         before = scene_ops._index(self.shadow)
         scene_ops.apply_op(self.shadow, op)
-        getattr(self, "_op_" + op["op"])(op, before)
+        fn = getattr(self, "_op_" + op["op"], None)
+        if fn is None:
+            # product_engine.py's swap_image/update_product_slot update the editor's scene (so the
+            # canvas and the saved op list) but have no COM replay yet - refuse clearly here rather
+            # than exporting a document that silently doesn't reflect the swap.
+            raise ReplayError(f"the {op['op']!r} operation cannot be exported to CorelDRAW yet")
+        fn(op, before)
 
     # ------------------------------------------------------------ lookups
     def _check_scene_matches_doc(self, scene: dict) -> None:
