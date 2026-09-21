@@ -115,30 +115,53 @@ def _field(field: str, expected: str | None, found: str | None) -> dict:
     return {"field": field, "status": CONTENT_OK if ok else CONTENT_FAIL, "expected": expected, "found": found}
 
 
+def _address_field(expected_lines: list[str] | None, contact_text: str) -> dict:
+    """Address has no dedicated shape to read back - `layout._contact_replacement`
+    appends it as further `\\r`-separated lines onto the SAME phone/GST shape
+    (see CLAUDE.md "Per-shop content replacement": "there's no separate address
+    shape in any sampled master, so this is the only place free-text per-shop
+    content like an address can go"). So unlike shop_name/phone/gst, this can't
+    be an exact-match comparison against one extracted value - instead, each
+    requested line is checked as a (whitespace/case-normalized) substring of
+    the combined contact shape text, which is what `_norm` already collapses
+    `\\r`/`\\n` into spaces for.
+    """
+    if not expected_lines:
+        return {"field": "address", "status": NOT_CHECKED, "expected": None, "found": None}
+    expected_joined = "\n".join(expected_lines)
+    norm_contact = _norm(contact_text) or ""
+    missing = [line for line in expected_lines if (_norm(line) or "") not in norm_contact]
+    ok = not missing
+    return {"field": "address", "status": CONTENT_OK if ok else CONTENT_FAIL,
+            "expected": expected_joined, "found": contact_text if ok else None}
+
+
 def check_content(shapes: list[dict], expected_name: str | None = None,
-                  expected_phone: str | None = None, expected_gst: str | None = None) -> dict:
+                  expected_phone: str | None = None, expected_gst: str | None = None,
+                  expected_address_lines: list[str] | None = None) -> dict:
     """Read `shapes` (a dumped file's flattened shape list) back and compare
-    against whatever was actually requested. Any field left as None (nothing
-    requested) is NOT_CHECKED - never a vacuous OK. `overall` is CONTENT_FAIL
-    if any field failed, else CONTENT_OK if at least one field was checked
-    and passed, else NOT_CHECKED (nothing was requested at all).
+    against whatever was actually requested. Any field left as None/empty
+    (nothing requested) is NOT_CHECKED - never a vacuous OK. `overall` is
+    CONTENT_FAIL if any field failed, else CONTENT_OK if at least one field
+    was checked and passed, else NOT_CHECKED (nothing was requested at all).
     """
     objs = _objs_from_shapes(shapes)
 
     name_found = _find_shopname_text(objs, expected_name) if expected_name is not None else None
 
     phone_found = gst_found = None
-    if expected_phone is not None or expected_gst is not None:
+    contact_text = ""
+    if expected_phone is not None or expected_gst is not None or expected_address_lines:
         contact_ids = find_contact_ids(objs)
-        for o in objs:
-            if o.id not in contact_ids or not o.text:
-                continue
+        contact_texts = [o.text for o in objs if o.id in contact_ids and o.text]
+        contact_text = "\n".join(contact_texts)
+        for text in contact_texts:
             if expected_phone is not None and phone_found is None:
-                m = _PHONE_RE.search(o.text)
+                m = _PHONE_RE.search(text)
                 if m:
                     phone_found = m.group(2).strip()
             if expected_gst is not None and gst_found is None:
-                m = _GST_RE.search(o.text)
+                m = _GST_RE.search(text)
                 if m:
                     gst_found = m.group(2).strip()
 
@@ -146,6 +169,7 @@ def check_content(shapes: list[dict], expected_name: str | None = None,
         "shop_name": _field("shop_name", expected_name, name_found),
         "phone": _field("phone", expected_phone, phone_found),
         "gst": _field("gst", expected_gst, gst_found),
+        "address": _address_field(expected_address_lines, contact_text),
     }
     statuses = {f["status"] for f in fields.values()}
     if CONTENT_FAIL in statuses:

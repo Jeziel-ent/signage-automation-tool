@@ -281,6 +281,16 @@ def v2_add_shop(job_id: str, payload: dict):
         # No upload UI for this yet (see CLAUDE.md "New UI") - accepted now so the
         # data model doesn't need another migration once one exists.
         reference_file_path = (payload.get("reference_file_path") or "").strip() or None
+        # Optional per-shop contact fields (see CLAUDE.md "Per-shop content
+        # replacement", already supported by the old /api/jobs flow - this wires
+        # the same engine capability into the new v2 UI/API). `.strip() or None`
+        # matters here: compute_layout treats None as "leave the master's own
+        # text alone" but "" as "replace with blank" - the frontend must never
+        # send an empty string for a field the user left untouched, so this
+        # normalizes that at the API boundary regardless of what the client sends.
+        phone = (payload.get("phone") or "").strip() or None
+        gst = (payload.get("gst") or "").strip() or None
+        address = (payload.get("address") or "").strip() or None
         assert name and width > 0 and height > 0
         assert width_unit in ("mm", "cm", "in", "ft") and height_unit in ("mm", "cm", "in", "ft")
     except Exception:
@@ -289,7 +299,7 @@ def v2_add_shop(job_id: str, payload: dict):
     shop_id = uuid.uuid4().hex[:12]
     seq_no = len(db.list_shops(job_id)) + 1
     db.create_shop(shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
-                    reference, reference_file_path)
+                    reference, reference_file_path, phone, gst, address)
     return db.get_shop(shop_id)
 
 
@@ -351,6 +361,22 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         "unit": "mm",
         "brand": job_row["brand"],
     }
+    # Optional per-shop contact fields (see CLAUDE.md "Per-shop content
+    # replacement") - only included when actually set, matching the old
+    # /api/jobs flow's convention: compute_layout treats a missing key as
+    # "don't touch this field", so a None/blank value must never be sent as
+    # an empty string. `address` is one free-text field in the v2 UI (a
+    # single textarea, not the old flow's address_lines list) - split into
+    # lines here so `layout._contact_replacement` sees the same
+    # `address_lines: list[str]` shape either UI produces it from.
+    if shop_row.get("phone"):
+        shop_dict["phone"] = shop_row["phone"]
+    if shop_row.get("gst"):
+        shop_dict["gst"] = shop_row["gst"]
+    if shop_row.get("address"):
+        address_lines = [line.strip() for line in shop_row["address"].splitlines() if line.strip()]
+        if address_lines:
+            shop_dict["address_lines"] = address_lines
     master_path = Path(job_row["master_path"])
     engine = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto"))
 

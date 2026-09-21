@@ -237,3 +237,110 @@ def test_v2_recent_lists_shops_across_jobs_newest_first_with_files(client):
     assert "report_json" not in recent[0]  # list view stays light
     assert recent[0]["shop_id"] == second["id"] and recent[0]["job_id"] == second["job_id"]
     assert first["id"] == recent[1]["shop_id"]
+
+
+# ---- phone/gst/address: per-shop contact fields wired into the v2 UI/API
+# (see CLAUDE.md "Per-shop content replacement" - already supported by the
+# old /api/jobs flow, newly exposed here) ----
+
+def test_v2_add_shop_accepts_optional_contact_fields(client):
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    r = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "NR Traders", "width": 12, "width_unit": "ft", "height": 4, "height_unit": "ft",
+        "phone": "82208 20580", "gst": "33DFLPR6498E1ZV", "address": "12 Main Street\nChennai 600001",
+    })
+    assert r.status_code == 200
+    shop = r.json()
+    assert shop["phone"] == "82208 20580"
+    assert shop["gst"] == "33DFLPR6498E1ZV"
+    assert shop["address"] == "12 Main Street\nChennai 600001"
+
+    # persisted, not just echoed back - a fresh list call sees the same values
+    listed = client.get(f"/api/v2/jobs/{job_id}/shops").json()[0]
+    assert listed["phone"] == "82208 20580" and listed["gst"] == "33DFLPR6498E1ZV"
+
+
+def test_v2_add_shop_contact_fields_default_to_none_when_omitted(client):
+    """Omitting phone/gst/address must leave them as None (compute_layout's
+    "don't touch this field" signal), never an empty string (which
+    compute_layout instead treats as "replace with blank" - see
+    CLAUDE.md "Per-shop content replacement")."""
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
+    }).json()
+    assert shop["phone"] is None and shop["gst"] is None and shop["address"] is None
+
+
+def test_v2_add_shop_blank_contact_fields_are_normalized_to_none(client):
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
+        "phone": "  ", "gst": "", "address": "   ",
+    }).json()
+    assert shop["phone"] is None and shop["gst"] is None and shop["address"] is None
+
+
+def test_v2_convert_worker_passes_phone_gst_and_split_address_lines_to_the_engine(client, monkeypatch):
+    """The engine (see app/engines.py's CorelEngine._process) expects
+    `phone`/`gst` as plain strings and `address_lines` as a list[str] -
+    this locks in that the v2 convert worker builds exactly that shape from
+    the single `address` textarea field the UI collects, and only includes
+    keys that were actually set.
+    """
+    captured = {}
+
+    class _FakeEngine:
+        name = "mock"
+
+        def process(self, master_path, shop, out_dir):
+            captured.update(shop)
+            return {"files": {"preview": "x.svg"}, "report": {}}
+
+    monkeypatch.setattr("app.main.get_engine", lambda kind: _FakeEngine())
+
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "NR Traders", "width": 12, "width_unit": "ft", "height": 4, "height_unit": "ft",
+        "phone": "82208 20580", "gst": "33DFLPR6498E1ZV", "address": "12 Main Street\n\nChennai 600001",
+    }).json()
+
+    r = client.post(f"/api/v2/shops/{shop['id']}/convert")
+    assert r.status_code == 200
+    deadline = time.time() + 10
+    while time.time() < deadline and "phone" not in captured:
+        time.sleep(0.05)
+
+    assert captured["phone"] == "82208 20580"
+    assert captured["gst"] == "33DFLPR6498E1ZV"
+    assert captured["address_lines"] == ["12 Main Street", "Chennai 600001"]  # blank line dropped
+
+
+def test_v2_convert_worker_omits_contact_keys_when_not_set(client, monkeypatch):
+    captured = {}
+
+    class _FakeEngine:
+        name = "mock"
+
+        def process(self, master_path, shop, out_dir):
+            captured.update(shop)
+            return {"files": {"preview": "x.svg"}, "report": {}}
+
+    monkeypatch.setattr("app.main.get_engine", lambda kind: _FakeEngine())
+
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
+    }).json()
+
+    client.post(f"/api/v2/shops/{shop['id']}/convert")
+    deadline = time.time() + 10
+    while time.time() < deadline and "name" not in captured:
+        time.sleep(0.05)
+
+    assert "phone" not in captured and "gst" not in captured and "address_lines" not in captured

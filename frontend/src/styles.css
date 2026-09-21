@@ -157,6 +157,9 @@ input::placeholder { color: var(--color-gray-400); }
 .shops-table td { padding: var(--space-2); border-bottom: 1px solid var(--color-gray-200); vertical-align: middle; }
 .shops-table td input, .shops-table td select { width: 100%; }
 .shops-table tr.new-shop-row td { background: var(--color-gray-50); }
+.shops-table td.shop-address-cell {
+  max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 .row-progress { display: flex; align-items: center; gap: var(--space-2); min-width: 120px; }
 .row-progress .progress-bar { flex: 1; }

@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS shops (
     height_unit TEXT NOT NULL,
     reference TEXT,
     reference_file_path TEXT,
+    phone TEXT,
+    gst TEXT,
+    address TEXT,
     status TEXT NOT NULL DEFAULT 'new',
     step TEXT,
     error TEXT,
@@ -87,6 +90,17 @@ CREATE TABLE IF NOT EXISTS shops (
 # idempotent (checked against the live schema before running).
 _MIGRATIONS = [
     ("shops", "reference_file_path", "ALTER TABLE shops ADD COLUMN reference_file_path TEXT"),
+    # phone/gst: free-text per-shop contact info, written back via
+    # layout.find_contact_ids/_contact_replacement (see CLAUDE.md "Per-shop
+    # content replacement") - already supported by the OLD /api/jobs flow,
+    # newly wired into the v2 UI/API here. `address` is a single free-text
+    # field in the UI (one textarea, not the old flow's address_lines list)
+    # - v2_add_shop/`_v2_convert_worker` split it on newlines before handing
+    # it to the engine as `address_lines`, so both UIs feed the same
+    # underlying engine parameter.
+    ("shops", "phone", "ALTER TABLE shops ADD COLUMN phone TEXT"),
+    ("shops", "gst", "ALTER TABLE shops ADD COLUMN gst TEXT"),
+    ("shops", "address", "ALTER TABLE shops ADD COLUMN address TEXT"),
 ]
 
 
@@ -160,21 +174,28 @@ def list_jobs() -> list[dict]:
 
 def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float, width_unit: str,
                  height: float, height_unit: str, reference: str | None,
-                 reference_file_path: str | None = None) -> None:
+                 reference_file_path: str | None = None, phone: str | None = None,
+                 gst: str | None = None, address: str | None = None) -> None:
     """`reference` is the free-text note shown in the UI today.
     `reference_file_path`, if given, is a path to an uploaded reference
     file - the data model supports it (per review feedback) ahead of any
     UI for actually uploading one; unused by the current frontend, which
     always passes it as None.
+    `phone`/`gst`/`address` are optional per-shop contact fields written back
+    onto the generated board (see CLAUDE.md "Per-shop content replacement");
+    None means "leave the master's own text alone", same convention the old
+    /api/jobs flow already uses - never pass "" for a field the user left
+    blank, since compute_layout treats an empty string as "replace with
+    blank", not "don't touch".
     """
     with _conn() as conn:
         conn.execute(
             """INSERT INTO shops
                (id, job_id, seq_no, name, width, width_unit, height, height_unit,
-                reference, reference_file_path, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
+                reference, reference_file_path, phone, gst, address, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
             (shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
-             reference, reference_file_path, time.time()),
+             reference, reference_file_path, phone, gst, address, time.time()),
         )
 
 

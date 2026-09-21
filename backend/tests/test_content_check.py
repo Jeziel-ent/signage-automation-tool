@@ -105,3 +105,54 @@ def test_overall_is_ok_only_if_something_was_actually_checked_and_none_failed():
     shapes = [shape(text="RIGHT NAME")]
     assert check_content(shapes, expected_name="RIGHT NAME")["overall"] == CONTENT_OK
     assert check_content(shapes)["overall"] == NOT_CHECKED
+
+
+# ---- address (appended onto the same contact shape as phone/GST - see
+# layout._contact_replacement and content_check._address_field) ----
+
+def test_address_ok_when_every_requested_line_is_found_in_the_contact_shape():
+    shapes = [
+        shape(text="NR TRADERS"),
+        shape(text="Phone No. 82208 20580\rGST NO. 33DFLPR6498E1ZV\r12 Main Street\rChennai 600001"),
+    ]
+    r = check_content(shapes, expected_address_lines=["12 Main Street", "Chennai 600001"])
+    assert r["address"]["status"] == CONTENT_OK
+    assert r["address"]["expected"] == "12 Main Street\nChennai 600001"
+    assert r["overall"] == CONTENT_OK
+
+
+def test_address_not_checked_when_not_requested():
+    shapes = [shape(text="Phone No. 111\r12 Main Street")]
+    r = check_content(shapes)
+    assert r["address"]["status"] == NOT_CHECKED
+    assert r["address"]["expected"] is None
+
+
+def test_address_fails_when_a_requested_line_is_missing():
+    shapes = [shape(text="Phone No. 82208 20580")]  # no address lines were actually written
+    r = check_content(shapes, expected_address_lines=["12 Main Street"])
+    assert r["address"]["status"] == CONTENT_FAIL
+    assert r["address"]["found"] is None
+    assert r["overall"] == CONTENT_FAIL
+
+
+def test_address_matches_regardless_of_case_and_cr_lf_normalization():
+    shapes = [shape(text="Phone No. 111\r12 MAIN STREET\r\nchennai 600001")]
+    r = check_content(shapes, expected_address_lines=["12 main street", "Chennai 600001"])
+    assert r["address"]["status"] == CONTENT_OK
+
+
+def test_address_alongside_phone_and_gst_all_checked_independently():
+    shapes = [shape(text="Phone No. 82208 20580\rGST NO. 33DFLPR6498E1ZV\r12 Main Street")]
+    r = check_content(shapes, expected_phone="82208 20580", expected_gst="33DFLPR6498E1ZV",
+                       expected_address_lines=["12 Main Street"])
+    assert r["phone"]["status"] == CONTENT_OK
+    assert r["gst"]["status"] == CONTENT_OK
+    assert r["address"]["status"] == CONTENT_OK
+    assert r["overall"] == CONTENT_OK
+
+
+def test_empty_address_lines_list_is_not_checked_not_a_vacuous_pass():
+    shapes = [shape(text="Phone No. 111")]
+    r = check_content(shapes, expected_address_lines=[])
+    assert r["address"]["status"] == NOT_CHECKED

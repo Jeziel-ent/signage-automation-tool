@@ -3,7 +3,14 @@ import UploadDropzone from "../components/UploadDropzone.jsx";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 
 const UNITS = ["in", "cm", "mm", "ft"];
-const emptyShopForm = () => ({ name: "", width: "", width_unit: "in", height: "", height_unit: "in", reference: "" });
+// phone/gst/address are optional per-shop contact fields (see CLAUDE.md
+// "Per-shop content replacement") - the backend normalizes a blank string to
+// None ("leave the master's own text alone") at the API boundary, so the
+// form can safely send "" for a field the user left untouched.
+const emptyShopForm = () => ({
+  name: "", width: "", width_unit: "in", height: "", height_unit: "in", reference: "",
+  phone: "", gst: "", address: "",
+});
 
 // CorelEngine's own named steps (see backend/app/engines.py's step() closure
 // and CLAUDE.md "Production hardening"), each with the cumulative percent
@@ -188,6 +195,9 @@ export default function Automation() {
                 <th>Height</th>
                 <th>Unit</th>
                 <th>Reference</th>
+                <th>Phone</th>
+                <th>GST</th>
+                <th>Address</th>
                 <th>Convert</th>
                 <th>Editor</th>
               </tr>
@@ -202,6 +212,9 @@ export default function Automation() {
                   <td>{s.height}</td>
                   <td>{s.height_unit}</td>
                   <td>{s.reference || "—"}</td>
+                  <td>{s.phone || "—"}</td>
+                  <td>{s.gst || "—"}</td>
+                  <td className="shop-address-cell">{s.address || "—"}</td>
                   <td>
                     <ConvertCell shop={s} onConvert={() => convertShop(s.id)} stepEstimates={stepEstimates} />
                   </td>
@@ -270,6 +283,27 @@ function NewShopRow({ seqNo, form, setForm, onAdd }) {
           placeholder="optional"
           value={form.reference}
           onChange={(e) => setForm({ ...form, reference: e.target.value })}
+        />
+      </td>
+      <td>
+        <input
+          placeholder="optional"
+          value={form.phone}
+          onChange={(e) => setForm({ ...form, phone: e.target.value })}
+        />
+      </td>
+      <td>
+        <input
+          placeholder="optional"
+          value={form.gst}
+          onChange={(e) => setForm({ ...form, gst: e.target.value })}
+        />
+      </td>
+      <td>
+        <input
+          placeholder="optional"
+          value={form.address}
+          onChange={(e) => setForm({ ...form, address: e.target.value })}
         />
       </td>
       <td colSpan={2}>
