@@ -319,6 +319,61 @@ def test_convert_orientation_keeps_the_powerclip_child_moving_with_its_container
     assert photo["y"] + photo["h"] <= pc["y"] + pc["h"] + TOL
 
 
+def test_convert_orientation_scales_a_bitmap_containing_zone_uniformly_not_stretched(converted):
+    # "pc" (the product zone's PowerClip container, holding the nested "photo" bitmap) must keep its
+    # own aspect ratio - a non-uniform stretch here would visibly distort the photo it clips.
+    scene, _, out = converted
+    orig = box_of(scene, "pc")
+    new = box_of(out, "pc")
+    assert new["w"] / new["h"] == pytest.approx(orig["w"] / orig["h"], rel=1e-6)
+
+
+def test_convert_orientation_still_stretches_a_text_only_zone_non_uniformly(converted):
+    # "brand" (the header zone, text only - no bitmap anywhere in it) keeps the earlier fill-to-zone
+    # behaviour: its aspect ratio is free to change so it occupies the full zone bounds.
+    scene, _, out = converted
+    orig = box_of(scene, "brand")
+    new = box_of(out, "brand")
+    assert new["w"] / new["h"] != pytest.approx(orig["w"] / orig["h"], rel=1e-3)
+
+
+def _product_table_scene() -> dict:
+    """A portrait scene whose product zone is a GROUP containing a product-image bitmap grouped with
+    a table/pedestal-surface bitmap - the "product image grouped with a table/pedestal surface" case
+    from the task. Both bitmaps have different native aspect ratios, unlike the group's own bbox."""
+    scene = portrait_scene()
+    children = scene["layers"][0]["children"]
+    # replace the PowerClip product entry with a plain group of two differently-shaped bitmaps
+    children[2] = {
+        "id": "assembly", "kind": "group", "type": "group", "name": "product_image_1", "x": 50, "y": 500,
+        "w": 300, "h": 350, "rotation": 0, "visible": True, "locked": False,
+        "children": [
+            _bitmap("product_photo", "", 80, 650, 200, 150),   # aspect 1.333
+            _bitmap("table_surface", "", 60, 520, 280, 100),   # aspect 2.8, different from the group bbox's own 300/350
+        ],
+    }
+    return scene
+
+
+def test_convert_orientation_scales_a_product_plus_table_assembly_group_uniformly():
+    scene = _product_table_scene()
+    ops = oa.convert_orientation(scene, 900.0, 300.0)   # a wide target - the assembly's group sits in ZONE_PRODUCT
+    out = scene_ops.apply_ops(scene, ops)
+    orig = box_of(scene, "assembly")
+    new = box_of(out, "assembly")
+    assert new["w"] / new["h"] == pytest.approx(orig["w"] / orig["h"], rel=1e-6)
+    # never truncated/overflowing its own zone frame
+    frame = oa.calculate_zone_rects(900.0, 300.0)[oa.ZONE_PRODUCT]
+    assert new["x"] >= frame["x"] - TOL and new["y"] >= frame["y"] - TOL
+    assert new["x"] + new["w"] <= frame["x"] + frame["w"] + TOL
+    assert new["y"] + new["h"] <= frame["y"] + frame["h"] + TOL
+    # each bitmap inside the group keeps its own individual aspect ratio too (children scale with
+    # the group uniformly, per scene_ops._scale)
+    for nid, orig_ratio in (("product_photo", 200 / 150), ("table_surface", 280 / 100)):
+        b = box_of(out, nid)
+        assert b["w"] / b["h"] == pytest.approx(orig_ratio, rel=1e-6)
+
+
 def test_convert_orientation_leaves_a_locked_shape_untouched_instead_of_raising():
     scene = portrait_scene()
     scene["layers"][0]["children"][1]["locked"] = True   # "brand" - the only header shape

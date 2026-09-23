@@ -261,12 +261,60 @@ def _fill_frame(frame: dict) -> dict:
     return _rect(frame["x"] + pad_x, frame["y"] + pad_y, frame["w"] - 2 * pad_x, frame["h"] - 2 * pad_y)
 
 
+def _contains_bitmap(node: dict) -> bool:
+    """True if `node` itself, or anything nested inside it (a group's children, a PowerClip's
+    contents), is a raster shape (`product_engine.is_bitmap`) - used to decide whether a zone's
+    content may be safely non-uniformly stretched (`_fill_frame`, fine for vector curves and text,
+    where CorelDRAW re-renders crisp geometry from the updated bounding box - see `scene_ops._scale`)
+    or must instead be scaled UNIFORMLY (`pe.aspect_fit(..., fit="contain")`, same scale factor on
+    both axes) to avoid visibly stretching/blurring a photographic or textured raster - a product
+    photo, a table/pedestal surface bitmap, a PowerClip that clips one. A composite group (e.g. a
+    product image grouped with its table/pedestal surface) is walked recursively so ANY bitmap
+    anywhere inside it - not just a top-level one - forces the whole group to scale uniformly, since
+    `scene_ops._op_resize` maps one `from`/`to` box onto every id in an op with a single sx/sy pair;
+    there is no way to stretch a sibling text label while keeping a nested photo undistorted within
+    the same op, so the safer (non-distorting) scaling wins for the whole group."""
+    if pe.is_bitmap(node):
+        return True
+    return any(_contains_bitmap(c) for c in node.get("children") or [])
+
+
+def _zone_fit(idx: dict, ids: list[str], frm: dict, frame: dict) -> dict:
+    """The `to` box for a zone's content: `pe.aspect_fit(..., fit="contain")` (uniform scale, centred
+    - never truncates/overflows the frame, which is what "Table Surface & Assembly Anchoring" asks
+    for when a product image is grouped with a table/pedestal surface) if ANY of `ids` contains a
+    bitmap anywhere in its subtree (see `_contains_bitmap`), else `_fill_frame` (non-uniform stretch
+    to occupy the full zone bounds - safe for vector/text-only content, see its own docstring)."""
+    if any(_contains_bitmap(idx[i]["node"]) for i in ids):
+        pad = ZONE_PADDING_FRAC * min(frame["w"], frame["h"])
+        return pe.aspect_fit(frm["w"], frm["h"], frame, fit="contain", padding=pad)
+    return _fill_frame(frame)
+
+
 def _layer_top_ids(scene: dict) -> list[str]:
     return [n["id"] for layer in scene["layers"] for n in layer["children"]]
 
 
-def _slot_top_id(slot: pe.ProductSlot) -> str:
-    return slot.container_id or slot.node_id
+def _topmost_top_level_ancestor(idx: dict, node_id: str) -> str:
+    """Walks up from `node_id` to the OUTERMOST ancestor that is still a direct child of a layer (a
+    top-level shape): a bare bitmap resolves to itself, one nested in a PowerClip or an ordinary group
+    resolves to that PowerClip/group's own id, and a bitmap nested several levels deep (e.g. a group
+    inside a PowerClip) resolves to the outermost one - so the whole composite moves/scales as ONE
+    rigid unit. This generalizes the previous `slot.container_id` (which only ever named the nearest
+    POWERCLIP ancestor, per `product_engine.clip_ancestor`) to also cover a product image grouped with
+    a plain `group` - e.g. a table/pedestal-surface bitmap sitting alongside it with no PowerClip
+    involved (the "Table Surface & Assembly Anchoring" case: without this, only the tagged/heuristic
+    -matched bitmap itself would move into the product zone, leaving its table surface behind)."""
+    top = node_id
+    p = idx[node_id]["parent"]
+    while p is not None:
+        top = p["id"]
+        p = idx[p["id"]]["parent"]
+    return top
+
+
+def _slot_top_id(idx: dict, slot: pe.ProductSlot) -> str:
+    return _topmost_top_level_ancestor(idx, slot.container_id or slot.node_id)
 
 
 def _union_box(idx: dict, ids: list[str]) -> dict:
@@ -332,7 +380,7 @@ def classify_zones(scene: dict) -> tuple[dict[str, list[str]], list[str]]:
 
     slots, warnings = pe.map_slots(scene)
     for slot in slots:
-        top_id = _slot_top_id(slot)
+        top_id = _slot_top_id(idx, slot)
         if top_id in used:
             continue     # its visible content is inside a shape already claimed as the page background
         zone = _KIND_TO_ZONE[slot.kind]
@@ -400,7 +448,7 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
                 continue
             frame = frames[zone]
             frm = _union_box(idx, bucket)
-            to = _fill_frame(frame)
+            to = _zone_fit(idx, bucket, frm, frame)
             ops.append({"op": "resize", "ids": bucket, "from": frm, "to": to})
             placed.update(bucket)
         zones[ZONE_OTHER] = [i for i in zones[ZONE_OTHER] if i not in placed]  # the rest keep the fallback below
@@ -411,7 +459,7 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
             continue
         frame = frames[zone]
         frm = _union_box(idx, ids)
-        to = _fill_frame(frame)
+        to = _zone_fit(idx, ids, frm, frame)
         ops.append({"op": "resize", "ids": ids, "from": frm, "to": to})
 
     for i in zones[ZONE_BACKGROUND]:

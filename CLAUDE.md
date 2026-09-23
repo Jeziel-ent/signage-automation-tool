@@ -2001,6 +2001,89 @@ satisfies. `npm test` (121 tests) also passes - `orientation_adapter.py`
 has no JS mirror (only its API/UI wiring is JS), so it was unaffected by
 this change, confirmed rather than assumed.
 
+### High-fidelity scaling: bitmaps scale uniformly, vector/text still fill the zone
+
+The stretch-to-fill fix above (`_fill_frame`) is correct for vector/text
+clusters - CorelDRAW re-renders crisp geometry from an updated bounding
+box, so a non-uniform scale never blurs anything - but applying it
+unconditionally would visibly stretch/distort a real photographic bitmap
+(a product photo, a table/pedestal surface texture) or a PowerClip that
+clips one, since `scene_ops._op_resize` maps one `from`/`to` box onto
+every id in a `resize` op with a single sx/sy pair.
+
+Fixed with `_contains_bitmap(node)` (recurses into `children`, using the
+existing `product_engine.is_bitmap` check) and `_zone_fit(idx, ids, frm,
+frame)`: if ANY id assigned to a zone contains a bitmap anywhere in its
+subtree - a bare product-image shape, or a group/PowerClip that has one
+nested inside it (the "product image grouped with a table/pedestal
+surface" case from the task) - the WHOLE group scales via
+`pe.aspect_fit(..., fit="contain")` (one uniform scale factor on both
+axes, centred in the frame - never overflows/truncates, which is what
+"scale the composite object uniformly ... so edges do not truncate
+mid-canvas" asks for); otherwise it keeps `_fill_frame`'s non-uniform
+stretch. A group is checked as a whole, not per-shape, because one `resize`
+op cannot give two different ids two different scale factors - the safer
+(non-distorting) behaviour wins for the group. Background keeps its
+pre-existing `cover` fit (already uniform, unaffected).
+
+**Verified live against the real AL MADEENA board (job 16bfc025ca11)** at
+both of the task's target sizes (30x40in and 36x96in): every bitmap leaf's
+own width/height ratio (`s45`, `s47`, `s48`, `s49` - nested inside the
+page-covering background PowerClip `s44`, unaffected since that zone
+already used `cover` - and `s6`, the heuristic top-level `product_image`)
+matches its ORIGINAL ratio to within floating-point rounding (< 0.0001%
+difference) at every size, confirmed by comparing each bitmap's `w/h` in
+the converted scene against the source scene, not just by eye. The
+vector/text zones (`s22`+`s7`, `s28`+`s4`, `s5` - none contain a bitmap)
+still stretch non-uniformly to fill their zone, unchanged from the
+previous fix (e.g. `s22`+`s7` goes from a 1884.5x193.0mm source box to a
+673.3x284.8mm box at 30x40in - width and height scaled by different
+factors, exactly as intended for vector/text content).
+
+**A second, real bug found writing the test for the grouped case**: tagging
+a plain `group` (not a PowerClip) as `product_image_1` around a product
+bitmap AND a table/pedestal-surface bitmap did not move the two together -
+`_slot_top_id` resolved to `slot.container_id or slot.node_id`, and
+`container_id` is only ever set to the nearest **PowerClip** ancestor
+(`product_engine.clip_ancestor`), never a plain group's id. So the zone
+ended up containing just the single targeted bitmap (the larger of the
+two, per `map_slots`' "using the largest" rule), leaving its table surface
+behind at the OLD page's coordinates entirely - a literal case of the
+composite being torn apart, exactly what "Table Surface & Assembly
+Anchoring" was written to prevent. **Fixed** by replacing `_slot_top_id`
+with `_topmost_top_level_ancestor(idx, node_id)`, which walks all the way
+up to whichever ancestor is a direct child of the layer (a true top-level
+shape) - a bare bitmap resolves to itself, one in a PowerClip resolves to
+the PowerClip (unchanged from before), and one in a plain group now also
+resolves to that group's own id, so the whole composite moves and scales
+as one rigid unit regardless of which container type holds it.
+
+New tests in `test_orientation_adapter.py` (48 total, up from 43): the
+real AL MADEENA product zone's PowerClip (`pc`, holding the nested
+`photo` bitmap) keeps its own aspect ratio after conversion while the
+header zone's pure-text content (`brand`, no bitmap) still stretches
+non-uniformly to fill its zone as before; a synthetic product-image
+-bitmap-plus-table-surface-bitmap GROUP (no PowerClip) scales as one
+uniform, non-truncated unit inside its zone frame, with each bitmap
+child keeping its own individual aspect ratio too. All 419 backend tests
+(416 + 3 new) and 121 frontend tests pass - `scene_ops.py`'s generic
+`_op_resize`/`_scale` were deliberately left untouched (they're also what
+the editor's own freeform drag-resize uses, where a user may intentionally
+want non-uniform scaling on anything, bitmap included), so this fix is
+scoped to `orientation_adapter.py`'s own zone-fitting and slot-to-zone
+membership decisions, not the shared resize primitive.
+
+**Live re-verification against the real AL MADEENA board (job
+16bfc025ca11)** at the task's own 30x40in and 36x96in targets, after the
+`_topmost_top_level_ancestor` fix (which doesn't change this board's own
+results - it has no plain-group product composite, only the PowerClip
+case that already worked): every bitmap leaf (`s45`, `s47`, `s48`, `s49`
+inside the background PowerClip; `s6`, the heuristic top-level
+product-image) keeps its exact original aspect ratio (max drift
+2.4e-5% across both targets), while the vector/text zones (`s22`+`s7`,
+`s28`+`s4`, `s5`) still stretch non-uniformly to fill their zone bounds,
+unchanged from the previous task.
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —
@@ -2546,7 +2629,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 416 passed as of this writing (that includes
+`pytest` from `backend/` — 419 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
 `test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py` (now
