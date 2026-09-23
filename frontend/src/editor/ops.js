@@ -390,14 +390,22 @@ const APPLY = {
     const kind = op.kind;
     if (!productEngine.SLOT_KINDS.includes(kind)) throw new OpError(`unknown product slot kind '${kind}'`);
     if (productEngine.IMAGE_KINDS.includes(kind)) {
-      if (op.text != null) throw new OpError(`a ${kind} slot takes 'asset', not 'text'`);
+      if (op.text != null || op.font != null || op.size_pt != null) {
+        throw new OpError(`a ${kind} slot takes 'asset', not 'text'/'font'/'size_pt'`);
+      }
       APPLY.swap_image(s, { ...op, op: "swap_image" });
     } else {
       if (!n.text) throw new OpError(`'${op.id}' is not a text object`);
-      if (op.asset != null) throw new OpError(`a ${kind} slot takes 'text', not 'asset'`);
+      if (op.asset != null) throw new OpError(`a ${kind} slot takes 'text'/'font'/'size_pt', not 'asset'`);
       checkEditable(idx, op.id, true);
-      if (op.text == null) throw new OpError("missing field 'text'");
-      n.text.content = String(op.text);
+      if (op.text == null && op.font == null && op.size_pt == null) throw new OpError("missing field 'text'");
+      if (op.text != null) n.text.content = String(op.text);
+      if (op.font != null) n.text.font = String(op.font);
+      if (op.size_pt != null) {
+        const size = Number(op.size_pt);
+        if (!(size > 0)) throw new OpError("font size must be positive");
+        n.text.size_pt = r(size);
+      }
       n.stale = true;
     }
   },

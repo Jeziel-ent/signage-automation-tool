@@ -41,6 +41,11 @@ for (const asset of [null, {}, { name: "" }, { name: "a", w: 0, h: 10 }, { name:
   });
 }
 
+test("checkAsset keeps 'path' when given (the filename a product-assets upload returned) and omits it otherwise", () => {
+  assert.deepEqual(checkAsset({ name: "a.png", w: 100, h: 50, path: "abc123.png" }), { name: "a.png", w: 100, h: 50, path: "abc123.png" });
+  assert.deepEqual(checkAsset({ name: "a.png", w: 100, h: 50 }), { name: "a.png", w: 100, h: 50 });
+});
+
 test("aspectFit: contain centres the whole image in a wider frame", () => {
   assert.deepEqual(aspectFit(200, 100, { x: 0, y: 0, w: 100, h: 100 }), { x: 0, y: 25, w: 100, h: 50 });
 });
@@ -155,5 +160,21 @@ test("swapImageOp rejects an unknown node id", () => {
   assert.throws(
     () => swapImageOp(GOLDEN_BASE, "does-not-exist", { name: "a", w: 1, h: 1 }),
     (e) => e instanceof OpError && /unknown id/.test(e.message),
+  );
+});
+
+test("updateSlotOp on a text slot accepts font/size_pt with no text (at least one field, not all three required)", () => {
+  const op = updateSlotOp(GOLDEN_BASE, "brand_title:brandtitle", { font: "Nirmala UI", size_pt: 30 });
+  assert.deepEqual(op, { op: "update_product_slot", id: "brandtitle", kind: "brand_title", font: "Nirmala UI", size_pt: 30 });
+});
+
+test("updateSlotOp on a text slot rejects font/size_pt/text all missing", () => {
+  assert.throws(() => updateSlotOp(GOLDEN_BASE, "brand_title:brandtitle", {}), /missing field 'text'/);
+});
+
+test("updateSlotOp on an image slot rejects font/size_pt (not just text)", () => {
+  assert.throws(
+    () => updateSlotOp(GOLDEN_BASE, "product_image:pimg1", { font: "Arial" }),
+    /takes 'asset', not 'text'\/'font'\/'size_pt'/,
   );
 });

@@ -43,15 +43,22 @@ Operations (`op` key; every op is JSON and self-contained):
     paste       {parent, nodes: [subtree, ...]}        also used for duplicate
     page        {width, height}                        page size only, objects stay
     layer_order {id, index}                            move a layer (index in the bottom -> top list)
-    swap_image  {id, asset:{name,w,h}, fit?, frame?, padding?}
+    swap_image  {id, asset:{name,w,h,path?}, fit?, frame?, padding?}
                                                         fits a new image into an image shape's frame
                                                         (see product_engine.py); `frame` is only
                                                         accepted outside a PowerClip - inside one the
                                                         clip IS the frame, and a disagreeing `frame`
-                                                        is refused rather than silently ignored
-    update_product_slot {id, kind, asset?/text?}       swap_image for an image slot, or a text-only
-                                                        edit for brand_title/product_title/address/
-                                                        contact (see product_engine.map_slots)
+                                                        is refused rather than silently ignored.
+                                                        `asset.path` (a filename returned by the
+                                                        product-assets upload endpoint) is what
+                                                        export_replay.Replayer imports through COM -
+                                                        without it the op still updates the scene/
+                                                        canvas but has nothing to replay
+    update_product_slot {id, kind, asset?/text?/font?/size_pt?}
+                                                        swap_image for an image slot, or a text/font/
+                                                        size_pt edit (at least one) for brand_title/
+                                                        product_title/address/contact (see
+                                                        product_engine.map_slots)
 """
 from __future__ import annotations
 
@@ -471,19 +478,27 @@ def _op_update_product_slot(s, op):
     if kind not in pe.SLOT_KINDS:
         raise OpError(f"unknown product slot kind {kind!r}")
     if kind in pe.IMAGE_KINDS:
-        if "text" in op and op["text"] is not None:
-            raise OpError(f"a {kind} slot takes 'asset', not 'text'")
+        if any(op.get(k) is not None for k in ("text", "font", "size_pt")):
+            raise OpError(f"a {kind} slot takes 'asset', not 'text'/'font'/'size_pt'")
         _op_swap_image(s, {**op, "op": "swap_image"})
     else:
         if not n.get("text"):
             raise OpError(f"{op['id']!r} is not a text object")
-        if "asset" in op and op["asset"] is not None:
-            raise OpError(f"a {kind} slot takes 'text', not 'asset'")
+        if op.get("asset") is not None:
+            raise OpError(f"a {kind} slot takes 'text'/'font'/'size_pt', not 'asset'")
         _check_editable(idx, op["id"], allow_powerclip=True)
-        text = op.get("text")
-        if text is None:
+        text, font, size_pt = op.get("text"), op.get("font"), op.get("size_pt")
+        if text is None and font is None and size_pt is None:
             raise OpError("missing field 'text'")
-        n["text"]["content"] = str(text)
+        if text is not None:
+            n["text"]["content"] = str(text)
+        if font is not None:
+            n["text"]["font"] = str(font)
+        if size_pt is not None:
+            size = float(size_pt)
+            if size <= 0:
+                raise OpError("font size must be positive")
+            n["text"]["size_pt"] = _r(size)
         n["stale"] = True
 
 

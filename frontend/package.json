@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/editor/ops.test.mjs src/editor/model.test.mjs"
+    "test": "node --test src/editor/ops.test.mjs src/editor/model.test.mjs src/editor/product_engine.test.mjs"
   },
   "dependencies": {
     "react": "^18.3.1",

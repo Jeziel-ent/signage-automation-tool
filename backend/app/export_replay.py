@@ -197,8 +197,22 @@ def _subtree_ids(node: dict) -> list[str]:
     return out
 
 
+def _clip_ancestor_id(idx: dict, node_id: str) -> str | None:
+    """The nearest PowerClip container above `node_id` in a scene _index(), however many groups deep -
+    the same walk as product_engine.clip_ancestor, needed here because a `swap_image` target's DIRECT
+    parent is not always the PowerClip itself (found live: a bitmap can sit inside an ordinary group
+    that is in turn inside the PowerClip - see _op_swap_image's docstring)."""
+    p = idx[node_id]["parent"]
+    while p is not None:
+        if p.get("kind") == "powerclip":
+            return p["id"]
+        p = idx[p["id"]]["parent"]
+    return None
+
+
 class Replayer:
-    def __init__(self, doc, scene: dict, ops: list[dict], on_progress: Callable[[int, int], None] | None = None):
+    def __init__(self, doc, scene: dict, ops: list[dict], on_progress: Callable[[int, int], None] | None = None,
+                 assets_dir: Path | str | None = None):
         self.doc = doc
         self.page = doc.ActivePage
         self.ops = ops
@@ -209,6 +223,11 @@ class Replayer:
         self.ghosts: dict = {}
         self.warnings: list[str] = []
         self.on_progress = on_progress or (lambda i, n: None)
+        # where a swap_image/update_product_slot asset's `path` (a bare filename) resolves against -
+        # the shop's own product-assets directory, passed through from main.py via corel_worker.py's
+        # export_replay spec; None when no swap in this op list needs one (or, for an old spec/job
+        # predating this feature, simply absent).
+        self.assets_dir = Path(assets_dir) if assets_dir else None
         # objects a later paste copies must survive a delete (cut + paste)
         self.paste_sources = {n.get("src") for op in ops if op.get("op") == "paste"
                               for top in op.get("nodes", []) for n in _walk_nodes(top) if n.get("src")}
@@ -234,9 +253,8 @@ class Replayer:
         scene_ops.apply_op(self.shadow, op)
         fn = getattr(self, "_op_" + op["op"], None)
         if fn is None:
-            # product_engine.py's swap_image/update_product_slot update the editor's scene (so the
-            # canvas and the saved op list) but have no COM replay yet - refuse clearly here rather
-            # than exporting a document that silently doesn't reflect the swap.
+            # A safety net for any future scene_ops.py op added without a matching _op_<name> here -
+            # refuse clearly rather than silently exporting a document that doesn't reflect the edit.
             raise ReplayError(f"the {op['op']!r} operation cannot be exported to CorelDRAW yet")
         fn(op, before)
 
@@ -338,6 +356,88 @@ class Replayer:
 
     def _op_page(self, op, before):
         self.page.SetSize(float(self.shadow["page"]["width"]), float(self.shadow["page"]["height"]))
+
+    def _resolve_asset_path(self, rel_path: str) -> Path:
+        """`rel_path` is a bare filename (never a full path - see product_engine.check_asset), resolved
+        against this export's assets directory with the same path-containment guard main.py's own
+        asset-serving routes use, so a malformed path can't escape that directory."""
+        if self.assets_dir is None:
+            raise ReplayError("no product-asset directory is available for this export")
+        base = self.assets_dir.resolve()
+        p = (base / rel_path).resolve()
+        if base not in p.parents or not p.is_file():
+            raise ReplayError(f"replacement image not found: {rel_path!r}")
+        return p
+
+    def _op_swap_image(self, op, before):
+        """Imports the asset onto the target's own layer (`Layer.Import` - verified live: the COM
+        typelib declares it VT_VOID, so the new shape is read back via `doc.ActiveShape`, not a
+        return value; its optional `Options` argument is VT_DISPATCH and must get `None`, never the
+        Python default `0`, same bug class as every other optional-VT_DISPATCH argument in this
+        codebase - see CLAUDE.md's CorelEngine COM notes), fits it to the box scene_ops.py already
+        computed on the shadow scene, and swaps it in for the old bitmap under the SAME node id, so
+        later ops in this op list that reference it keep working. A target nested inside a PowerClip
+        (however many groups deep - `_clip_ancestor_id` walks the whole chain, mirroring
+        product_engine.clip_ancestor) is moved into the clip with `Shape.AddToPowerClip(container)`
+        before the old bitmap is pulled out with `Shape.RemoveFromContainer()` and deleted (both
+        verified live against a real generated board's PowerClip - deleting a clipped child directly,
+        without removing it from the container first, was not tried and is not relied on).
+
+        A target directly inside a plain (non-PowerClip) group is put back into that SAME group via
+        `_merge_into_group` (the proven ungroup+regroup dance `_op_reorder`/`_op_group` already rely
+        on - no PowerClip involved, so no new risk). A target inside a GROUP that is itself inside a
+        PowerClip is the one case left approximate: found live that `AddToPowerClip`/
+        `RemoveFromContainer` operate on the shape's overall clip membership regardless of which
+        sub-group it sat in, so re-inserting into that specific sub-group was not attempted (mixing an
+        ungrouped-and-regrouped set of shapes that live inside a PowerClip with a brand new shape that
+        does not is exactly the kind of COM interaction this codebase only relies on once verified
+        live - see CLAUDE.md's CorelEngine COM notes - and it was not tried here); the replacement
+        lands as a direct child of the PowerClip, a sibling of that sub-group instead. `_settle` still
+        reports this honestly as a z-order/structure mismatch rather than claiming a false match -
+        every dalmia/Agarpathi master validated so far only ever nests a bitmap directly in a PowerClip
+        or in one plain group inside one, per CLAUDE.md's dataset analysis, so this is a real but
+        narrow gap, not the common case."""
+        after = scene_ops._index(self.shadow)
+        node = after[op["id"]]["node"]
+        asset = node.get("image_asset") or {}
+        rel_path = asset.get("path")
+        if not rel_path:
+            raise ReplayError(f"{op['id']!r}: the replacement asset has no uploaded file to import "
+                              "(upload it through the product-assets endpoint first)")
+        abs_path = self._resolve_asset_path(rel_path)
+        old_shape = self._shape(op["id"])
+        old_sid = int(old_shape.StaticID)
+        parent = before[op["id"]]["parent"]
+        container_id = _clip_ancestor_id(before, op["id"])
+        layer = old_shape.Layer
+        layer.Import(str(abs_path), 0, None)
+        new_shape = self.doc.ActiveShape
+        if new_shape is None:
+            raise ReplayError(f"{op['id']!r}: CorelDRAW did not report an imported shape for {abs_path}")
+        settle_id = self._parent_id(op["id"])
+        if container_id is not None:
+            new_shape.AddToPowerClip(self._shape(container_id), 0)
+            if parent is not None and parent.get("kind") != "powerclip":
+                settle_id = container_id      # landed as a direct PowerClip child, not back in the sub-group
+        elif parent is not None and parent.get("kind") == "group":
+            self._merge_into_group(new_shape, parent["id"])
+        _set_bbox(new_shape, node)
+        if container_id is not None:
+            old_shape.RemoveFromContainer()
+        old_shape.Delete()
+        self.sid.pop(old_sid, None)
+        self._register(op["id"], new_shape)
+        _safe(lambda: self.doc.ClearSelection())
+        self._settle(settle_id)
+
+    def _op_update_product_slot(self, op, before):
+        from . import product_engine as pe
+
+        if op.get("kind") in pe.IMAGE_KINDS:
+            self._op_swap_image(op, before)
+        else:
+            after = scene_ops._index(self.shadow)
+            self._apply_text(self._shape(op["id"]), after[op["id"]]["node"]["text"])
 
     def _op_delete(self, op, before):
         for i in scene_ops._top_ids(before, op["ids"]):
@@ -463,9 +563,17 @@ class Replayer:
         self._settle(parent)
 
     def _actual_order(self, parent_id: str) -> list[str | None]:
+        # A PowerClip container's own `.Shapes` is empty (or absent) like any non-group shape's - its
+        # contents live on `.PowerClip.Shapes` instead (same distinction scene_export.walk_shape
+        # already makes). Settling z-order inside a PowerClip was never exercised before swap_image
+        # (order/reorder/group/ungroup/delete are all refused on a PowerClip's contents by
+        # scene_ops._check_editable), so this had no reason to matter until now.
         ghost_sids = {int(s.StaticID) for s in self.ghosts.values()}
         out = []
-        for s in reversed(_children(self._container(parent_id))):     # bottom -> top
+        container = self._container(parent_id)
+        pc = _safe(lambda: container.PowerClip)
+        kids = _children(pc) if pc is not None else _children(container)
+        for s in reversed(kids):     # bottom -> top
             sid = int(s.StaticID)
             if sid in ghost_sids:
                 continue
@@ -620,9 +728,12 @@ def image_size(path: Path) -> tuple[int, int] | None:
 
 
 def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats: list[str], options: dict,
-                     out_dir: Path, base_name: str, on_step: Callable[[str], None] | None = None) -> dict:
+                     out_dir: Path, base_name: str, on_step: Callable[[str], None] | None = None,
+                     assets_dir: Path | str | None = None) -> dict:
     """Opens the converted .cdr in a fresh CorelDRAW, replays `ops`, verifies, exports, closes WITHOUT saving
-    over the original. Returns the job report (files, timings, replay + verification results, warnings)."""
+    over the original. Returns the job report (files, timings, replay + verification results, warnings).
+    `assets_dir` is where a `swap_image`/`update_product_slot` op's asset `path` resolves against - see
+    Replayer._resolve_asset_path; omit it for an op list with no such op."""
     import json
 
     import pythoncom
@@ -673,7 +784,7 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
                     last["t"] = time.time()
 
             def replay():
-                r = Replayer(doc, scene, ops, on_progress=progress)
+                r = Replayer(doc, scene, ops, on_progress=progress, assets_dir=assets_dir)
                 out = r.run()
                 warnings.extend(r.warnings)
                 return out

@@ -1517,7 +1517,7 @@ tuple — any `(9, 49)` (optional `VT_DISPATCH`) argument needs an explicit
   "Example-based layout engine" above); writes
   `dataset_analysis/leave_one_out/<brand>/report.{md,json}`. Offline.
 
-## Product slots (`backend/app/product_engine.py`, `frontend/src/editor/product_engine.js`) — foundation only, not wired into any UI
+## Product slots (`backend/app/product_engine.py`, `frontend/src/editor/product_engine.js`, `POST /api/editor/{job}/{shop}/product-assets`, editor `ProductPanel`)
 
 A registry mapping a scene's shapes (the editor's model - see "Phase C: editor
 v1") to semantic *product slots* for a future product-based automation flow:
@@ -1547,14 +1547,14 @@ rather than hand-computed like the older cases, because centred
 aspect-fit scaling isn't hand-arithmetic-friendly — the point is
 cross-language parity, not independent re-derivation of the formula):
 
-- **`swap_image`** `{id, asset:{name,w,h}, fit?, frame?, padding?}` - fits
-  a new image (given only as its *natural pixel size*; no actual bitmap
-  asset pipeline exists yet - see "Not built" below) into a *frame*, then
-  sets the shape's box to the fitted result and marks it (and any
-  PowerClip ancestor) `stale`. The frame is: the PowerClip's own box, when
-  the image sits inside one (an explicit `frame` that disagrees is
-  refused, not silently ignored - a stale client could otherwise fit into
-  the wrong box); otherwise an explicit `frame`, else the frame
+- **`swap_image`** `{id, asset:{name,w,h,path?}, fit?, frame?, padding?}` -
+  fits a new image (given by its *natural pixel size*, for the aspect-fit
+  math, plus an optional `path` - see the upload endpoint below) into a
+  *frame*, then sets the shape's box to the fitted result and marks it
+  (and any PowerClip ancestor) `stale`. The frame is: the PowerClip's own
+  box, when the image sits inside one (an explicit `frame` that disagrees
+  is refused, not silently ignored - a stale client could otherwise fit
+  into the wrong box); otherwise an explicit `frame`, else the frame
   *remembered* from an earlier swap of this same shape (`node.slot_frame`),
   else the shape's own current box. Remembering the frame is what stops a
   second swap from fitting into the *shrunk* result of the first one -
@@ -1563,25 +1563,108 @@ cross-language parity, not independent re-derivation of the formula):
   `fit: "contain"` (default) shows the whole image; `"cover"` fills the
   frame and lets the PowerClip clip the overflow, so it's refused outside
   one. `padding` insets the frame on every side first.
-- **`update_product_slot`** `{id, kind, asset?/text?}` - the slot-aware
-  wrapper: `product_engine.map_slots(scene)` finds the slot for a node id
-  (or `slot_id` via `update_slot_op`), and this op takes `asset` for an
-  image slot or `text` for the other three (rejecting the wrong one for a
-  given `kind`, and any unknown `kind`) - a `product_image` slot delegates
-  straight to `swap_image`'s geometry; a text slot just replaces
-  `text.content` and marks the shape stale, like the existing `text` op.
+- **`update_product_slot`** `{id, kind, asset?/text?/font?/size_pt?}` - the
+  slot-aware wrapper: `product_engine.map_slots(scene)` finds the slot for
+  a node id (or `slot_id` via `update_slot_op`), and this op takes `asset`
+  for an image slot or `text`/`font`/`size_pt` (at least one) for the other
+  four (rejecting the wrong kind of field for a given `kind`, and any
+  unknown `kind`) - a `product_image` slot delegates straight to
+  `swap_image`'s geometry; a text slot updates whichever of content/font/
+  size are given exactly like the existing `text` op (font-size changes for
+  a slot were added alongside the COM replay work below, since replaying
+  them is just `Replayer._apply_text` - already built for `text` - there
+  was no reason to leave them editor-only).
 
-**Not built, deliberately, per this task's scope**: there is no bitmap
-asset pipeline (upload/storage/serving) - `asset` is just `{name, w, h}`,
-the natural pixel size a caller already knows, used only for the aspect
-ratio; and `export_replay.Replayer` has no COM handler for either op yet -
-`Replayer.apply` now refuses both with a clear "cannot be exported to
-CorelDRAW yet" `ReplayError` instead of crashing on the missing method (a
-real gap this surfaced and fixed, unrelated to the swap logic itself:
-before this, ANY future op with no `_op_<name>` handler would have failed
-with a raw `AttributeError`-derived message rather than a clear one).
-Neither module is imported by any page/route - this is registry +
-op-semantics groundwork, not a feature a designer can use yet.
+### Replacement-image upload: `POST /api/editor/{job}/{shop}/product-assets`
+
+Saves an uploaded image under `<job>/out/<shop>/product_assets/` (never
+`signage_dataset/`, never the master's own directory) and reports its real
+pixel size via PIL - `{"name", "w", "h", "path"}`, where `path` is a
+generated filename (never the client's own, and never a full path - a
+directory-traversal attempt like `../x` is rejected the same way
+`GET .../asset/{filename}` already guards the scene's own image directory).
+The frontend feeds that straight into `swapImageOp`/`updateSlotOp` as the
+asset's `path`; `GET .../product-asset/{filename}` serves it back for a
+preview. Both require the shop to already be converted (`_editor_shop`),
+same as every other editor route. 5 new tests in `test_editor_api.py`.
+
+### COM replay (`export_replay.py`) - `swap_image`/`update_product_slot` now export for real
+
+`Replayer._op_swap_image` imports the asset file onto the target's own
+layer with `Layer.Import(path, 0, None)` - verified live: the typelib
+declares it `void`, so the new shape is read back via `doc.ActiveShape`,
+not a return value, and its `Options` argument is `VT_DISPATCH` and needs
+an explicit `None` (the same optional-`VT_DISPATCH` bug class as every
+other one documented in "CorelEngine COM notes" - passing the Python
+default `0` raises `TypeError: The Python instance can not be converted to
+a COM object`). The new shape is fitted to the box `scene_ops.py` already
+computed on the shadow scene and takes over the old bitmap's node id, so
+later ops in the same list keep resolving it correctly.
+
+A target nested inside a PowerClip - `_clip_ancestor_id` walks the whole
+ancestor chain, mirroring `product_engine.clip_ancestor`, because the
+direct parent isn't always the PowerClip itself (see below) - is moved in
+with `Shape.AddToPowerClip(container, 0)` before the old bitmap is pulled
+out with `Shape.RemoveFromContainer()` and deleted, both verified live
+against a real generated board's PowerClip (job 16bfc025ca11). A target
+inside an ordinary group is put back into that same group via
+`_merge_into_group`, the existing ungroup+regroup dance `_op_reorder`/
+`_op_group` already rely on.
+
+**A real bug found live, exactly the kind this project's rule of engagement
+exists to catch**: the first version only checked the target's *direct*
+parent for `kind == "powerclip"`, so a bitmap nested in a plain group that
+was itself inside a PowerClip (the real dalmia master's own structure - a
+group of 3 sits inside the board's single PowerClip) was never added to
+the clip at all - it silently landed as a loose shape on the layer, and
+`verify()` correctly caught the resulting object-count mismatch rather than
+reporting a false success. Fixed by `_clip_ancestor_id` walking the full
+chain like `product_engine.clip_ancestor` already does.
+
+**One case is left approximate, found live and documented rather than
+silently gotten wrong**: for a bitmap inside a group that is itself inside
+a PowerClip, `AddToPowerClip`/`RemoveFromContainer` were found to operate
+on the shape's overall clip membership, not on which sub-group it
+happened to sit in - re-inserting the replacement into that exact
+sub-group was not attempted (mixing an ungrouped-and-regrouped set of
+PowerClip-nested shapes with a brand new one is exactly the kind of COM
+interaction this codebase only relies on once verified live, and it
+wasn't). The replacement lands as a direct PowerClip child instead, a
+sibling of the sub-group; `_settle` reports the resulting z-order/
+structure difference as a warning and a real `verify()` mismatch rather
+than claiming a false match. Verified live on the real board (job
+16bfc025ca11): a **direct** PowerClip child swap (no intermediate group)
+and a **top-level** swap both come back `verify() == {"ok": True}` across
+all 371 compared objects; the **group-inside-PowerClip** case correctly
+reports the one expected mismatch. 9 new fake-COM tests in
+`test_export_replay.py` cover all three shapes plus the error paths (asset
+never uploaded, asset file missing, no assets directory, invalid shape id,
+path-traversal in `asset.path`).
+
+### Editor UI: `ProductPanel` (`frontend/src/editor/ProductPanel.jsx`)
+
+A sidebar panel (between Properties and Layers) listing every slot
+`product_engine.js`'s `mapSlots` finds: clicking a row selects (and so
+highlights, via the canvas's existing selection outline - no separate
+highlight overlay was built) the shape on the canvas, resolving to its
+top-level ancestor the same way a canvas click would (`model.js`'s
+`ancestry`) since a tagged shape is not always top-level itself. An image
+slot gets a file picker that uploads through the endpoint above and
+dispatches `update_product_slot`; the other four get a plain text field
+that dispatches it with `text` on blur/Enter. Both go through the editor's
+normal `commit`, so they land on the undo/redo stack and the live SVG
+updates the same way any other edit does - `ProductPanel` never touches
+the canvas directly. Not built (out of this task's UI scope, though the
+op schema now supports it): a font/size picker per slot, and a persistent
+highlight for every slot at once rather than just the selected one.
+
+**A real, unrelated bug found while wiring this**: `frontend/package.json`'s
+`test` script never actually ran `product_engine.test.mjs` - it only listed
+`ops.test.mjs`/`model.test.mjs`, so every product-slot unit test added in
+this and the previous task had been passing in isolation (`node --test
+product_engine.test.mjs` directly) but silently never executed by `npm
+test`/CI. Fixed by adding it to the script; `npm test` now reports 121
+(was quietly only counting 90).
 
 ## Orientation adaptation (`backend/app/orientation_adapter.py`, `POST /api/scene/convert-orientation`, editor `OrientationControl`)
 
@@ -2313,17 +2396,20 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 399 passed as of this writing (that includes
+`pytest` from `backend/` — 414 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
-`test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py`,
-`test_product_engine.py` - see "Product slots" above -,
+`test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py` (now
+including the `swap_image`/`update_product_slot` COM replay - see
+"Product slots"), `test_product_engine.py` - see "Product slots" above -,
 `test_orientation_adapter.py` and `test_orientation_api.py` - see
-"Orientation adaptation" above); `npm test` from `frontend/` runs 90 more
+"Orientation adaptation" above); `npm test` from `frontend/` runs 121 more
 (`ops.test.mjs` against the shared golden cases, `model.test.mjs`,
-`product_engine.test.mjs`) - `orientation_adapter.py` itself still has no
-frontend mirror (only its API/UI wiring is JS; the geometry stays
-backend-only, unlike product_engine.py which is mirrored). Note that the
+`product_engine.test.mjs` - `package.json`'s `test` script was fixed to
+actually run this file, see "Product slots" above) -
+`orientation_adapter.py` itself still has no frontend mirror (only its
+API/UI wiring is JS; the geometry stays backend-only, unlike
+product_engine.py which is mirrored). Note that the
 `engines.py._resize_and_tile` reuse-vs-duplicate bug (see "Wide-board panel
 sequence") has NO unit test coverage - it's COM-shape-lifecycle logic, only
 exercisable against a live CorelDRAW, and was only caught by looking at a

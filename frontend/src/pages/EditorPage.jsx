@@ -3,6 +3,7 @@ import { useParams } from "react-router-dom";
 import "../editor/editor.css";
 import Canvas from "../editor/Canvas.jsx";
 import LayersPanel from "../editor/LayersPanel.jsx";
+import ProductPanel from "../editor/ProductPanel.jsx";
 import PropertiesPanel from "../editor/PropertiesPanel.jsx";
 import PageResizeDialog from "../editor/PageResizeDialog.jsx";
 import ExportDialog from "../editor/ExportDialog.jsx";
@@ -519,6 +520,7 @@ export default function EditorPage() {
         </div>
         <aside className="ed-side">
           <PropertiesPanel scene={scene} sel={sel} unit={unit} onCommit={commit} fonts={fonts} onTextPreview={setTextPreview} />
+          <ProductPanel scene={scene} sel={sel} jobId={jobId} shopId={shopId} onSelect={select} onCommit={commit} onToast={say} />
           <LayersPanel scene={scene} sel={sel} ctx={ctx} onSelect={select} onCommit={commit} nextId={() => `n${Date.now().toString(36)}g${++idCounter.current}`} />
         </aside>
       </div>

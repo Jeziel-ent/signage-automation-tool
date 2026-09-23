@@ -101,6 +101,19 @@ body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 .ed-sub { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-gray-600); margin-bottom: 4px; }
 .ed-warn { margin-top: 6px; padding: 6px 8px; font-size: 12px; background: var(--color-warn-bg); color: var(--color-warn); border-radius: var(--radius-sm); }
 
+.ed-product { flex: none; max-height: 260px; overflow: auto; }
+.ed-product-list { display: flex; flex-direction: column; gap: 6px; }
+.ed-product-slot { display: flex; align-items: center; gap: 6px; padding: 4px; border-radius: var(--radius-sm); }
+.ed-product-slot.selected { background: var(--color-red-light); }
+.ed-product-slot-name {
+  font: inherit; font-size: 12px; text-align: left; flex: none; width: 96px; padding: 3px 6px;
+  border: 1px solid var(--color-gray-300); background: var(--color-white); border-radius: var(--radius-sm); cursor: pointer;
+}
+.ed-product-slot-name:hover { border-color: var(--color-red); color: var(--color-red); }
+.ed-product-slot-control { flex: 1; min-width: 0; }
+.ed-product-slot-text { width: 100%; font: inherit; font-size: 12px; padding: 4px 6px; }
+.ed-product-warnings { margin: var(--space-2) 0 0; padding: 6px 8px 6px 20px; font-size: 11px; background: var(--color-warn-bg); color: var(--color-warn); border-radius: var(--radius-sm); }
+
 .ed-layers { flex: 1; min-height: 0; display: flex; flex-direction: column; border-bottom: none; }
 .ed-tree { flex: 1; min-height: 0; overflow: auto; border: 1px solid var(--color-gray-200); border-radius: var(--radius-sm); }
 .ed-row {

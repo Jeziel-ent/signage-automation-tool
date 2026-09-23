@@ -25,11 +25,12 @@ bitmap sits inside one (the clip is what the designer sees), otherwise the slot'
 own box, remembered as `slot_frame` on the node at the first swap so repeated
 swaps do not shrink into the previous swap's result. `contain` shows the whole
 image centred in the frame; `cover` fills the frame and lets the PowerClip clip the
-overflow (so it needs a PowerClip). This is a scene-level model only: `swap_image`/
-`update_product_slot` update the editor's scene (and so the canvas and the saved op
-list), exactly like every other op, but `export_replay.Replayer` has no handler for
-either yet - replaying an image swap through COM (importing the new bitmap into
-CorelDRAW) is future work, not built as part of this module.
+overflow (so it needs a PowerClip). `swap_image`/`update_product_slot` update the
+editor's scene (and so the canvas and the saved op list) exactly like every other op;
+`export_replay.Replayer` replays an image swap by importing the asset's file onto
+CorelDRAW's layer (`Layer.Import`) and, for a PowerClip-nested target, moving it into
+the clip with `Shape.AddToPowerClip` before deleting the old bitmap - see that
+module's own docstring for the COM details (verified live).
 
 scene_ops.py imports this module lazily inside its two slot operations (this module
 needs scene_ops' index helpers, so a top-level import there would be circular);
@@ -88,7 +89,12 @@ def is_bitmap(node: dict) -> bool:
 # ------------------------------------------------------------------ geometry
 
 def check_asset(asset) -> dict:
-    """Normalises an asset descriptor: {"name": str, "w": px, "h": px} (natural pixel size)."""
+    """Normalises an asset descriptor: {"name": str, "w": px, "h": px} (natural pixel size), plus an
+    optional "path" - the filename `POST /api/editor/{job}/{shop}/product-assets` returned, resolved
+    against that shop's assets directory at replay time (see export_replay.Replayer). A `path`-less
+    asset can still be used to preview/plan a swap (aspect_fit only needs w/h) but replaying it
+    through CorelDRAW has nothing to import - Replayer raises a clear error for that case rather than
+    silently skipping the swap."""
     try:
         name = str(asset["name"]).strip()
         w, h = float(asset["w"]), float(asset["h"])
@@ -96,7 +102,11 @@ def check_asset(asset) -> dict:
         name, w, h = "", 0.0, 0.0
     if not name or not (w > 0 and h > 0):
         raise OpError("asset must be an object with a name and positive numeric w, h (pixels)")
-    return {"name": name, "w": w, "h": h}
+    out = {"name": name, "w": w, "h": h}
+    path = asset.get("path") if isinstance(asset, dict) else None
+    if path:
+        out["path"] = str(path)
+    return out
 
 
 def aspect_fit(asset_w: float, asset_h: float, frame: dict, fit: str = "contain", padding: float = 0.0) -> dict:
@@ -298,21 +308,30 @@ def slot_for_node(scene: dict, node_id: str) -> ProductSlot | None:
 
 
 def update_slot_op(scene: dict, slot_id: str, *, asset: dict | None = None, text: str | None = None,
+                   font: str | None = None, size_pt: float | None = None,
                    fit: str = "contain", padding: float = 0.0) -> dict:
     """An `update_product_slot` op for a slot found by map_slots: an image slot takes `asset`, the
-    text slots take `text`."""
+    text slots take `text`/`font`/`size_pt` (at least one - the same fields `scene_ops._op_text`
+    already supports, just addressed by slot id instead of node id)."""
     slots, _ = map_slots(scene)
     slot = next((s for s in slots if s.slot_id == slot_id), None)
     if slot is None:
         raise OpError(f"unknown product slot {slot_id!r}")
     op: dict = {"op": "update_product_slot", "id": slot.node_id, "kind": slot.kind}
     if slot.kind in IMAGE_KINDS:
-        if asset is None or text is not None:
-            raise OpError(f"a {slot.kind} slot takes 'asset', not 'text'")
+        if asset is None or text is not None or font is not None or size_pt is not None:
+            raise OpError(f"a {slot.kind} slot takes 'asset', not 'text'/'font'/'size_pt'")
         swap = swap_image_op(scene, slot.node_id, asset, fit, padding)
         op.update({k: v for k, v in swap.items() if k not in ("op", "id")})
     else:
-        if text is None or asset is not None:
-            raise OpError(f"a {slot.kind} slot takes 'text', not 'asset'")
-        op["text"] = str(text)
+        if asset is not None:
+            raise OpError(f"a {slot.kind} slot takes 'text'/'font'/'size_pt', not 'asset'")
+        if text is None and font is None and size_pt is None:
+            raise OpError("missing field 'text'")
+        if text is not None:
+            op["text"] = str(text)
+        if font is not None:
+            op["font"] = str(font)
+        if size_pt is not None:
+            op["size_pt"] = float(size_pt)
     return op

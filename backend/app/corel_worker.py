@@ -33,7 +33,8 @@ export (scene_export.py): opens the file read-only, renders every leaf shape
 plus a full-page reference image into `scene_out`, writes scene.json there.
 The heartbeat step is "images N/M" while leaf images render.
 
-Or {"export_replay": {"cdr", "scene", "ops", "formats", "options", "out_dir", "base_name"}} -
+Or {"export_replay": {"cdr", "scene", "ops", "formats", "options", "out_dir", "base_name",
+"assets_dir"?}} - the last is where a swap_image/update_product_slot op's asset resolves against -
 Phase D's "Save and Generate" (export_replay.py): replays the editor's operation
 list on the converted .cdr, verifies the result and exports the chosen formats.
 Heartbeat steps: launch, open, replay i/n, verify, cdr, pdf, png, jpeg.
@@ -138,6 +139,7 @@ def main() -> None:
                 entry["report"] = export_from_file(
                     Path(spec["cdr"]), Path(spec["scene"]), spec["ops"], spec["formats"], spec["options"],
                     Path(spec["out_dir"]), spec["base_name"], on_step=_heartbeat,
+                    assets_dir=spec.get("assets_dir"),
                 )
                 entry["status"] = "done"
             except Exception as e:

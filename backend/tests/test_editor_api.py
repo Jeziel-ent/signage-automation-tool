@@ -270,3 +270,56 @@ def test_failed_export_reports_the_reason(client, monkeypatch):
     started = _export(client, job, shop, ["png"])
     final = _wait_export(client, job, shop, started["export_id"])
     assert final["status"] == "failed" and "disk full" in final["error"]
+
+
+# ------------------------------------------------------ product-slot replacement assets
+
+def _tiny_png_bytes():
+    import io
+
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", (37, 21), (10, 20, 30)).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_product_asset_upload_reports_the_real_pixel_size_and_a_resolvable_path(client):
+    job, shop = _converted_shop(client)
+    r = client.post(f"/api/editor/{job}/{shop}/product-assets",
+                    files={"file": ("logo.png", _tiny_png_bytes(), "image/png")})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["name"] == "logo.png" and body["w"] == 37 and body["h"] == 21
+    assert body["path"].endswith(".png")
+
+    served = client.get(f"/api/editor/{job}/{shop}/product-asset/{body['path']}")
+    assert served.status_code == 200 and served.headers["content-type"] == "image/png"
+    assert served.content == _tiny_png_bytes()
+
+
+def test_product_asset_upload_rejects_an_unsupported_extension(client):
+    job, shop = _converted_shop(client)
+    r = client.post(f"/api/editor/{job}/{shop}/product-assets",
+                    files={"file": ("master.cdr", b"not an image", "application/octet-stream")})
+    assert r.status_code == 422 and "unsupported image type" in r.json()["detail"]
+
+
+def test_product_asset_upload_rejects_a_file_that_is_not_actually_an_image(client):
+    job, shop = _converted_shop(client)
+    r = client.post(f"/api/editor/{job}/{shop}/product-assets",
+                    files={"file": ("fake.png", b"not a real png", "image/png")})
+    assert r.status_code == 422 and "could not read" in r.json()["detail"]
+
+
+def test_product_asset_serving_is_guarded_against_path_traversal_and_unknown_files(client):
+    job, shop = _converted_shop(client)
+    client.post(f"/api/editor/{job}/{shop}/product-assets", files={"file": ("a.png", _tiny_png_bytes(), "image/png")})
+    assert client.get(f"/api/editor/{job}/{shop}/product-asset/../../master.cdr").status_code == 404
+    assert client.get(f"/api/editor/{job}/{shop}/product-asset/nope.png").status_code == 404
+
+
+def test_product_asset_upload_requires_a_converted_shop(client):
+    job, shop = _converted_shop(client, convert=False)
+    r = client.post(f"/api/editor/{job}/{shop}/product-assets",
+                    files={"file": ("a.png", _tiny_png_bytes(), "image/png")})
+    assert r.status_code == 409

@@ -588,6 +588,57 @@ def editor_asset(job_id: str, shop_id: str, filename: str):
     return FileResponse(p, media_type=_ASSET_TYPES[p.suffix], headers={"Cache-Control": "private, max-age=300"})
 
 
+# ------------------------------------------------------ product-slot replacement assets
+#
+# A designer's own upload for a `product_image` slot (see product_engine.py). Stored per-shop
+# (never in signage_dataset/, never under the master's own directory) so `export_replay.py`'s
+# Replayer can resolve the SAME file back into CorelDRAW at "Save and Generate" time - the op's
+# `asset.path` this endpoint hands back is exactly the filename Replayer._resolve_asset_path expects,
+# resolved against `_product_assets_dir` on both ends.
+
+_PRODUCT_ASSET_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+                        ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp"}
+
+
+def _product_assets_dir(job_id: str, shop_id: str) -> Path:
+    return JOBS_V2 / job_id / "out" / shop_id / "product_assets"
+
+
+@app.post("/api/editor/{job_id}/{shop_id}/product-assets")
+async def upload_product_asset(job_id: str, shop_id: str, file: UploadFile = File(...)):
+    """Saves an uploaded replacement image and reports its natural pixel size - the caller builds a
+    `swap_image`/`update_product_slot` op from the result via product_engine.js's swapImageOp/
+    updateSlotOp (`{"name": ..., "w": ..., "h": ..., "path": ...}`), the same as any other asset."""
+    _editor_shop(job_id, shop_id)
+    ext = Path(file.filename or "").suffix.lower()
+    if ext not in _PRODUCT_ASSET_TYPES:
+        raise HTTPException(422, f"unsupported image type {ext!r} - use one of {sorted(_PRODUCT_ASSET_TYPES)}")
+    assets_dir = _product_assets_dir(job_id, shop_id)
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    stored_name = f"{uuid.uuid4().hex}{ext}"
+    dest = assets_dir / stored_name
+    with dest.open("wb") as f:
+        shutil.copyfileobj(file.file, f)
+    try:
+        from PIL import Image
+        with Image.open(dest) as im:
+            w, h = im.size
+    except Exception as e:
+        dest.unlink(missing_ok=True)
+        raise HTTPException(422, f"could not read {file.filename!r} as an image: {e}") from None
+    return {"name": file.filename or stored_name, "w": w, "h": h, "path": stored_name}
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/product-asset/{filename}")
+def editor_product_asset(job_id: str, shop_id: str, filename: str):
+    _editor_shop(job_id, shop_id)
+    assets_dir = _product_assets_dir(job_id, shop_id).resolve()
+    p = (assets_dir / filename).resolve()
+    if assets_dir not in p.parents or not p.is_file() or p.suffix.lower() not in _PRODUCT_ASSET_TYPES:
+        raise HTTPException(404)
+    return FileResponse(p, media_type=_PRODUCT_ASSET_TYPES[p.suffix.lower()], headers={"Cache-Control": "private, max-age=300"})
+
+
 class EditorOps(BaseModel):
     ops: list[dict]
 
@@ -747,6 +798,7 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
                 "scene": str(_scene_dir(job_id, shop_id) / "scene.json"),
                 "ops": ops, "formats": formats, "options": options,
                 "out_dir": str(out_dir), "base_name": shop_row["name"],
+                "assets_dir": str(_product_assets_dir(job_id, shop_id)),
             }
             entry = corel_supervisor.run_batch([{"export_replay": spec}], results_path)[0]
             if entry.get("status") != "done":

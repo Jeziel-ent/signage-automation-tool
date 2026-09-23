@@ -15,6 +15,7 @@ import copy
 import pytest
 
 from app import export_replay as er
+from app import product_engine as pe
 from app import scene_export, scene_ops
 
 _ids = iter(range(1000, 100000))
@@ -98,7 +99,10 @@ class FShape:
         return Coll(self._kids)
 
     def _siblings(self):
-        return self.parent._kids
+        p = self.parent
+        if isinstance(p, FShape) and p.PowerClip is not None and self in p.PowerClip._kids:
+            return p.PowerClip._kids
+        return p._kids
 
     def OrderToFront(self):
         s = self._siblings(); s.remove(self); s.insert(0, self)
@@ -159,6 +163,36 @@ class FShape:
     def ParentGroup(self):
         return self.parent if isinstance(self.parent, FShape) else None
 
+    # ---- PowerClip membership + Layer (see IVGShape.AddToPowerClip/RemoveFromContainer/Layer,
+    # all verified live against a real generated board - see export_replay._op_swap_image) ----
+
+    @property
+    def Layer(self):
+        p = self.parent
+        while isinstance(p, FShape):
+            p = p.parent
+        return p
+
+    @property
+    def PowerClipParent(self):
+        p = self.parent
+        return p if isinstance(p, FShape) and p.PowerClip is not None and self in p.PowerClip._kids else None
+
+    def AddToPowerClip(self, Shape, CenterInContainer=-2):
+        self._detach()
+        if Shape.PowerClip is None:
+            Shape.PowerClip = FPowerClip([])
+        Shape.PowerClip._kids.insert(0, self)
+        self.parent = Shape
+
+    def RemoveFromContainer(self, Level=0):
+        p = self.parent
+        if isinstance(p, FShape) and p.PowerClip is not None and self in p.PowerClip._kids:
+            layer = self.Layer
+            p.PowerClip._kids.remove(self)
+            self.parent = layer
+            layer._kids.insert(0, self)
+
 
 class FLayer:
     def __init__(self, name, special=False):
@@ -175,6 +209,18 @@ class FLayer:
 
     def MoveBelow(self, other):
         L = self.page._layers; L.remove(self); L.insert(L.index(other) + 1, self)
+
+    def Import(self, FileName, Filter=0, Options=None):
+        """Mirrors Layer.Import (verified live - see export_replay._op_swap_image's docstring): a
+        missing file raises, like a real failed import surfaces as a COM error; the new bitmap lands
+        on this layer and becomes doc.ActiveShape (the real method returns nothing usable)."""
+        import os
+        if not os.path.isfile(FileName):
+            raise FileNotFoundError(FileName)
+        s = FShape(self.page.doc, 5, 0.0, 0.0, 10.0, 10.0)
+        s.parent = self
+        self._kids.insert(0, s)
+        self.page.doc.ActiveShape = s
 
 
 class FPage:
@@ -194,6 +240,11 @@ class FPage:
 class FDoc:
     def __init__(self, page):
         self.ActivePage, self.Unit = page, 3
+        self.ActiveShape = None
+        page.doc = self
+
+    def ClearSelection(self):
+        pass
 
     def CreateShapeRangeFromArray(self, shapes):
         doc = self
@@ -629,17 +680,186 @@ def test_scene_check_ignores_text_extent_but_still_requires_text_to_be_text():
         er.Replayer(doc, scene, [])
 
 
-def test_replay_refuses_a_swap_image_op_with_a_clear_message_instead_of_an_attributeerror():
-    # product_engine.py's swap_image/update_product_slot ops update the editor's scene (canvas + saved
-    # op list) but have no COM replay yet - Replayer.apply must refuse them cleanly rather than
-    # crashing on the missing "_op_swap_image" method.
-    doc = FDoc(FPage([FLayer("Top")], 200.0, 200.0))
-    layer = doc.ActivePage._layers[0]
-    bmp = FShape(doc, 5, 10.0, 10.0, 20.0, 10.0)
-    bmp.parent = layer
-    layer._kids.append(bmp)
-    scene = {"page": {"width": 200.0, "height": 200.0}, "layers": scene_export.walk_page(doc.ActivePage)[0]}
-    node_id = scene["layers"][0]["children"][0]["id"]
-    ops = [{"op": "swap_image", "id": node_id, "asset": {"name": "a.png", "w": 40, "h": 20}}]
-    with pytest.raises(er.ReplayError, match="cannot be exported to CorelDRAW yet"):
-        er.Replayer(doc, scene, ops).run()
+# ---- swap_image / update_product_slot COM replay (Layer.Import, AddToPowerClip,
+# RemoveFromContainer - all verified live against a real generated board, see
+# export_replay._op_swap_image's docstring) ----
+
+def _doc_with_bitmap(nested=False):
+    """A top-level `product_image_1`-tagged bitmap, or (nested=True) the same bitmap clipped inside a
+    PowerClip - either way product_engine.map_slots finds it as a product_image slot. Returns
+    (doc, scene, bmp, container) - container is None unless nested=True."""
+    doc = FDoc(FPage([FLayer("Top")], 1000.0, 500.0))
+    top = doc.ActivePage._layers[0]
+    container = None
+    if nested:
+        container = FShape(doc, 1, 300.0, 100.0, 200.0, 150.0)
+        container.Name = "product_image_1"
+        container.parent = top
+        bmp = FShape(doc, 5, 310.0, 110.0, 80.0, 60.0)
+        bmp.parent = container
+        container.PowerClip = FPowerClip([bmp])
+        top._kids.append(container)
+    else:
+        bmp = FShape(doc, 5, 50.0, 50.0, 80.0, 40.0)
+        bmp.Name = "product_image_1"
+        bmp.parent = top
+        top._kids.append(bmp)
+    scene = {"page": {"width": 1000.0, "height": 500.0}, "layers": scene_export.walk_page(doc.ActivePage)[0]}
+    return doc, scene, bmp, container
+
+
+def _doc_with_bitmap_in_group_in_powerclip():
+    """A `product_image_1`-tagged bitmap inside a plain GROUP that is itself inside a PowerClip - the
+    real dalmia master's own structure (s47 inside group s46 inside PowerClip s44), which is what
+    surfaced the container-detection bug _clip_ancestor_id fixes (found live - see
+    _op_swap_image's docstring)."""
+    doc = FDoc(FPage([FLayer("Top")], 1000.0, 500.0))
+    top = doc.ActivePage._layers[0]
+    container = FShape(doc, 1, 300.0, 100.0, 200.0, 150.0)
+    container.parent = top
+    group = FShape(doc, 7, 310.0, 110.0, 80.0, 60.0)
+    group.parent = container
+    bmp = FShape(doc, 5, 310.0, 110.0, 80.0, 60.0)
+    bmp.Name = "product_image_1"
+    bmp.parent = group
+    sibling = FShape(doc, 3, 310.0, 110.0, 40.0, 30.0)   # a second group member, like the real board's s48/s49 -
+    sibling.parent = group                               # keeps the group non-empty after bmp is deleted
+    group._kids = [bmp, sibling]
+    container.PowerClip = FPowerClip([group])
+    top._kids.append(container)
+    scene = {"page": {"width": 1000.0, "height": 500.0}, "layers": scene_export.walk_page(doc.ActivePage)[0]}
+    return doc, scene, bmp, container, group
+
+
+def _asset_file(tmp_path, name="new.png"):
+    p = tmp_path / name
+    p.write_bytes(b"\x89PNG fake")     # content is never read by the fake Layer.Import - only os.path.isfile matters
+    return p
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_swap_image_imports_and_replaces_the_bitmap(tmp_path, nested):
+    doc, scene, bmp, container = _doc_with_bitmap(nested=nested)
+    node_id = f"s{bmp.StaticID}"
+    old_sid = bmp.StaticID
+    asset_file = _asset_file(tmp_path)
+    op = pe.swap_image_op(scene, node_id, {"name": "new.png", "w": 400, "h": 200, "path": asset_file.name}, fit="contain")
+
+    r = er.Replayer(doc, scene, [op], assets_dir=tmp_path)
+    r.run()
+    expected = scene_ops.apply_ops(scene, [op])
+    v = er.verify(doc.ActivePage, expected)
+    assert v["ok"], v
+
+    new_shape = r.shapes[node_id]
+    assert new_shape.StaticID != old_sid                    # a genuinely new (imported) shape
+    assert int(new_shape.Type) == 5
+    want = scene_ops.find_node(expected, node_id)
+    assert [round(new_shape.LeftX, 3), round(new_shape.BottomY, 3), round(new_shape.SizeWidth, 3), round(new_shape.SizeHeight, 3)] == \
+        [want["x"], want["y"], want["w"], want["h"]]
+    if nested:
+        assert new_shape.PowerClipParent is not None
+        assert new_shape.PowerClipParent.StaticID == container.StaticID
+        assert bmp not in container.PowerClip._kids                        # the old bitmap is gone from the clip
+    assert r.warnings == []
+
+
+def test_swap_image_on_a_bitmap_nested_in_a_group_inside_a_powerclip_lands_in_the_powerclip_directly(tmp_path):
+    # Found live on a real generated board (job 16bfc025ca11, s47 inside group s46 inside PowerClip
+    # s44): AddToPowerClip/RemoveFromContainer operate on the shape's overall clip membership, not on
+    # which sub-group it sat in, so the replacement becomes a sibling of the sub-group rather than
+    # being re-inserted into it - approximate, but reported honestly (a z-order warning, not silence).
+    doc, scene, bmp, container, group = _doc_with_bitmap_in_group_in_powerclip()
+    node_id = f"s{bmp.StaticID}"
+    asset_file = _asset_file(tmp_path)
+    op = pe.swap_image_op(scene, node_id, {"name": "new.png", "w": 40, "h": 40, "path": asset_file.name}, fit="cover")
+
+    r = er.Replayer(doc, scene, [op], assets_dir=tmp_path)
+    r.run()
+
+    new_shape = r.shapes[node_id]
+    assert new_shape.PowerClipParent is not None
+    assert new_shape.PowerClipParent.StaticID == container.StaticID        # a direct PowerClip child now...
+    assert new_shape in container.PowerClip._kids
+    assert new_shape not in group._kids                                   # ...not back inside the old sub-group
+    assert bmp not in group._kids                                         # the old bitmap is gone entirely
+    assert any("z-order" in w for w in r.warnings)                        # reported, not silently wrong
+
+
+def test_update_product_slot_delegates_an_image_kind_to_swap_image(tmp_path):
+    doc, scene, bmp, container = _doc_with_bitmap()
+    node_id = f"s{bmp.StaticID}"
+    asset_file = _asset_file(tmp_path)
+    op = pe.update_slot_op(scene, f"product_image:{node_id}", asset={"name": "new.png", "w": 100, "h": 100, "path": asset_file.name})
+    assert op["op"] == "update_product_slot" and op["kind"] == "product_image"
+
+    r = er.Replayer(doc, scene, [op], assets_dir=tmp_path)
+    r.run()
+    new_shape = r.shapes[node_id]
+    assert int(new_shape.Type) == 5
+    assert new_shape.StaticID != bmp.StaticID
+
+
+def test_update_product_slot_on_a_text_kind_edits_story_via_apply_text():
+    doc, scene, inner = _doc_with_powerclip_text(font="Arial")
+    node_id = f"s{inner.StaticID}"
+    scene_ops.find_node(scene, node_id)["name"] = "brand_title"
+    op = pe.update_slot_op(scene, f"brand_title:{node_id}", text="NEW BRAND")
+
+    _, r, _, v = run([op], doc, scene)
+    assert inner.Text.Story.Text == "NEW BRAND"
+    assert v["ok"], v
+    assert r.warnings == []
+
+
+def test_update_product_slot_on_a_text_kind_can_change_font_and_size_together():
+    doc, scene, inner = _doc_with_powerclip_text(font="Arial")
+    node_id = f"s{inner.StaticID}"
+    scene_ops.find_node(scene, node_id)["name"] = "brand_title"
+    op = pe.update_slot_op(scene, f"brand_title:{node_id}", font="Nirmala UI", size_pt=30.0)
+
+    _, r, _, v = run([op], doc, scene)
+    assert inner.Text.Story.Font == "Nirmala UI"
+    assert inner.Text.Story.Size == 30.0
+    assert v["ok"], v
+
+
+def test_swap_image_fails_clearly_when_the_asset_was_never_uploaded():
+    doc, scene, bmp, container = _doc_with_bitmap()
+    op = {"op": "swap_image", "id": f"s{bmp.StaticID}", "asset": {"name": "new.png", "w": 40, "h": 20}}   # no "path"
+    with pytest.raises(er.ReplayError, match="has no uploaded file to import"):
+        er.Replayer(doc, scene, [op]).run()
+
+
+def test_swap_image_fails_clearly_when_the_asset_file_is_missing(tmp_path):
+    doc, scene, bmp, container = _doc_with_bitmap()
+    op = pe.swap_image_op(scene, f"s{bmp.StaticID}", {"name": "gone.png", "w": 40, "h": 20, "path": "gone.png"})
+    with pytest.raises(er.ReplayError, match="replacement image not found"):
+        er.Replayer(doc, scene, [op], assets_dir=tmp_path).run()
+
+
+def test_swap_image_fails_clearly_when_no_assets_dir_was_given(tmp_path):
+    doc, scene, bmp, container = _doc_with_bitmap()
+    asset_file = _asset_file(tmp_path)
+    op = pe.swap_image_op(scene, f"s{bmp.StaticID}", {"name": "new.png", "w": 40, "h": 20, "path": asset_file.name})
+    with pytest.raises(er.ReplayError, match="no product-asset directory is available"):
+        er.Replayer(doc, scene, [op]).run()          # assets_dir omitted
+
+
+def test_swap_image_rejects_an_invalid_shape_id(tmp_path):
+    doc, scene, bmp, container = _doc_with_bitmap()
+    asset_file = _asset_file(tmp_path)
+    op = {"op": "swap_image", "id": "s999999", "asset": {"name": "new.png", "w": 40, "h": 20, "path": asset_file.name}}
+    with pytest.raises(er.ReplayError, match=r"operation #1 \(swap_image\) is not valid on this document"):
+        er.Replayer(doc, scene, [op], assets_dir=tmp_path).run()
+
+
+def test_swap_image_does_not_escape_the_assets_directory(tmp_path):
+    outside = tmp_path.parent / "outside_secret.png"
+    outside.write_bytes(b"nope")
+    assets_dir = tmp_path / "shop_assets"
+    assets_dir.mkdir()
+    doc, scene, bmp, container = _doc_with_bitmap()
+    op = pe.swap_image_op(scene, f"s{bmp.StaticID}", {"name": "x.png", "w": 40, "h": 20, "path": "../outside_secret.png"})
+    with pytest.raises(er.ReplayError, match="replacement image not found"):
+        er.Replayer(doc, scene, [op], assets_dir=assets_dir).run()

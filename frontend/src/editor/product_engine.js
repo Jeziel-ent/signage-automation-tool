@@ -47,7 +47,11 @@ export function checkAsset(asset) {
   const w = asset ? Number(asset.w) : NaN;
   const h = asset ? Number(asset.h) : NaN;
   if (!name || !(w > 0) || !(h > 0)) throw new OpError("asset must be an object with a name and positive numeric w, h (pixels)");
-  return { name, w, h };
+  const out = { name, w, h };
+  // the filename POST /api/editor/{job}/{shop}/product-assets returned - resolved against that
+  // shop's assets directory at replay time (see backend/app/export_replay.py's Replayer)
+  if (asset && asset.path) out.path = String(asset.path);
+  return out;
 }
 
 /** Box (mm) for an asset of assetW x assetH (any unit - only the ratio counts) inside `frame`,
@@ -236,18 +240,23 @@ export function slotForNode(scene, nodeId) {
 
 /** An `update_product_slot` op for a slot found by mapSlots: an image slot takes `asset`, the text
  * slots take `text`. */
-export function updateSlotOp(scene, slotId, { asset = null, text = null, fit = "contain", padding = 0 } = {}) {
+export function updateSlotOp(scene, slotId, { asset = null, text = null, font = null, size_pt: sizePt = null, fit = "contain", padding = 0 } = {}) {
   const { slots } = mapSlots(scene);
   const slot = slots.find((s) => s.slotId === slotId);
   if (!slot) throw new OpError(`unknown product slot '${slotId}'`);
   const op = { op: "update_product_slot", id: slot.nodeId, kind: slot.kind };
   if (IMAGE_KINDS.includes(slot.kind)) {
-    if (asset == null || text != null) throw new OpError(`a ${slot.kind} slot takes 'asset', not 'text'`);
+    if (asset == null || text != null || font != null || sizePt != null) {
+      throw new OpError(`a ${slot.kind} slot takes 'asset', not 'text'/'font'/'size_pt'`);
+    }
     const swap = swapImageOp(scene, slot.nodeId, asset, fit, padding);
     for (const [k, v] of Object.entries(swap)) if (k !== "op" && k !== "id") op[k] = v;
   } else {
-    if (text == null || asset != null) throw new OpError(`a ${slot.kind} slot takes 'text', not 'asset'`);
-    op.text = String(text);
+    if (asset != null) throw new OpError(`a ${slot.kind} slot takes 'text'/'font'/'size_pt', not 'asset'`);
+    if (text == null && font == null && sizePt == null) throw new OpError("missing field 'text'");
+    if (text != null) op.text = String(text);
+    if (font != null) op.font = String(font);
+    if (sizePt != null) op.size_pt = Number(sizePt);
   }
   return op;
 }
