@@ -32,6 +32,16 @@ def within_page(scene: dict, node_id: str, tol: float = 1e-3) -> bool:
     return b["x"] >= -tol and b["y"] >= -tol and b["x"] + b["w"] <= pw + tol and b["y"] + b["h"] <= ph + tol
 
 
+def assert_covers_page_without_distortion(box: dict, orig_w: float, orig_h: float, target_w: float, target_h: float, tol: float = 1e-3):
+    """The background's "cover" fit (see convert_orientation): box fully covers [0,target_w] x
+    [0,target_h] (may overflow, never falls short), and its own aspect ratio is unchanged from the
+    original - i.e. the content itself isn't stretched, only cropped."""
+    assert box["x"] <= tol and box["y"] <= tol
+    assert box["x"] + box["w"] >= target_w - tol
+    assert box["y"] + box["h"] >= target_h - tol
+    assert box["w"] / box["h"] == pytest.approx(orig_w / orig_h, rel=1e-6)
+
+
 # --------------------------------------------------------------------- fixtures
 
 def _text(id_, name, x, y, w, h, content, size_pt=24.0):
@@ -59,6 +69,28 @@ def portrait_scene() -> dict:
             _text("title", "product_title", 50, 400, 300, 50, "Widget 3000", 40.0),
             _text("addr", "address", 50, 200, 300, 30, "123 Main St", 20.0),
             _text("contact", "", 50, 150, 300, 30, "Phone No. 555-1234", 20.0),
+        ]}],
+    }
+
+
+def untagged_scene() -> dict:
+    """A synthetic stand-in for a real, untagged master (AL MADEENA - job 16bfc025ca11): a page
+    -covering background and several untagged shapes at different heights, none of them a
+    brand_title/product_title/address/contact tag or an image-slot heuristic match - so header,
+    main_text and footer all come back empty from classify_zones, exactly like the real board."""
+    return {
+        "page": {"width": 2000.0, "height": 800.0},
+        "layers": [{"id": "L1", "name": "Layer 1", "visible": True, "locked": False, "children": [
+            {"id": "bg", "kind": "shape", "type": "rectangle", "name": "", "x": 0, "y": 0, "w": 2000, "h": 800,
+             "rotation": 0, "visible": True, "locked": False},
+            {"id": "top1", "kind": "shape", "type": "curve", "name": "", "x": 50, "y": 700, "w": 200, "h": 60,
+             "rotation": 0, "visible": True, "locked": False},
+            {"id": "top2", "kind": "shape", "type": "curve", "name": "", "x": 1700, "y": 680, "w": 200, "h": 80,
+             "rotation": 0, "visible": True, "locked": False},
+            {"id": "mid1", "kind": "shape", "type": "curve", "name": "", "x": 900, "y": 380, "w": 300, "h": 150,
+             "rotation": 0, "visible": True, "locked": False},
+            {"id": "bottom1", "kind": "shape", "type": "text", "name": "", "x": 100, "y": 30, "w": 700, "h": 40,
+             "rotation": 0, "visible": True, "locked": False, "text": {"content": "SHOP NAME", "font": "Arial", "size_pt": 24}},
         ]}],
     }
 
@@ -176,6 +208,53 @@ def test_classify_zones_forwards_map_slots_warnings():
     assert any("badtag" in w for w in warnings)
 
 
+# ------------------------------------------ untagged-master fallback (Y-banded "other" absorption)
+
+def test_convert_orientation_absorbs_other_into_empty_named_zones_by_vertical_band():
+    # Found live on the real AL MADEENA board (job 16bfc025ca11): header/main_text/footer all come
+    # back empty for an untagged master, so its real content (here: top1/top2/mid1/bottom1) must not
+    # be left in the weak per-shape proportional fallback - it should fill that empty template space
+    # instead, bucketed by original vertical position so unrelated shapes don't get crammed together.
+    scene = untagged_scene()
+    ops = oa.convert_orientation(scene, 900.0, 1600.0)   # a tall target, like the real repro
+    out = scene_ops.apply_ops(scene, ops)
+
+    zones, _ = oa.classify_zones(scene)
+    assert zones[oa.ZONE_HEADER] == zones[oa.ZONE_MAIN_TEXT] == zones[oa.ZONE_FOOTER] == []
+    assert set(zones[oa.ZONE_OTHER]) == {"top1", "top2", "mid1", "bottom1"}
+
+    # every absorbed shape landed inside the page, and their original top-to-bottom order survives -
+    # top1/top2 (bucketed into the topmost empty zone) end up above mid1, which ends up above bottom1
+    for nid in ("top1", "top2", "mid1", "bottom1"):
+        assert within_page(out, nid), nid
+    top1, top2, mid1, bottom1 = (box_of(out, i) for i in ("top1", "top2", "mid1", "bottom1"))
+    assert min(top1["y"], top2["y"]) > mid1["y"] + mid1["h"] - 1.0
+    assert mid1["y"] > bottom1["y"] + bottom1["h"] - 1.0
+    # nothing overlaps anything else post-conversion
+    boxes = [box_of(out, i) for i in ("top1", "top2", "mid1", "bottom1")]
+    for a in range(len(boxes)):
+        for b in range(a + 1, len(boxes)):
+            assert rect_overlap_area(boxes[a], boxes[b]) < 1.0
+
+
+def test_convert_orientation_leaves_other_alone_when_no_named_zone_is_empty():
+    # A properly slot-tagged master (portrait_scene: every named zone already has content) must not
+    # have its "other" content redirected - the absorption only fires for a genuinely empty zone.
+    # Same shape/position as test_convert_orientation_moves_an_untagged_other_shape_to_the_same_
+    # proportional_position below, which already locks in the plain-fallback numbers this test
+    # asserts are UNCHANGED by the new absorption logic.
+    scene = portrait_scene()
+    scene["layers"][0]["children"].append(
+        {"id": "deco", "kind": "shape", "type": "curve", "name": "", "x": 200, "y": 500, "w": 20, "h": 20,
+         "rotation": 0, "visible": True, "locked": False})
+    ops = oa.convert_orientation(scene, 900.0, 300.0)
+    out = scene_ops.apply_ops(scene, ops)
+    b = box_of(out, "deco")
+    cx, cy = (b["x"] + b["w"] / 2) / 900.0, (b["y"] + b["h"] / 2) / 300.0
+    assert cx == pytest.approx(0.525, abs=1e-3)   # unchanged: still the plain proportional fallback
+    assert cy == pytest.approx(0.51, abs=1e-3)
+
+
 # --------------------------------------------------------------------- convert_orientation (end to end)
 
 @pytest.fixture
@@ -212,10 +291,10 @@ def test_convert_orientation_places_every_named_zone_without_overlap_and_in_boun
             assert rect_overlap_area(ba, bb) < 1e-3, f"{ia} ({za}) overlaps {ib} ({zb})"
 
 
-def test_convert_orientation_stretches_the_background_to_exactly_fill_the_new_page(converted):
+def test_convert_orientation_covers_the_new_page_with_the_background_without_distorting_it(converted):
     _, _, out = converted
     bg = box_of(out, "bg")
-    assert bg == {"x": 0.0, "y": 0.0, "w": 900.0, "h": 300.0}
+    assert_covers_page_without_distortion(bg, 400.0, 1000.0, 900.0, 300.0)
 
 
 def test_convert_orientation_scales_text_size_with_the_zone_resize(converted):
@@ -272,7 +351,7 @@ def test_convert_orientation_handles_a_scene_with_no_slots_at_all():
     }
     ops = oa.convert_orientation(scene, 900.0, 300.0)
     out = scene_ops.apply_ops(scene, ops)
-    assert box_of(out, "bg") == {"x": 0.0, "y": 0.0, "w": 900.0, "h": 300.0}
+    assert_covers_page_without_distortion(box_of(out, "bg"), 400.0, 1000.0, 900.0, 300.0)
 
 
 def test_convert_orientation_to_a_same_size_portrait_target_still_applies_cleanly():
@@ -301,7 +380,9 @@ def test_classify_zones_treats_a_page_covering_container_as_background_even_with
     assert zones[oa.ZONE_PRODUCT] == []
     ops = oa.convert_orientation(scene, 900.0, 300.0)
     out = scene_ops.apply_ops(scene, ops)
-    assert box_of(out, "pc") == {"x": 0.0, "y": 0.0, "w": 900.0, "h": 300.0}
+    assert_covers_page_without_distortion(box_of(out, "pc"), 1000.0, 500.0, 900.0, 300.0)
+
+
 @pytest.mark.parametrize("target_w,target_h", [
     (90.0, 40.0),    # wide (R=2.25)
     (120.0, 36.0),   # wide (R=3.33)

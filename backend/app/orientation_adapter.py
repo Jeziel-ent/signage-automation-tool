@@ -228,6 +228,21 @@ def _union_box(idx: dict, ids: list[str]) -> dict:
     return _rect(x0, y0, x1 - x0, y1 - y0)
 
 
+def _split_evenly(items: list, n: int) -> list[list]:
+    """`items` split into `n` contiguous chunks, as evenly sized as possible (a chunk can be empty
+    if there are fewer items than n) - any remainder goes to the FIRST chunks, deterministically."""
+    if n <= 0:
+        return []
+    k, m = divmod(len(items), n)
+    out = []
+    start = 0
+    for i in range(n):
+        size = k + (1 if i < m else 0)
+        out.append(items[start:start + size])
+        start += size
+    return out
+
+
 def _is_locked(idx: dict, node_id: str) -> bool:
     e = idx[node_id]
     return bool(e["node"].get("locked")) or bool(e["layer"].get("locked"))
@@ -299,11 +314,47 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
     know what was classified where, or what was skipped."""
     idx = scene_ops._index(scene)
     zones, _ = classify_zones(scene)
+    zones = dict(zones)  # about to redistribute `other` below - classify_zones' own dict is not touched
     frames = calculate_zone_rects(target_w, target_h)
     page_w, page_h = float(scene["page"]["width"]), float(scene["page"]["height"])
     fit_scale = min(target_w / page_w, target_h / page_h) if page_w > 0 and page_h > 0 else 1.0
 
     ops: list[dict] = [{"op": "page", "width": _r(target_w), "height": _r(target_h)}]
+
+    # A real, untagged master (CLAUDE.md "Designer dataset analysis") has no brand_title/
+    # product_title/address/contact slots at all, so header/main_text/footer can end up with nothing
+    # assigned - leaving that part of the template blank while the master's actual content (logos,
+    # shop name, badges, ...) sits in the weak, position-preserving `other` fallback below. Found
+    # live on the AL MADEENA board: converting to a tall (36x96in) target left over half the page's
+    # height as bare template with the real content scattered into tiny, randomly-placed fragments.
+    #
+    # `other` shapes are bucketed by their ORIGINAL proportional vertical position into however many
+    # named zones are completely empty, top-to-bottom - matching each empty zone's own position on
+    # the new page, since header/main_text/footer are top-to-bottom in every template (see the module
+    # docstring's table; product is deliberately excluded here - in the wide template it is a full
+    # -height side column, not comparable to the others by vertical position). Each bucket is fit as
+    # its own rigid unit into its own zone, not merged into one - found live that a single merged
+    # blob crammed a shop-name text that sat near the BOTTOM of the original page against a logo
+    # badge that sat near the TOP, because both landed in one group despite being far apart
+    # originally. Only fires when a zone is COMPLETELY empty, so a properly slot-tagged master (this
+    # tool's own future masters - see "Product slots") is unaffected: its header/main_text/footer are
+    # never empty to begin with.
+    absorbing = sorted((z for z in (ZONE_HEADER, ZONE_MAIN_TEXT, ZONE_FOOTER) if not zones[z]),
+                       key=lambda z: -frames[z]["y"])                 # top zone first
+    other_ids = [i for i in zones[ZONE_OTHER] if not _is_locked(idx, i)]
+    if other_ids and absorbing:
+        other_sorted = sorted(other_ids, key=lambda i: -(idx[i]["node"]["y"] + idx[i]["node"]["h"] / 2))
+        placed: set[str] = set()
+        for zone, bucket in zip(absorbing, _split_evenly(other_sorted, len(absorbing))):
+            if not bucket:
+                continue
+            frame = frames[zone]
+            pad = ZONE_PADDING_FRAC * min(frame["w"], frame["h"])
+            frm = _union_box(idx, bucket)
+            to = pe.aspect_fit(frm["w"], frm["h"], frame, fit="contain", padding=pad)
+            ops.append({"op": "resize", "ids": bucket, "from": frm, "to": to})
+            placed.update(bucket)
+        zones[ZONE_OTHER] = [i for i in zones[ZONE_OTHER] if i not in placed]  # the rest keep the fallback below
 
     for zone in (ZONE_HEADER, ZONE_PRODUCT, ZONE_MAIN_TEXT, ZONE_FOOTER):
         ids = [i for i in zones[zone] if not _is_locked(idx, i)]
@@ -320,7 +371,16 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
             continue
         node = idx[i]["node"]
         frm = _rect(node["x"], node["y"], node["w"], node["h"])
-        to = _rect(0, 0, target_w, target_h)
+        # A "cover" fit (uniform scale, centred, no distortion) rather than an exact non-uniform
+        # stretch: layout.py's own `bg` role always stretches exactly, correct for a plain texture,
+        # but classify_zones's background-precedence rule (see its own docstring) can make a real
+        # master's WHOLE composed PowerClip - logos and packaging included - the "background" when
+        # it happens to cover most of the page. An exact stretch then visibly squishes every shape
+        # nested inside it; found live on the AL MADEENA board's tall and ultra-wide targets. `cover`
+        # still covers every mm of the new page (the same full-canvas coverage an exact stretch
+        # gives - it only ever grows past the page edges, never short of them) without distorting the
+        # content's own proportions, at the honest cost of cropping whatever overflows the new page.
+        to = pe.aspect_fit(frm["w"], frm["h"], _rect(0, 0, target_w, target_h), fit="cover")
         ops.append({"op": "resize", "ids": [i], "from": frm, "to": to})
 
     for i in zones[ZONE_OTHER]:

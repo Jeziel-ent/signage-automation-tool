@@ -1851,6 +1851,68 @@ restarting `uvicorn` WITHOUT `--reload` for manual verification; not a
 code change, just worth knowing if a future session sees new code
 "not sticking" after a restart.
 
+### Fixing blank space and background distortion on a real (untagged) master
+
+A task asking to "prevent zone duplication" against the AL MADEENA board
+found, on inspection, that **no shape duplication exists anywhere in this
+module** - there is no `Duplicate()`/`paste` call, every op is a single
+`resize`, so an id can never appear twice (verified: `len(all_ids) ==
+len(set(all_ids))` across every `resize` op, for all three of the task's
+target sizes). What LOOKED like duplication in a rendered preview was two
+separate, real problems, found by actually rendering the converted AL
+MADEENA board rather than reasoning about the code alone:
+
+1. **The background was visibly squished.** `classify_zones`'s
+   background-precedence rule (see above) can make an ENTIRE real master's
+   composed PowerClip - logos and packaging included, not just a plain
+   texture - the "background" bucket when it happens to cover most of the
+   page (true for AL MADEENA: its one PowerClip holds nearly everything).
+   The background zone's exact non-uniform stretch (`layout.py`'s own `bg`
+   role, correct for a plain texture) then visibly squished every shape
+   nested inside it on an extreme aspect change. **Fixed**: background now
+   uses a "cover" fit (`product_engine.aspect_fit(..., fit="cover")` -
+   uniform scale, centred, no distortion) instead of an exact stretch -
+   still covers every mm of the new page (it only ever grows past the page
+   edges, never falls short - the same 100% coverage an exact stretch
+   gives), at the honest cost of cropping whatever overflows.
+2. **Most of a real, untagged master's actual content was never getting
+   near the template's own zone rectangles at all.** A real master (see
+   "Designer dataset analysis") has no `brand_title`/`product_title`/
+   `address`/`contact` tags, so `header`/`main_text`/`footer` came back
+   completely EMPTY for AL MADEENA - the master's real logos and shop-name
+   text sat entirely in the weak, position-preserving `other` fallback
+   instead, which left over half a tall target's height as bare template
+   while scattering the real content into tiny, oddly-placed fragments (a
+   converted 36x96in board showed this live: a shop-name text and a logo
+   badge that sat far apart on the original page ended up overlapping).
+   **Fixed**: `convert_orientation` now buckets `other` shapes by their
+   ORIGINAL proportional vertical position into however many of
+   `header`/`main_text`/`footer` are completely empty, top-to-bottom
+   (matching each empty zone's own top-to-bottom position on the new page
+   in every template - `product` is deliberately excluded, since in the
+   wide template it's a full-height side column, not comparable to the
+   others by vertical position); each bucket is fit as its own rigid unit
+   into its own zone, not merged into one - a single merged blob was tried
+   first and found live to cram unrelated shapes together for exactly the
+   reason above. This only fires when a zone is COMPLETELY empty, so a
+   properly slot-tagged master (this tool's own future masters) is
+   unaffected - its header/main_text/footer are never empty to begin with.
+
+**Re-verified on all three of the task's target sizes against the real AL
+MADEENA board** (job 16bfc025ca11), both visually (rendered composites) and
+programmatically: 0 duplicated ids, the background covers 100% of the new
+page at every size, 0 overlaps among the final top-level shapes, and every
+non-background shape stays within the page. `product_image` slots are
+unaffected by any of this and keep the aspect-preserving `contain` fit
+they already had - the "no stretching, no awkward clipping" requirement
+was already satisfied for named zones before this task; the actual
+distortion was specific to the background-zone case above. 2 new tests
+(`test_convert_orientation_absorbs_other_into_empty_named_zones_by_
+vertical_band`, `test_convert_orientation_leaves_other_alone_when_no_
+named_zone_is_empty`) plus 3 existing background tests updated from
+exact-stretch to cover-fit assertions (`assert_covers_page_without_
+distortion`).
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —
@@ -2396,7 +2458,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 414 passed as of this writing (that includes
+`pytest` from `backend/` — 416 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
 `test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py` (now
