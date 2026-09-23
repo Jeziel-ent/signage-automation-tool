@@ -210,6 +210,112 @@ def test_classify_zones_forwards_map_slots_warnings():
 
 # ------------------------------------------ untagged-master fallback (Y-banded "other" absorption)
 
+def test_split_by_capacity_does_not_crush_a_disproportionately_large_item_into_a_tiny_zone():
+    # Found live on a real DARSHAN AGARBATHI board (job 8a41177716c4, shop fe047cace239): a 170.7mm
+    # -tall badge group landed alone in the middle of 3 equal-count buckets, whose own zone (a stack
+    # template's main_text sliver) was only 43.3mm tall - a 4.2x overflow/crush (170.7/43.3). Here,
+    # _split_by_capacity instead groups "big" with the two small items ABOVE it into the much larger
+    # "header" capacity (265.3/303.0 = 0.876x, no overflow at all) and leaves "main_text" empty
+    # (reclaimed by `_reclaim_empty_absorbing_frames` - see its own tests) rather than crush "big".
+    items = ["small1", "small2", "big", "small3", "small4"]
+    weights = [33.2, 61.4, 170.7, 15.5, 11.8]
+    capacities = [303.0, 43.3, 203.2]     # header, main_text, footer - the real board's own numbers
+    buckets = oa._split_by_capacity(items, weights, capacities)
+    assert sum(buckets, []) == items      # every item placed exactly once, order preserved
+    assert buckets == [["small1", "small2", "big"], [], ["small3", "small4"]]
+    big_bucket_weight = sum(weights[items.index(i)] for i in buckets[0])
+    assert big_bucket_weight / capacities[0] < 1.0   # no overflow at all, unlike the old equal-count split
+
+
+def test_split_by_capacity_falls_back_to_split_evenly_when_nothing_to_weigh_by():
+    items = ["a", "b", "c"]
+    assert oa._split_by_capacity(items, [0, 0, 0], [10, 10]) == oa._split_evenly(items, 2)
+    assert oa._split_by_capacity(items, [1, 2, 3], [0, 0]) == oa._split_evenly(items, 2)
+
+
+def test_split_by_capacity_preserves_order_and_handles_empty_items():
+    assert oa._split_by_capacity([], [], [10, 20, 30]) == [[], [], []]
+    assert oa._split_by_capacity([], [], []) == []
+
+
+def test_reclaim_empty_absorbing_frames_extends_a_neighbour_into_an_empty_zones_slot():
+    frames = {
+        "header": {"x": 0.0, "y": 700.0, "w": 900.0, "h": 300.0},
+        "main_text": {"x": 0.0, "y": 240.0, "w": 900.0, "h": 40.0},   # will end up empty
+        "footer": {"x": 0.0, "y": 20.0, "w": 900.0, "h": 200.0},
+    }
+    absorbing = ["header", "main_text", "footer"]
+    buckets = [["a", "b"], [], ["c"]]
+    result = oa._reclaim_empty_absorbing_frames(absorbing, buckets, frames)
+    # header's frame is untouched (nothing empty precedes it)
+    assert result[0] == frames["header"]
+    # footer's frame grows to also cover main_text's freed slot (same x/w, so the merge is valid)
+    assert result[2]["y"] == pytest.approx(20.0)
+    assert result[2]["h"] == pytest.approx((240.0 + 40.0) - 20.0)   # up to main_text's old top edge
+
+
+def test_reclaim_empty_absorbing_frames_does_not_merge_across_different_x_or_w():
+    # a grid/wide-template main_text column (narrower, offset) must not be pulled sideways into a
+    # neighbouring differently-shaped frame - the merge only fires when x AND w already match.
+    frames = {
+        "header": {"x": 0.0, "y": 700.0, "w": 900.0, "h": 300.0},      # full width
+        "main_text": {"x": 500.0, "y": 240.0, "w": 400.0, "h": 40.0},  # narrower column, empty
+        "footer": {"x": 0.0, "y": 20.0, "w": 900.0, "h": 200.0},
+    }
+    absorbing = ["header", "main_text", "footer"]
+    buckets = [["a"], [], ["c"]]
+    result = oa._reclaim_empty_absorbing_frames(absorbing, buckets, frames)
+    assert result[2] == frames["footer"]   # unchanged - x/w mismatch blocks the merge
+
+
+def test_convert_orientation_does_not_crush_a_large_secondary_group_into_a_tiny_zone():
+    # End-to-end reproduction of the real DARSHAN AGARBATHI finding: an untagged portrait master with
+    # small header/footer-ish shapes AND one disproportionately large secondary group, all landing in
+    # ZONE_OTHER (no brand_title/product_title/address/contact tags) - the large group must not be
+    # squeezed to a small fraction of its original size just because of where it falls in a
+    # count-based split.
+    scene = {
+        "page": {"width": 762.0, "height": 1016.0},
+        "layers": [{"id": "L1", "name": "Layer 1", "visible": True, "locked": False, "children": [
+            {"id": "bg", "kind": "shape", "type": "rectangle", "name": "", "x": 0, "y": 0, "w": 762, "h": 1016,
+             "rotation": 0, "visible": True, "locked": False},
+            {"id": "top1", "kind": "shape", "type": "curve", "name": "", "x": 24, "y": 878, "w": 183, "h": 33,
+             "rotation": 0, "visible": True, "locked": False},
+            {"id": "top2", "kind": "shape", "type": "curve", "name": "", "x": 581, "y": 815, "w": 76, "h": 61,
+             "rotation": 0, "visible": True, "locked": False},
+            {"id": "big_badge", "kind": "group", "type": "group", "name": "", "x": 365, "y": 478, "w": 255, "h": 171,
+             "rotation": 0, "visible": True, "locked": False, "children": [
+                 {"id": "big_badge_c", "kind": "shape", "type": "curve", "name": "", "x": 365, "y": 478, "w": 255,
+                  "h": 171, "rotation": 0, "visible": True, "locked": False},
+             ]},
+            _text("bot1", "", 24, 85, 329, 12, "Phone No. 555-1234"),
+            _text("bot2", "", 371, 86, 297, 16, "GST 12345"),
+            _bitmap("redbox", "", 648, 326, 95, 212),
+        ]}],
+    }
+    ops = oa.convert_orientation(scene, 762.0, 1016.0)
+    out = scene_ops.apply_ops(scene, ops)
+
+    # the redbox bitmap (heuristic product_image) keeps its exact aspect ratio
+    orig_box = box_of(scene, "redbox")
+    new_box = box_of(out, "redbox")
+    assert new_box["w"] / new_box["h"] == pytest.approx(orig_box["w"] / orig_box["h"], rel=1e-6)
+
+    # big_badge must not be crushed to a small fraction of its original size (previously: 13.8x)
+    orig_badge = box_of(scene, "big_badge")
+    new_badge = box_of(out, "big_badge")
+    shrink = (orig_badge["w"] * orig_badge["h"]) / (new_badge["w"] * new_badge["h"])
+    assert shrink < 3.0
+
+    # no overlap among the final top-level (non-background) shapes
+    fg_ids = ["top1", "top2", "big_badge", "bot1", "bot2", "redbox"]
+    boxes = [box_of(out, i) for i in fg_ids]
+    for a in range(len(boxes)):
+        for b in range(a + 1, len(boxes)):
+            assert rect_overlap_area(boxes[a], boxes[b]) < 1.0, (fg_ids[a], fg_ids[b])
+        assert within_page(out, fg_ids[a])
+
+
 def test_convert_orientation_absorbs_other_into_empty_named_zones_by_vertical_band():
     # Found live on the real AL MADEENA board (job 16bfc025ca11): header/main_text/footer all come
     # back empty for an untagged master, so its real content (here: top1/top2/mid1/bottom1) must not

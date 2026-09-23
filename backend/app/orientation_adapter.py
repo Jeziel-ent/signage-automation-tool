@@ -341,6 +341,114 @@ def _split_evenly(items: list, n: int) -> list[list]:
     return out
 
 
+def _split_by_capacity(items: list, weights: list[float], capacities: list[float]) -> list[list]:
+    """`items` (already ordered top-to-bottom, matching `capacities`' own top-to-bottom zone order)
+    split into `len(capacities)` CONTIGUOUS, order-preserving buckets choosing whichever cut points
+    minimize the WORST per-bucket overflow ratio (`bucket_weight / that_zone's_capacity`) - unlike
+    `_split_evenly` (equal HEAD COUNT per bucket, regardless of how big any one item actually is),
+    which does not know or care how large an individual leftover shape's own original footprint was.
+
+    Found live on a real, untagged master (job 8a41177716c4, shop fe047cace239 - a DARSHAN AGARBATHI
+    board): `_split_evenly` put a 303x562mm badge/text group (`s5` - a full secondary "BLACK STONE"
+    assembly, comparable in size to the page's own product composite) into the stack template's
+    `main_text` zone purely because it was the 3rd-from-top of 5 leftover shapes in a 3-zone split -
+    `main_text` is a deliberately small sliver (see `_stack_zones`'s own 0.06-of-`avail` fraction,
+    sized for a short text label), so the group was scaled down to 40.7mm tall, 13.8x smaller than its
+    original height - not a distortion (still vector/text, losslessly re-rendered) but functionally
+    destroyed as legible content, which is exactly the "position secondary accents ... without leaving
+    wide gaps" the fix is for: the gap wasn't between shapes, it was between one shape's real size and
+    the zone it got shoved into. A first attempt (assigning each item to whichever zone's cumulative
+    -capacity range contained its own cumulative-weight midpoint) did not fully fix this: a single
+    large ATOMIC item (a group can't be split across two zones) can still land in a bucket smaller
+    than itself if that is simply where its position falls in the top-to-bottom order - proportional
+    weight alone doesn't help an item that IS the majority of the "other" list's total weight.
+
+    Solved properly via dynamic programming over cut points (`items` is always small - a handful of
+    leftover shapes - so this is cheap): `best[b][i]` is the minimum possible worst overflow ratio
+    achievable by partitioning the first `i` items into the first `b` buckets (capacities 0..b-1);
+    the transition tries every possible previous cut point `j` and takes
+    `max(best[b-1][j], (W[i]-W[j]) / capacities[b-1])`, i.e. a bucket's own ratio can only make the
+    OVERALL worst ratio same or higher, never lower - so this always finds the ordering-preserving
+    split that comes closest to fitting everything into its own zone, moving a big item to whichever
+    zone (still respecting original top-to-bottom order) gives it the most room, rather than
+    whichever zone its position happens to fall into. Falls back to `_split_evenly` if there is
+    nothing to weigh by (all weights zero) or nothing to weigh against (every capacity zero) - both
+    degenerate cases where an optimal split carries no more information than an even one."""
+    n_items = len(items)
+    k = len(capacities)
+    if k <= 0:
+        return []
+    if n_items == 0:
+        return [[] for _ in range(k)]
+    if sum(weights) <= 0 or sum(capacities) <= 0:
+        return _split_evenly(items, k)
+
+    prefix = [0.0] * (n_items + 1)
+    for i, w in enumerate(weights):
+        prefix[i + 1] = prefix[i] + w
+
+    INF = float("inf")
+    best = [[INF] * (n_items + 1) for _ in range(k + 1)]
+    best[0][0] = 0.0
+    cut = [[0] * (n_items + 1) for _ in range(k + 1)]
+    for b in range(1, k + 1):
+        cap = capacities[b - 1]
+        for i in range(n_items + 1):
+            for j in range(i + 1):
+                prev = best[b - 1][j]
+                if prev == INF:
+                    continue
+                seg_w = prefix[i] - prefix[j]
+                ratio = 0.0 if seg_w <= 0 else (INF if cap <= 0 else seg_w / cap)
+                val = max(prev, ratio)
+                if val < best[b][i]:
+                    best[b][i] = val
+                    cut[b][i] = j
+
+    out: list[list] = [[] for _ in range(k)]
+    i = n_items
+    for b in range(k, 0, -1):
+        j = cut[b][i]
+        out[b - 1] = items[j:i]
+        i = j
+    return out
+
+
+def _reclaim_empty_absorbing_frames(absorbing: list[str], buckets: list[list], frames: dict) -> list[dict]:
+    """One frame per (zone, bucket) pair in `absorbing`/`buckets` order - a bucket that ended up EMPTY
+    (see `_split_by_capacity`'s own docstring: a zone can legitimately get nothing when giving it
+    content would create a worse overflow elsewhere) has its frame folded into the next zone BELOW it
+    that DOES have content, extending that zone's frame to also cover the empty one's slot - so the
+    freed space is actually filled by real content instead of staying a permanent blank strip (found
+    live: leaving `main_text` empty on the DARSHAN AGARBATHI board, see `_split_by_capacity`'s
+    docstring, would otherwise show as a bare 43mm gap in the middle of the page even though the
+    crushing problem was fixed). Only merges when the two frames share the same `x`/`w` - true for
+    every stacked absorbing zone in the stack template (`_stack_zones` gives header/main_text/footer
+    the identical `x`/`w`) - so a grid/wide template's differently-sized main_text column is left
+    alone rather than risk stretching a merged frame sideways into a third zone's space it was never
+    entitled to. A trailing empty zone with no non-empty zone below it keeps its own frame (nothing to
+    reasonably reclaim it into)."""
+    out: list[dict | None] = [None] * len(absorbing)
+    pending: list[int] = []
+    for i, (zone, bucket) in enumerate(zip(absorbing, buckets)):
+        frame = frames[zone]
+        if not bucket:
+            pending.append(i)
+            continue
+        for p in pending:
+            pf = frames[absorbing[p]]
+            if pf["x"] == frame["x"] and pf["w"] == frame["w"]:
+                y0 = min(pf["y"], frame["y"])
+                y1 = max(pf["y"] + pf["h"], frame["y"] + frame["h"])
+                frame = _rect(frame["x"], y0, frame["w"], y1 - y0)
+        pending = []
+        out[i] = frame
+    for i in range(len(out)):
+        if out[i] is None:
+            out[i] = frames[absorbing[i]]
+    return out
+
+
 def _is_locked(idx: dict, node_id: str) -> bool:
     e = idx[node_id]
     return bool(e["node"].get("locked")) or bool(e["layer"].get("locked"))
@@ -442,11 +550,14 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
     other_ids = [i for i in zones[ZONE_OTHER] if not _is_locked(idx, i)]
     if other_ids and absorbing:
         other_sorted = sorted(other_ids, key=lambda i: -(idx[i]["node"]["y"] + idx[i]["node"]["h"] / 2))
+        weights = [idx[i]["node"]["h"] for i in other_sorted]
+        capacities = [frames[z]["h"] for z in absorbing]
+        buckets = _split_by_capacity(other_sorted, weights, capacities)
+        reclaimed_frames = _reclaim_empty_absorbing_frames(absorbing, buckets, frames)
         placed: set[str] = set()
-        for zone, bucket in zip(absorbing, _split_evenly(other_sorted, len(absorbing))):
+        for zone, bucket, frame in zip(absorbing, buckets, reclaimed_frames):
             if not bucket:
                 continue
-            frame = frames[zone]
             frm = _union_box(idx, bucket)
             to = _zone_fit(idx, bucket, frm, frame)
             ops.append({"op": "resize", "ids": bucket, "from": frm, "to": to})

@@ -2084,6 +2084,124 @@ product-image) keeps its exact original aspect ratio (max drift
 `s28`+`s4`, `s5`) still stretch non-uniformly to fill their zone bounds,
 unchanged from the previous task.
 
+### Fixing an "other absorption" bug found on a second real board (DARSHAN AGARBATHI)
+
+A follow-up task asked for strict uniform bitmap scaling (already built - see
+above, re-verified below) plus specific, board-described fixes ("scale the
+brand logo up ~20%", exact Y=28-40in/8-28in/0-24in zone boundaries) for job
+`8a41177716c4`, shop `fe047cace239` - a different brand/board than every
+previous verification in this file. **Those specific percentages/Y-ranges
+were not hardcoded** - per this project's own established rule (see "Wide
+-board panel sequence": "apply a rule only if it holds for more than one
+sample" - one board's own numbers are not a generalizable rule, they're
+overfitting) - so the actual scene was read and diagnosed first, the same
+way every other fix in this file was found.
+
+**What the real scene actually looks like** (`GET .../scene` cached at
+`backend/data/jobs_v2/8a41177716c4/out/fe047cace239/scene/scene.json`):
+page is already exactly 762x1016mm (30x40in - the task's own target), and,
+like AL MADEENA, it's an untagged master whose entire illustrated
+background - including the brand logo, the "3d Object" wooden-table
+-and-incense-box composite (`s46`, itself a group of 3 bitmaps), and a
+dot-pattern decoration - is ONE page-covering PowerClip (`s44`), so
+`classify_zones`'s background-precedence rule (see above) correctly
+absorbs all of it wholesale; it's already fully covering the page 1:1
+(target size = its own current size), so there is nothing to reposition
+there. The only things classify_zones finds OUTSIDE that background are 6
+small untagged top-level shapes: `s38`/`s23` (small logo fragments near
+the top), `s22`/`s21` (two text lines near the bottom), `s5` (a
+sizeable secondary badge/text group - the real "BLACK STONE" assembly the
+task's own "secondary accents" bullet describes), and `s4` (a standalone
+bitmap - "the red box" the task's verification step names).
+
+**Item 1 (strict uniform bitmap scaling) needed no new code** - `_zone_fit`
+(built in the previous task) already applies to `s4` here exactly as
+designed: verified live through the running API that `s4`'s aspect ratio
+(0.4479) and every background-nested bitmap's own aspect ratio (`s45`
+0.8779, `s47` 0.8692, `s48` 0.6969, `s49` 0.0799) are bit-for-bit unchanged
+after conversion (0% drift on 4 of 5, 2.9e-6% on `s4` from floating-point
+rounding) - confirming the fix generalizes to a second, independently
+-verified real board, not just the one it was built against.
+
+**Item 2 surfaced a real, second bug, found the same way as every other
+fix here - by running the real data, not by guessing**: `s5` (a
+303x562mm badge group, comparable in size to the page's own product
+composite) landed ALONE in the stack template's `main_text` zone - a
+deliberately small 0.06-of-`avail` sliver sized for a short text label
+(see "Full-canvas spatial reflow" above) - and was crushed to 40.7mm tall,
+a 13.8x shrink. This is exactly the "position secondary accents ...
+without leaving wide gaps" the task describes, just discovered from the
+actual number rather than assumed: the OLD bug (from two tasks ago) was
+that absorbed content got no room at all; THIS bug is that the room it
+gets is assigned by `_split_evenly`'s equal HEAD COUNT (5 shapes into 3
+zones = roughly 2/2/1), with no regard for how large any one of those 5
+shapes actually is.
+
+**Fixed with `_split_by_capacity`** (replaces `_split_evenly` for this one
+call site): a small dynamic program over cut points that partitions the
+leftover shapes (still top-to-bottom, order-preserving - undoing that
+would re-cause the "unrelated shapes crammed together" bug two tasks
+back) into the empty zones so as to minimize the WORST per-zone overflow
+ratio (`bucket weight / that zone's own capacity`), rather than the worst
+being decided by count alone. A first, simpler attempt (assign each item
+to whichever zone's cumulative-capacity range contains its own
+cumulative-weight midpoint) was tried and found NOT to fully fix this -
+documented in the function's own docstring rather than silently replaced:
+a single large item can still overflow whichever bucket its position
+happens to fall into, since a group can't be split across two zones; only
+an actual optimization over where to CUT reliably finds the best
+placement. On the real numbers (33.2/61.4/170.7/15.5/11.8mm across
+303.0/43.3/203.2mm capacities), it correctly groups `s5` with the two
+small shapes above it into the much larger header capacity (265.3/303.0 =
+0.876x, no overflow at all) and leaves `main_text` empty rather than
+crush anything.
+
+**A second, smaller bug surfaced by fixing the first**: leaving
+`main_text` empty (the DP's correct decision - giving it anything would
+make some OTHER zone's ratio worse) meant that zone's own 43.3mm of page
+height sat completely unused - reintroducing a smaller version of the
+exact "beige empty space" this task complains about, just relocated.
+Fixed with `_reclaim_empty_absorbing_frames`: an empty zone's frame is
+folded into the next zone below it that DOES have content, extending
+that zone's own frame to also cover the freed slot - guarded to only
+merge when the two frames share the same `x`/`w` (true for every zone in
+the stack template, since `_stack_zones` gives header/main_text/footer
+identical `x`/`w` by construction), so a grid/wide-template's narrower,
+offset main_text column is left alone rather than risk stretching a
+merged rectangle sideways into a third zone's space.
+
+**Live result, verified through the running API** (not just direct
+function calls) at the task's own 30x40in target: **86.95% zone-level
+vertical utilization** (was 81.5% with the capacity-aware split alone,
+before the empty-zone reclaim; the task's own bar is >85%), zero overlap
+among the 6 real non-background shapes, all within page bounds, `s5`'s
+own shrink factor down to 1.52x (was 13.8x), and every bitmap's aspect
+ratio exactly preserved as above. 6 new tests in
+`test_orientation_adapter.py` (54 total, up from 48): `_split_by_capacity`
+on the real board's own numbers (locks in the exact expected bucket
+assignment, not just "doesn't crash"), its fallback to `_split_evenly`
+when there's nothing to weigh by, `_reclaim_empty_absorbing_frames`
+extending a neighbour into a freed slot AND refusing to do so across a
+genuine x/w mismatch, and a full synthetic end-to-end reproduction of the
+DARSHAN scenario (small header/footer shapes plus one disproportionately
+large secondary group) confirming the shrink factor stays under 3x and
+nothing overlaps. All 425 backend tests and 121 frontend tests pass.
+
+**What was deliberately NOT done**: the task's own literal asks - "scale
+the brand logo up by ~20%", "Y = 28in to 40in" style absolute zone
+boundaries, moving the wooden-table composite specifically - describe ONE
+board's own ideal layout, not a rule that generalizes (the same "manual
+creative redesign" limitation documented since "Designer dataset
+analysis" and revisited at every wide-board tiling fix in this file).
+Since that composite is nested inside the page-covering background
+PowerClip (not a separately addressable zone at all under the current
+slot/zone model - see "Fixing blank space and background distortion"
+above), pulling it out into its own independently-scaled zone would be a
+materially new feature (partial content extraction from a background
+PowerClip), not a bug fix, and was out of scope here; the diagnosis is
+recorded so a future task that actually wants that feature starts from a
+verified understanding of why it doesn't already work, not a guess.
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —
@@ -2629,7 +2747,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 419 passed as of this writing (that includes
+`pytest` from `backend/` — 425 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
 `test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py` (now
