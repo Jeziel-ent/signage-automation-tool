@@ -2202,6 +2202,129 @@ PowerClip), not a bug fix, and was out of scope here; the diagnosis is
 recorded so a future task that actually wants that feature starts from a
 verified understanding of why it doesn't already work, not a guess.
 
+### Structural wireframe sub-placement: top-left/top-right logos, main_object + subobjects, English/Tamil footer
+
+A follow-up task asked for a portrait/landscape "wireframe": top-left/
+top-right logo objects, a centred `main_object` with `subobjects` flowing
+into flanking columns, and a footer banner with English/Tamil text either
+stacked (portrait) or side by side (landscape). It described this as a
+2-way "R < 1.0 / R >= 1.0" split - **deliberately not implemented as a
+replacement for `calculate_zone_rects`'s existing 3-template design**
+(wide/grid/stack, picked by `WIDE_RATIO`/`GRID_RATIO` - see "Three
+templates" above): collapsing back to 2 templates would reintroduce
+exactly the "a template tuned for a very wide board looks wrong on a
+near-square one" problem the grid template was built to fix, with no new
+evidence that it's actually wrong for the sizes in between. Instead, the
+wireframe is layered ON TOP of the existing header/product/main_text/
+footer zone geometry (unchanged) as a SUB-PLACEMENT: how a zone's own
+already-computed frame divides its assigned ids into named sub-roles.
+Top Region = header, Center Region = product/main_text (each independently
+- "main_object" is decided per zone, not merged across product+main_text's
+differently-shaped frames), Bottom Region = footer (already a full-width
+banner in every template, so no template change was needed there at all).
+
+**New helpers** (`orientation_adapter.py`): `_split_left_right_by_x` (2+
+ids split around their own group mean centre-x, falling back to an
+index-based midpoint split if every id ties); `_place_two_up` (places one
+group in the left/top half of a frame and another in the right/bottom
+half, `axis="x"`/`"y"`); `_place_top_region` (splits a header zone's ids
+into left/right logo bounds via the above); `_place_main_and_subobjects`
+(the largest-by-area id becomes `main_object`, centred in
+`MAIN_OBJECT_FRAC` (0.5) of the frame's width, with the rest flowing into
+whichever side of `main_object`'s own centre-x they originally sat on);
+`_place_footer_banner` (splits by detected script - `_is_tamil_text`,
+matching the Tamil Unicode block U+0B80-U+0BFF against a text shape's
+actual content, the same "read the real text, never trust a declared
+font/language tag" principle CLAUDE.md's "Shop name replacement" section
+already established - and places English/Tamil stacked for a portrait
+target, side by side for landscape). **Every one of these reduces exactly
+to the pre-existing single-group `_zone_fit` behaviour when a zone holds 0
+or 1 id** - the common case for every currently-verified real board's
+product/main_text zone before absorption adds extras - so this is
+additive: nothing changes unless a zone actually has 2+ genuinely distinct
+pieces of content to arrange. Each sub-placement still routes every group
+through `_zone_fit`, so item 2's bitmap-vs-vector protection (uniform
+scale for anything containing a raster, non-uniform fill otherwise) is
+unconditionally preserved regardless of which sub-role a shape lands in.
+
+**A real ordering bug found and fixed while wiring this in**: the first
+version applied the new sub-placement to BOTH the real tagged-zone loop
+AND the "absorb untagged other content into an empty zone" fallback (see
+"Fixing an 'other absorption' bug" above). This broke a passing test
+(`test_convert_orientation_absorbs_other_into_empty_named_zones_by_
+vertical_band`): an absorbed bucket assigned to `header` by
+`_split_by_capacity` purely because it had spare CAPACITY (not because its
+contents are semantically a "logo") can include a shape that originally
+sat much lower on the page than the others; splitting that bucket by
+x-position alone (as `_place_top_region` does) then placed that lower
+shape side-by-side with a genuinely top shape instead of keeping it below,
+scrambling the "top stays top, bottom stays bottom" ordering the
+absorption logic exists to guarantee. **Fixed by scoping the wireframe
+sub-placement to the REAL tagged-zone loop only** - absorbed "other"
+content keeps its original plain single-group `_zone_fit` (unchanged from
+before this task), since it has no genuine semantic role to sub-place by;
+the wireframe assumes its ids actually belong to the zone's own kind (a
+real `brand_title`/`product_image`/etc. slot tag, or a heuristic match -
+see `classify_zones`), which absorbed filler content does not.
+
+**Live implication, stated honestly**: both real boards used for
+verification (AL MADEENA, DARSHAN AGARBATHI) are untagged masters (see
+"Designer dataset analysis"), so on their OWN, unmodified files, this new
+logic is a no-op for header/footer - that content still arrives via
+absorption, which is deliberately excluded above. It DOES engage for their
+`product`/`main_text` zones' single heuristic `product_image` bitmap (`s6`
+on AL MADEENA, `s4` on DARSHAN) - reducing to the unchanged single-item
+path, confirmed to produce byte-for-byte the same aspect ratios as before.
+To verify the actual NEW code paths (top-left/right split, footer En/Ta
+split) against real geometry rather than only synthetic fixtures, each
+board's own text was tagged on an IN-MEMORY COPY (never written back to
+disk, never touching `signage_dataset` or the cached job files) using
+content that was already genuinely bilingual:
+
+- AL MADEENA's `s4`/`s5` are the real board's own Tamil/English shop-name
+  pair ("அல் மதீனா பூஜை ஸ்டோர்" / "AL MADEENA POOJA STORE") - tagged
+  `address`/`contact` to route them into `ZONE_FOOTER`.
+- DARSHAN's `s21`/`s22` are its own real Tamil/English shop-name pair
+  ("ஸ்ரீ கன்னியம்மன் நாட்டு மருந்து கடை" / "SRI KANNIYAMMAN NATTU
+  MARUNTHU KADAI") - same tagging.
+- AL MADEENA's `s4`/`s5` (both independent top-level text shapes, unlike
+  DARSHAN's own text which is nested several groups deep and collapses to
+  one shared top-level id when tagged - see `_topmost_top_level_ancestor`)
+  were also tagged `brand_title_1`/`brand_title_2` in a SEPARATE run to
+  test the top-region left/right logo split specifically.
+
+**Verified live through the running API** (not just direct function
+calls) at both of the task's target sizes, for both boards:
+
+| Board | Target | Footer layout | Result |
+|---|---|---|---|
+| AL MADEENA | 30x40in (portrait) | English above Tamil | PASS (en y=127.5 > ta y=25.9) |
+| AL MADEENA | 240x36in (landscape) | English left of Tamil | PASS (en x=118.0 < ta x=3138.6) |
+| DARSHAN | 30x40in (portrait) | English above Tamil | PASS (en y=127.5 > ta y=25.9) |
+| DARSHAN | 240x36in (landscape) | English left of Tamil | PASS (en x=118.0 < ta x=3138.6) |
+
+The top-region test (AL MADEENA, `s4`/`s5` tagged as two `brand_title`s)
+confirmed a genuine left/right split with zero overlap between the two
+reserved halves, at both target sizes. Every bitmap's aspect ratio (`s45`/
+`s47`/`s48`/`s49`/`s6` on AL MADEENA, `s4` on DARSHAN) stayed within
+2.5e-5% of its original value across all 4 live tagged runs, confirming
+item 2's uniform-scaling guarantee holds through the new placement paths
+too, not just the old ones.
+
+11 new tests in `test_orientation_adapter.py` (65 total, up from 54):
+`_split_left_right_by_x`'s mean-based split and its tie-breaking fallback;
+`_place_top_region` with 1 vs. 2 ids; `_place_main_and_subobjects` with 1
+id (unchanged) vs. 3 ids (largest becomes main_object, flanked without
+overlap, the PowerClip-nested bitmap inside it keeps its exact aspect
+ratio); `_place_footer_banner` with no Tamil present (unchanged) vs. a
+genuine English/Tamil pair, both for portrait (stacked) and landscape
+(side by side); and a full `convert_orientation` end-to-end test on a
+scene tagged with all three wireframe roles at once (2 logos, a product
+-image plus 2 flanking subobjects, and a real Tamil/English address pair),
+confirming zero overlap and exact bitmap-aspect preservation at both a
+landscape and a portrait target. All 436 backend tests and 121 frontend
+tests pass.
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —
@@ -2747,7 +2870,7 @@ synthetic masters) cover pure logic. `backend/tests/test_corel_supervisor.py`
 logic using a fake worker (`tests/fake_hanging_worker.py`) that hangs,
 partially completes, or finishes normally on command - no real CorelDRAW
 needed, but Windows-only (uses `taskkill`; skipped elsewhere). Run with
-`pytest` from `backend/` — 425 passed as of this writing (that includes
+`pytest` from `backend/` — 436 passed as of this writing (that includes
 the new-UI suites: `test_main_v2.py`, and Phase C's `test_scene_ops.py`,
 `test_scene_export.py` - fake COM objects, `test_editor_api.py`,
 `test_corel_worker_io.py`, `test_fonts.py`, `test_export_replay.py` (now

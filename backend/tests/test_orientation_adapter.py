@@ -208,6 +208,154 @@ def test_classify_zones_forwards_map_slots_warnings():
     assert any("badtag" in w for w in warnings)
 
 
+# --------------------------------------------------------------------- wireframe sub-placement
+
+def test_split_left_right_by_x_splits_around_the_groups_own_mean():
+    idx = {
+        "a": {"node": {"x": 0, "w": 10}}, "b": {"node": {"x": 100, "w": 10}},
+        "c": {"node": {"x": 5, "w": 10}},
+    }
+    left, right = oa._split_left_right_by_x(idx, ["a", "b", "c"])
+    assert set(left) | set(right) == {"a", "b", "c"}
+    assert set(left) & set(right) == set()
+    assert "b" in right   # b (x=100) is far to the right of a/c's mean
+
+
+def test_split_left_right_by_x_falls_back_to_index_midpoint_when_everything_ties():
+    idx = {"a": {"node": {"x": 0, "w": 10}}, "b": {"node": {"x": 0, "w": 10}}}
+    left, right = oa._split_left_right_by_x(idx, ["a", "b"])
+    assert left and right   # neither side is empty despite identical x
+
+
+def test_split_left_right_by_x_single_id_goes_entirely_left():
+    idx = {"a": {"node": {"x": 5, "w": 10}}}
+    assert oa._split_left_right_by_x(idx, ["a"]) == (["a"], [])
+
+
+def _idx_of(scene: dict) -> dict:
+    return scene_ops._index(scene)
+
+
+def test_place_top_region_single_id_fills_the_whole_header_frame():
+    scene = portrait_scene()
+    idx = _idx_of(scene)
+    frame = {"x": 0.0, "y": 0.0, "w": 400.0, "h": 100.0}
+    ops = oa._place_top_region(idx, ["brand"], frame)
+    assert len(ops) == 1
+    assert ops[0]["to"]["w"] == pytest.approx(frame["w"] * (1 - 2 * oa.ZONE_PADDING_FRAC))
+
+
+def test_place_top_region_two_ids_reserves_separate_left_and_right_bounds():
+    scene = portrait_scene()
+    scene["layers"][0]["children"].append(_text("logo2", "", 350, 900, 40, 40, "B"))
+    scene["layers"][0]["children"][1]["x"] = 10   # "brand" pinned to the left
+    idx = _idx_of(scene)
+    frame = {"x": 0.0, "y": 0.0, "w": 400.0, "h": 100.0}
+    ops = oa._place_top_region(idx, ["brand", "logo2"], frame)
+    assert len(ops) == 2
+    by_id = {tuple(op["ids"]): op["to"] for op in ops}
+    brand_box = by_id[("brand",)]
+    logo2_box = by_id[("logo2",)]
+    assert brand_box["x"] < logo2_box["x"]                     # brand (left) stays left of logo2 (right)
+    assert brand_box["x"] + brand_box["w"] <= logo2_box["x"] + 1e-6   # no overlap between the two halves
+    assert brand_box["w"] <= frame["w"] / 2 + 1e-6 and logo2_box["w"] <= frame["w"] / 2 + 1e-6
+
+
+def test_place_main_and_subobjects_single_id_is_unchanged_from_before():
+    scene = portrait_scene()
+    idx = _idx_of(scene)
+    frame = {"x": 0.0, "y": 0.0, "w": 300.0, "h": 350.0}
+    ops = oa._place_main_and_subobjects(idx, ["pc"], frame)
+    assert len(ops) == 1
+    assert ops[0]["ids"] == ["pc"]
+
+
+def test_place_main_and_subobjects_picks_the_largest_as_main_and_flanks_it_with_the_rest():
+    scene = portrait_scene()
+    scene["layers"][0]["children"].append(_text("sub_left", "", 0, 500, 20, 20, "L"))
+    scene["layers"][0]["children"].append(_text("sub_right", "", 400, 500, 20, 20, "R"))
+    idx = _idx_of(scene)
+    frame = {"x": 0.0, "y": 0.0, "w": 600.0, "h": 350.0}
+    # "pc" (300x350 = 105000 mm^2) is by far the largest of the three
+    ops = oa._place_main_and_subobjects(idx, ["pc", "sub_left", "sub_right"], frame)
+    by_id = {tuple(op["ids"]): op["to"] for op in ops}
+    assert ("pc",) in by_id
+    main_box = by_id[("pc",)]
+    left_box = by_id[("sub_left",)]
+    right_box = by_id[("sub_right",)]
+    # main_object centred, flanked by its own left/right columns, nothing overlapping
+    assert left_box["x"] + left_box["w"] <= main_box["x"] + 1e-6
+    assert main_box["x"] + main_box["w"] <= right_box["x"] + 1e-6
+    # the PowerClip-nested bitmap inside "pc" keeps its exact aspect ratio (uniform scale, item 2)
+    out_scene = scene_ops.apply_ops(scene, [{"op": "page", "width": frame["w"], "height": frame["h"]}] + ops)
+    orig_photo = box_of(scene, "photo")
+    new_photo = box_of(out_scene, "photo")
+    assert new_photo["w"] / new_photo["h"] == pytest.approx(orig_photo["w"] / orig_photo["h"], rel=1e-6)
+
+
+def test_place_footer_banner_english_only_is_unchanged_from_before():
+    scene = portrait_scene()
+    idx = _idx_of(scene)
+    frame = {"x": 0.0, "y": 0.0, "w": 400.0, "h": 100.0}
+    ops = oa._place_footer_banner(idx, ["addr", "contact"], frame, portrait=True)
+    assert len(ops) == 1
+    assert set(ops[0]["ids"]) == {"addr", "contact"}
+
+
+def test_place_footer_banner_stacks_english_above_tamil_for_portrait():
+    scene = portrait_scene()
+    scene["layers"][0]["children"].append(_text("ta", "", 50, 100, 300, 30, "வணக்கம்"))
+    idx = _idx_of(scene)
+    frame = {"x": 0.0, "y": 0.0, "w": 400.0, "h": 100.0}
+    ops = oa._place_footer_banner(idx, ["addr", "ta"], frame, portrait=True)
+    by_id = {tuple(op["ids"]): op["to"] for op in ops}
+    en_box = by_id[("addr",)]
+    ta_box = by_id[("ta",)]
+    assert en_box["y"] > ta_box["y"]        # English (top half - higher y) above Tamil (bottom half)
+    assert en_box["y"] >= ta_box["y"] + ta_box["h"] - 1e-6   # no vertical overlap
+
+
+def test_place_footer_banner_puts_english_left_of_tamil_for_landscape():
+    scene = portrait_scene()
+    scene["layers"][0]["children"].append(_text("ta", "", 50, 100, 300, 30, "வணக்கம்"))
+    idx = _idx_of(scene)
+    frame = {"x": 0.0, "y": 0.0, "w": 400.0, "h": 100.0}
+    ops = oa._place_footer_banner(idx, ["addr", "ta"], frame, portrait=False)
+    by_id = {tuple(op["ids"]): op["to"] for op in ops}
+    en_box = by_id[("addr",)]
+    ta_box = by_id[("ta",)]
+    assert en_box["x"] < ta_box["x"]                              # English left, Tamil right
+    assert en_box["x"] + en_box["w"] <= ta_box["x"] + 1e-6         # no horizontal overlap
+
+
+def test_convert_orientation_end_to_end_wireframe_on_a_tagged_scene():
+    # A fully-tagged scene exercising all three wireframe sub-placements at once: two brand_title
+    # logos (top region), a product_image + two untagged subobjects sharing the product zone (center
+    # region), and a genuine English/Tamil address pair (bottom region).
+    scene = portrait_scene()
+    children = scene["layers"][0]["children"]
+    children[1]["x"] = 10                                        # "brand" pinned left
+    children.append(_text("logo2", "brand_title", 350, 900, 30, 40, "CO"))
+    children.append(_text("sub_left", "", 0, 500, 20, 20, "L"))
+    children.append(_text("sub_right", "", 380, 500, 20, 20, "R"))
+    children.append(_text("ta_addr", "address", 50, 100, 300, 30, "வணக்கம்"))
+
+    for target_w, target_h, portrait in ((900.0, 300.0, False), (300.0, 900.0, True)):
+        s = copy.deepcopy(scene)
+        ops = oa.convert_orientation(s, target_w, target_h)
+        out = scene_ops.apply_ops(s, ops)
+        # the PowerClip-nested product photo keeps its aspect ratio regardless of template
+        orig_photo, new_photo = box_of(s, "photo"), box_of(out, "photo")
+        assert new_photo["w"] / new_photo["h"] == pytest.approx(orig_photo["w"] / orig_photo["h"], rel=1e-6)
+        # nothing among the placed foreground shapes overlaps anything else
+        fg_ids = ["brand", "logo2", "pc", "sub_left", "sub_right", "title", "addr", "contact", "ta_addr"]
+        boxes = [box_of(out, i) for i in fg_ids]
+        for a in range(len(boxes)):
+            assert within_page(out, fg_ids[a])
+            for b in range(a + 1, len(boxes)):
+                assert rect_overlap_area(boxes[a], boxes[b]) < 1.0, (fg_ids[a], fg_ids[b], target_w, target_h)
+
+
 # ------------------------------------------ untagged-master fallback (Y-banded "other" absorption)
 
 def test_split_by_capacity_does_not_crush_a_disproportionately_large_item_into_a_tiny_zone():

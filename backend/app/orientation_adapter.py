@@ -79,9 +79,17 @@ The footer is always a horizontal banner across the full width at the bottom, in
 """
 from __future__ import annotations
 
+import re
+
 from . import product_engine as pe
 from . import scene_ops
 from .scene_ops import OpError
+
+# Tamil Unicode block (U+0B80-U+0BFF) - used to tell an English text shape from a Tamil one for the
+# footer banner's English/Tamil split (see _place_footer_banner). This is a content check, not a
+# font/language-tag check - CLAUDE.md ("Shop name replacement") already documents that this codebase
+# reads a shape's actual text, never trusts its declared font name, for exactly this kind of decision.
+_TAMIL_RE = re.compile(r"[஀-௿]")
 
 ZONE_HEADER = "header"
 ZONE_PRODUCT = "product"
@@ -115,6 +123,8 @@ PRODUCT_COL_FRAC = 0.32     # of target width, wide template only
 HEADER_OF_UPPER_FRAC = 0.35  # of the upper (non-footer) area's height, wide template only
 GRID_HEADER_FRAC = 0.28     # of the upper area's height, grid template only
 ZONE_PADDING_FRAC = 0.03    # of the zone's own width/height, per axis - keeps content off the zone edges
+MAIN_OBJECT_FRAC = 0.5      # of a center-region frame's width - reserved for main_object, centred;
+                            # the remainder is split evenly between the left/right subobject columns
 
 # Aspect-ratio thresholds (R = target_w / target_h) selecting which template calculate_zone_rects
 # uses for the area above the footer banner - see the module docstring's table.
@@ -289,6 +299,146 @@ def _zone_fit(idx: dict, ids: list[str], frm: dict, frame: dict) -> dict:
         pad = ZONE_PADDING_FRAC * min(frame["w"], frame["h"])
         return pe.aspect_fit(frm["w"], frm["h"], frame, fit="contain", padding=pad)
     return _fill_frame(frame)
+
+
+# --------------------------------------------------------------------------------------------------
+# Structural wireframe sub-placement: within a zone's OWN frame (unchanged from calculate_zone_rects
+# - none of the three templates' geometry is touched here), split that zone's assigned ids into named
+# sub-roles - top-left/top-right logo, main_object/subobjects, English/Tamil footer text - and give
+# each its own reserved bound, rather than always resizing a zone's whole content as one rigid union.
+# A zone holding 0 or 1 id (still the common case for every currently-verified real board's product/
+# main_text zone) reduces exactly to the previous single-group `_zone_fit` behaviour, so this is
+# additive: it only changes anything once a zone actually holds more than one distinct piece of
+# content to arrange, via a tag or absorption.
+
+def _is_tamil_text(node: dict) -> bool:
+    t = node.get("text")
+    return bool(t) and bool(_TAMIL_RE.search(str(t.get("content") or "")))
+
+
+def _split_left_right_by_x(idx: dict, ids: list[str]) -> tuple[list[str], list[str]]:
+    """`ids` split into (left, right) by each shape's own centre-x relative to the GROUP's own mean
+    centre-x (not the page's, so this works regardless of which template positioned the zone). Falls
+    back to splitting the x-sorted id list at its midpoint index if every id lands on the same side of
+    the mean (e.g. near-identical x's) - so "reserve bounds for top-left AND top-right" is still
+    honoured with two genuinely non-empty sides whenever there are 2+ ids to place."""
+    if len(ids) < 2:
+        return list(ids), []
+    order = sorted(ids, key=lambda i: idx[i]["node"]["x"] + idx[i]["node"]["w"] / 2)
+    centers = [idx[i]["node"]["x"] + idx[i]["node"]["w"] / 2 for i in order]
+    mid = sum(centers) / len(centers)
+    left = [i for i, c in zip(order, centers) if c < mid]
+    right = [i for i, c in zip(order, centers) if c >= mid]
+    if not left or not right:
+        cut = len(order) // 2
+        left, right = order[:cut], order[cut:]
+    return left, right
+
+
+def _place_two_up(idx: dict, ids_a: list[str], ids_b: list[str], frame: dict, axis: str) -> list[dict]:
+    """`axis="x"`: `ids_a` into the LEFT half of `frame`, `ids_b` into the RIGHT half (side by side -
+    the landscape footer's English-left/Tamil-right layout, and every left/right logo or subobject
+    column). `axis="y"`: `ids_a` into the TOP half (the higher-y half, this scene model's origin is
+    bottom-left), `ids_b` into the BOTTOM half (stacked - the portrait footer's English-top/Tamil
+    -bottom layout). A side with no ids is simply skipped - its bounds stay reserved and empty rather
+    than letting the other side's content stretch into them, which is the entire point of giving each
+    side its own dedicated half instead of one shared union box."""
+    if axis == "x":
+        half_w = frame["w"] / 2
+        frame_a = _rect(frame["x"], frame["y"], half_w, frame["h"])
+        frame_b = _rect(frame["x"] + half_w, frame["y"], frame["w"] - half_w, frame["h"])
+    else:
+        half_h = frame["h"] / 2
+        frame_a = _rect(frame["x"], frame["y"] + half_h, frame["w"], frame["h"] - half_h)
+        frame_b = _rect(frame["x"], frame["y"], frame["w"], half_h)
+    ops: list[dict] = []
+    for ids, subframe in ((ids_a, frame_a), (ids_b, frame_b)):
+        if not ids:
+            continue
+        frm = _union_box(idx, ids)
+        ops.append({"op": "resize", "ids": ids, "from": frm, "to": _zone_fit(idx, ids, frm, subframe)})
+    return ops
+
+
+def _place_top_region(idx: dict, ids: list[str], frame: dict) -> list[dict]:
+    """The wireframe's "Top Region": reserves separate top-left/top-right bounds for 2+ logo objects
+    (`_split_left_right_by_x` + `_place_two_up`). A single id fills the WHOLE header frame, exactly as
+    before this task - a lone logo is not squeezed into just one half merely because there is no
+    second one to pair it with."""
+    if len(ids) <= 1:
+        if not ids:
+            return []
+        frm = _union_box(idx, ids)
+        return [{"op": "resize", "ids": ids, "from": frm, "to": _zone_fit(idx, ids, frm, frame)}]
+    left, right = _split_left_right_by_x(idx, ids)
+    return _place_two_up(idx, left, right, frame, axis="x")
+
+
+def _place_main_and_subobjects(idx: dict, ids: list[str], frame: dict) -> list[dict]:
+    """The wireframe's "Center Region": the largest-by-area id becomes `main_object`, centred in a
+    dedicated `MAIN_OBJECT_FRAC` of the frame's width; every other id (`subobjects`) flows into a LEFT
+    or RIGHT column flanking it, grouped by which side of `main_object`'s own centre-x they originally
+    sat on. With 0 or 1 id total - the common case for every currently-verified real board's product/
+    main_text zone before absorption adds extras - this reduces exactly to the previous single-group
+    `_zone_fit` behaviour (unchanged)."""
+    if len(ids) <= 1:
+        if not ids:
+            return []
+        frm = _union_box(idx, ids)
+        return [{"op": "resize", "ids": ids, "from": frm, "to": _zone_fit(idx, ids, frm, frame)}]
+
+    areas = {i: idx[i]["node"]["w"] * idx[i]["node"]["h"] for i in ids}
+    main_id = max(areas, key=areas.get)
+    rest = [i for i in ids if i != main_id]
+    main_cx = idx[main_id]["node"]["x"] + idx[main_id]["node"]["w"] / 2
+    left = [i for i in rest if idx[i]["node"]["x"] + idx[i]["node"]["w"] / 2 < main_cx]
+    right = [i for i in rest if i not in left]
+
+    main_w = frame["w"] * MAIN_OBJECT_FRAC
+    side_w = (frame["w"] - main_w) / 2
+    left_frame = _rect(frame["x"], frame["y"], side_w, frame["h"])
+    main_frame = _rect(frame["x"] + side_w, frame["y"], main_w, frame["h"])
+    right_frame = _rect(frame["x"] + side_w + main_w, frame["y"], side_w, frame["h"])
+
+    ops: list[dict] = []
+    frm_main = _union_box(idx, [main_id])
+    ops.append({"op": "resize", "ids": [main_id], "from": frm_main,
+                "to": _zone_fit(idx, [main_id], frm_main, main_frame)})
+    for col_ids, col_frame in ((left, left_frame), (right, right_frame)):
+        if not col_ids:
+            continue
+        frm = _union_box(idx, col_ids)
+        ops.append({"op": "resize", "ids": col_ids, "from": frm, "to": _zone_fit(idx, col_ids, frm, col_frame)})
+    return ops
+
+
+def _place_footer_banner(idx: dict, ids: list[str], frame: dict, portrait: bool) -> list[dict]:
+    """The wireframe's "Bottom Region": splits `ids` by detected script (`_is_tamil_text`) and places
+    English/Tamil STACKED (English top, Tamil bottom) for a portrait target, or SIDE BY SIDE (English
+    left, Tamil right) for a landscape one. With no Tamil text present at all (every real board sampled
+    so far - see CLAUDE.md "Shop name replacement"/"Per-shop content replacement") or only one distinct
+    id, this reduces exactly to the previous single-group `_zone_fit` behaviour (unchanged)."""
+    tamil = [i for i in ids if _is_tamil_text(idx[i]["node"])]
+    english = [i for i in ids if i not in tamil]
+    if not tamil or not english:
+        frm = _union_box(idx, ids)
+        return [{"op": "resize", "ids": ids, "from": frm, "to": _zone_fit(idx, ids, frm, frame)}]
+    axis = "y" if portrait else "x"
+    return _place_two_up(idx, english, tamil, frame, axis=axis)
+
+
+def _place_zone_content(zone: str, idx: dict, ids: list[str], frame: dict, portrait: bool) -> list[dict]:
+    """Dispatches to the right wireframe sub-placement for `zone`'s own kind of content: `header` ->
+    top-left/top-right logos, `product`/`main_text` -> main_object + flanking subobject columns,
+    `footer` -> the English/Tamil banner split. Used identically whether `ids` came from a real slot
+    tag or from the "absorb untagged other content into an empty zone" fallback (see
+    `convert_orientation`) - the wireframe applies to whatever ends up in a zone, regardless of how it
+    got there."""
+    if zone == ZONE_HEADER:
+        return _place_top_region(idx, ids, frame)
+    if zone == ZONE_FOOTER:
+        return _place_footer_banner(idx, ids, frame, portrait)
+    return _place_main_and_subobjects(idx, ids, frame)   # ZONE_PRODUCT / ZONE_MAIN_TEXT - "center" content
 
 
 def _layer_top_ids(scene: dict) -> list[str]:
@@ -558,20 +708,28 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
         for zone, bucket, frame in zip(absorbing, buckets, reclaimed_frames):
             if not bucket:
                 continue
+            # Deliberately NOT _place_zone_content here: absorbed "other" content has no semantic
+            # role (it's just whatever untagged shapes landed in this zone by capacity - see
+            # _split_by_capacity), so it keeps the plain single-group _zone_fit that preserves its
+            # own original top-to-bottom internal order. The wireframe sub-placement below assumes
+            # its ids genuinely belong to the zone's own role (a real brand_title/product_image/etc.
+            # slot tag - see classify_zones) - applying it here was tried and found live to scramble
+            # order: a header-capacity bucket that absorbed a LOWER-page shape (because it had more
+            # room, not because that shape is a logo) then split by x-position alone, landing that
+            # lower shape's content side-by-side with a genuine top shape instead of staying below it.
             frm = _union_box(idx, bucket)
             to = _zone_fit(idx, bucket, frm, frame)
             ops.append({"op": "resize", "ids": bucket, "from": frm, "to": to})
             placed.update(bucket)
         zones[ZONE_OTHER] = [i for i in zones[ZONE_OTHER] if i not in placed]  # the rest keep the fallback below
 
+    portrait = target_w < target_h
     for zone in (ZONE_HEADER, ZONE_PRODUCT, ZONE_MAIN_TEXT, ZONE_FOOTER):
         ids = [i for i in zones[zone] if not _is_locked(idx, i)]
         if not ids:
             continue
         frame = frames[zone]
-        frm = _union_box(idx, ids)
-        to = _zone_fit(idx, ids, frm, frame)
-        ops.append({"op": "resize", "ids": ids, "from": frm, "to": to})
+        ops.extend(_place_zone_content(zone, idx, ids, frame, portrait))
 
     for i in zones[ZONE_BACKGROUND]:
         if _is_locked(idx, i):
