@@ -1913,6 +1913,94 @@ named_zone_is_empty`) plus 3 existing background tests updated from
 exact-stretch to cover-fit assertions (`assert_covers_page_without_
 distortion`).
 
+### Full-canvas spatial reflow: stretch-to-fill zones instead of aspect-preserving `contain`
+
+A follow-up task asked for the endpoint to never serve a cached result (it
+already didn't - see below) and for the tall/ultra-wide templates to
+actually fill their assigned zone bounds rather than leaving whitespace.
+
+**Caching check - no bug found, defensive header added anyway.**
+`POST /api/scene/convert-orientation` (`backend/app/main.py`, not
+`api.py` - that file doesn't exist) was already fully stateless: `body.scene`
+is read fresh from the request on every call, nothing is written to or read
+from disk/`editor_ops`, and there is no `lru_cache` or module-level cache
+anywhere in the call path - two calls with different `target_w`/`target_h`
+always recompute from scratch. Rather than inventing a fix for a bug that
+wasn't there, the endpoint now sets `Cache-Control: no-store` on its
+response (defensive - rules out a browser/proxy layer ever reusing a POST
+response, though browsers don't cache those by default) and its docstring
+records the investigation.
+
+**The real gap: `_place`-style `contain` fit wastes zone space by design.**
+Every named zone's content was placed with `pe.aspect_fit(..., fit="contain",
+padding=pad)` - centred, aspect-preserving, so a content cluster whose own
+aspect ratio didn't match its zone's left one axis full of unused padding.
+Measured live on the AL MADEENA board (job 16bfc025ca11) converted to
+36x96in: only ~43% of the page height was actually occupied by content,
+with every zone's shapes clustered near its own centre - exactly the
+"clustering in the center" the task called out.
+
+Fixed with `_fill_frame(frame)`: since zone content here is logo/text
+clusters (not a photographic asset that would look wrong distorted) and
+`scene_ops._scale` already supports independent x/y scale factors (nothing
+new needed - see "Why only existing ops" above), each named zone's `to` box
+is now the padded frame itself, stretched to fill exactly, instead of an
+aspect-fit sub-rect centred inside it. Applies to both the per-zone loop and
+the "other absorbed into an empty named zone" path in `convert_orientation`
+- background keeps its `cover` fit unchanged (that one is deliberately
+non-distorting, per the section above).
+
+**Padding needed a second fix to actually clear 85%.** The first version of
+`_fill_frame` computed one `padding` value from `min(frame_w, frame_h)` and
+subtracted it from BOTH axes - for a zone much taller than wide (the stack
+template's header/product), that set the inset from the SMALL width and
+then wasted the same absolute amount on the LARGE height too, capping
+vertical utilization at 84.0% (zone-level) even with stretch-to-fill.
+Fixed by computing `pad_x`/`pad_y` independently as `ZONE_PADDING_FRAC` of
+EACH axis's own size; `ZONE_PADDING_FRAC` was also brought down from 0.06 to
+0.03 (still comfortably > 0, so every zone's `frame_dim * (1 - 2*0.03)`
+stays positive for any positive frame - same non-degeneracy guarantee as
+every other constant in this module) once the per-axis fix alone (84.0%)
+still fell short of the task's >85% bar - 5 stacked zones (header, product,
+main_text, footer, plus the small inter-zone gaps) each compounding their
+own padding adds up fast at 0.06.
+
+**`_wide_zones` restructured so the header actually centres over the full
+canvas**, per the task's explicit ask for the 240x36in case. The header was
+previously a right-hand column stacked above main_text, sized to the text
+column's own width - correct per the module's original 3-role design, but
+not "centred over the canvas width" as asked. Now the header is a
+full-width banner (margin to margin) across the top of the upper area,
+with product (left column) and main_text (right of it) sharing the
+remaining height below - `header_w = target_w - 2*m` is trivially positive
+for any target_w, and `remaining_h`/`product_w`/`text_w` keep the exact
+same positivity proofs the original layout already had (see the function's
+own docstring).
+
+**Live re-verification against the real AL MADEENA board (job
+16bfc025ca11)**, both target sizes from the task, after a clean backend
+restart (no `--reload`, to avoid the orphaned-worker issue documented
+above):
+
+| Target | Zone-level vertical utilization | Zone-level horizontal utilization | Duplicate ids | Side-by-side duplicate blocks | Header centred? |
+|---|---|---|---|---|---|
+| 36x96in (tall) | **89.8%** (> 85% required) | 88.4% | none | none | n/a (stack template) |
+| 240x36in (ultra-wide) | 84.6% | 96.1% | none | none | **yes** - header spans x=[27.4, 6068.6]mm on a 6096mm-wide page, centre at exactly 3048mm |
+
+Verified via `curl` against the running API with the real cached scene at
+`backend/data/jobs_v2/16bfc025ca11/out/91a4cdb56ffe/scene/scene.json`, then
+checking the returned ops/scene programmatically (merged-interval coverage
+of each zone's own `to` box against the target page, and an all-pairs
+same-size/position check for duplicated blocks) - not just by re-running
+the existing synthetic unit tests. `backend/tests/test_orientation_adapter.py`
+and `test_orientation_api.py` (54 tests) and the full backend suite (416
+tests) all still pass unmodified - none of the existing tests hardcoded the
+old padding fraction or the old wide-template column position, only
+disjointness/in-bounds/no-degeneration, which the new geometry still
+satisfies. `npm test` (121 tests) also passes - `orientation_adapter.py`
+has no JS mirror (only its API/UI wiring is JS), so it was unaffected by
+this change, confirmed rather than assumed.
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —

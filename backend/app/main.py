@@ -10,7 +10,7 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -693,14 +693,22 @@ class ConvertOrientationRequest(BaseModel):
 
 
 @app.post("/api/scene/convert-orientation")
-def convert_orientation(body: ConvertOrientationRequest):
+def convert_orientation(body: ConvertOrientationRequest, response: Response):
     """Re-lays a scene out for a different target page size (mm) - see orientation_adapter.py.
 
     Stateless and not tied to a job/shop id: the caller sends the scene JSON it already has (the
     editor's current, possibly-unsaved, in-memory scene - not necessarily what's on disk), gets back
     the transformed scene plus the op list that produced it, and merges those ops into its own
     undo/op timeline exactly like a locally-generated `resize`/`page` op - nothing here writes to
-    disk or the `editor_ops` table itself."""
+    disk or the `editor_ops` table itself, and nothing it reads from is cached either: `body.scene`
+    is read fresh from the request on every call and passed straight to
+    `orientation_adapter.convert_orientation`, so two calls with different `target_w`/`target_h` (or
+    a changed `scene`) always recompute from scratch - there was never a cache here to invalidate.
+    The explicit `Cache-Control: no-store` below is defensive (rules out a browser/proxy layer ever
+    reusing a stale response for what is a POST anyway, browsers don't cache those by default), not a
+    fix for a caching bug that was found - see CLAUDE.md "Orientation adaptation" for how this was
+    checked."""
+    response.headers["Cache-Control"] = "no-store"
     try:
         ops = orientation_adapter.convert_orientation(body.scene, body.target_w, body.target_h)
         scene = scene_ops.apply_ops(body.scene, ops)

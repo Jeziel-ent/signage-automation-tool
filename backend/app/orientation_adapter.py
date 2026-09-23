@@ -114,7 +114,7 @@ FOOTER_FRAC = 0.20          # of target height
 PRODUCT_COL_FRAC = 0.32     # of target width, wide template only
 HEADER_OF_UPPER_FRAC = 0.35  # of the upper (non-footer) area's height, wide template only
 GRID_HEADER_FRAC = 0.28     # of the upper area's height, grid template only
-ZONE_PADDING_FRAC = 0.06    # of the zone's own smaller dimension - keeps content off the zone edges
+ZONE_PADDING_FRAC = 0.03    # of the zone's own width/height, per axis - keeps content off the zone edges
 
 # Aspect-ratio thresholds (R = target_w / target_h) selecting which template calculate_zone_rects
 # uses for the area above the footer banner - see the module docstring's table.
@@ -131,22 +131,27 @@ def _rect(x: float, y: float, w: float, h: float) -> dict:
 
 
 def _wide_zones(m: float, gap: float, target_w: float, upper_y0: float, upper_h: float) -> dict[str, dict]:
-    """R >= WIDE_RATIO: a left product column at PRODUCT_COL_FRAC of the FULL target width (so it
-    keeps growing with target_w, unlike the grid template's column, which is why this template is
-    reserved for wide-enough targets - see calculate_zone_rects), header stacked above main_text in a
-    right-hand text column. product_w < target_w - m always (PRODUCT_COL_FRAC=0.32 < 1), so text_w =
-    target_w - m - (m+product_w+gap) is positive whenever target_w > 2m + product_w + gap; since m and
-    gap are fractions of min(target_w, target_h) <= target_w and product_w = 0.32*target_w, this holds
-    for every target_w > 0 once the fixed fractions (0.06+0.32+0.02 = 0.40 of target_w, at most) are
-    accounted for - true across the whole WIDE_RATIO domain, verified by
+    """R >= WIDE_RATIO: the header is now a FULL-WIDTH banner across the top of the upper area (margin
+    to margin, i.e. horizontally centred on the canvas - the task-given 240x36 example calls for
+    exactly this: "Center the main brand header over the canvas width", not confined to a side column
+    the way an earlier version of this template placed it), with a left product column and a
+    right-hand main_text column sharing the remaining height below it. header_w = target_w - 2*m is
+    always positive for any target_w > 0 (m = MARGIN_FRAC*min(target_w,target_h) < target_w/2 for any
+    reasonable MARGIN_FRAC < 0.5). remaining_h = upper_h - header_h - gap keeps the same
+    HEADER_OF_UPPER_FRAC-based proof of positivity the original layout relied on (header_h is still a
+    fixed fraction of upper_h, gap a fixed fraction of min(target_w,target_h) <= upper_h's own scale).
+    product_w < target_w - m always (PRODUCT_COL_FRAC=0.32 < 1), so text_w = target_w - m -
+    (m+product_w+gap) is positive whenever target_w > 2m + product_w + gap - true across the whole
+    WIDE_RATIO domain, verified by
     test_calculate_zone_rects_never_degenerates_across_a_wide_range_of_aspect_ratios."""
+    header_h = HEADER_OF_UPPER_FRAC * upper_h
+    header = _rect(m, upper_y0 + upper_h - header_h, target_w - 2 * m, header_h)
+    remaining_h = upper_h - header_h - gap
     product_w = PRODUCT_COL_FRAC * target_w
-    product = _rect(m, upper_y0, product_w, upper_h)
+    product = _rect(m, upper_y0, product_w, remaining_h)
     text_x0 = m + product_w + gap
     text_w = target_w - m - text_x0
-    header_h = HEADER_OF_UPPER_FRAC * upper_h
-    header = _rect(text_x0, upper_y0 + upper_h - header_h, text_w, header_h)
-    main_text = _rect(text_x0, upper_y0, text_w, upper_h - header_h - gap)
+    main_text = _rect(text_x0, upper_y0, text_w, remaining_h)
     return {ZONE_HEADER: header, ZONE_PRODUCT: product, ZONE_MAIN_TEXT: main_text}
 
 
@@ -169,10 +174,22 @@ def _grid_zones(m: float, gap: float, target_w: float, upper_y0: float, upper_h:
 def _stack_zones(m: float, gap: float, target_w: float, upper_y0: float, upper_h: float) -> dict[str, dict]:
     """R < GRID_RATIO (a tall/portrait target): header, product and main_text stacked full-width,
     top to bottom, each a fixed fraction of the upper area's own height (`avail`, itself always
-    positive - see calculate_zone_rects)."""
+    positive - see calculate_zone_rects). header/product/main together always equal `avail` exactly
+    (0.42+0.52+0.06 = 1.00), so main_h = avail*0.06 can never go non-positive for any target_w,
+    target_h > 0 with target_h > target_w - the same safety proof the original (0.18/0.55/0.27)
+    split already relied on, just re-weighted.
+
+    The 0.42/0.52 split (up from an original 0.18/0.55) was chosen to match a concrete, task-given
+    example almost exactly: for a 36x96in target, header lands at Y=[64.5, 94.9]in (asked: [64, 96]),
+    product at Y=[26.1, 63.8]in (asked: [24, 64]), and main_text+the shared footer together span
+    Y=[1.1, 25.3]in (asked: one combined "shop title + address" bottom zone, [0, 24]in) - the small
+    gaps from the exact numbers are the same margin/gap insets every zone boundary already has, not a
+    rounding error. Found live (job 16bfc025ca11, AL MADEENA): the original 0.18 header fraction left
+    the top of a tall target almost entirely to the background texture, since real (untagged) master
+    content absorbed into `header` (see convert_orientation) had very little room to actually fill."""
     avail = upper_h - 2 * gap
-    header_h = 0.18 * avail
-    product_h = 0.55 * avail
+    header_h = 0.42 * avail
+    product_h = 0.52 * avail
     main_h = avail - header_h - product_h
     top = upper_y0 + upper_h
     header = _rect(m, top - header_h, target_w - 2 * m, header_h)
@@ -209,6 +226,39 @@ def calculate_zone_rects(target_w: float, target_h: float) -> dict[str, dict]:
         zones = _stack_zones(m, gap, target_w, upper_y0, upper_h)
     zones[ZONE_FOOTER] = footer
     return zones
+
+
+def _fill_frame(frame: dict) -> dict:
+    """`frame` inset by ZONE_PADDING_FRAC of ITS OWN width/height, PER AXIS, and returned AS-IS - no
+    aspect-ratio preservation. Used for the four named zones' own content (header/product/main_text/
+    footer groups): these are logo/text clusters being repositioned into a purpose-built rectangle, not
+    a photographic asset that would look wrong distorted, so `scene_ops._scale`'s existing independent
+    x/y scale factors (see CLAUDE.md "Orientation adaptation" - resize already supports non-uniform
+    scaling, nothing new was needed for it) are used directly to occupy the FULL zone bounds, rather
+    than `pe.aspect_fit(..., fit="contain")`'s uniform scale - which centres the content at whichever
+    axis is more constraining and leaves the other axis's padding unused. Found live on the AL MADEENA
+    board: a 36x96in (portrait) conversion under the old `contain` fit used only ~43% of the page's
+    vertical extent, with every zone's content clustered around its own centre; a 240x36in
+    (ultra-wide) conversion left header/main_text content narrow inside their own wide columns instead
+    of spanning them.
+
+    Padding is deliberately computed per-axis (ZONE_PADDING_FRAC of THAT axis's own size) rather than
+    a single value derived from the zone's smaller dimension applied to both: an earlier version did
+    the latter and, for a zone much taller than it is wide (e.g. the stack template's header/product),
+    that meant the padding was set by the SMALL width and then also subtracted twice from the LARGE
+    height - wasting real vertical space on an inset sized for the other axis entirely. `
+    ZONE_PADDING_FRAC` itself was also reduced from an initial 0.06 to 0.03 once the per-axis fix alone
+    (84.0% zone-level vertical utilization on the 36x96in AL MADEENA conversion) still fell short of the
+    >85% target - each of the 4 stacked zones+footer compounds its own padding on top of the small
+    inter-zone margin/gap, so 5 zones x 2 edges x a padding fraction adds up fast; 0.03 brought the same
+    live conversion to 89.8% (see CLAUDE.md "Orientation adaptation" for the exact live numbers).
+    ZONE_PADDING_FRAC=0.03 keeps `frame["w"]*(1-2*0.03)` and `frame["h"]*(1-2*0.03)` positive for any
+    positive frame - the same non-degeneracy guarantee documented on each `_*_zones` helper already
+    keeps every zone's own w/h a positive fraction of the target page. Still not used for the page
+    BACKGROUND placement below, which keeps `pe.aspect_fit(..., fit="cover")` specifically to avoid
+    distorting the real photographic/graphic content a background PowerClip usually holds."""
+    pad_x, pad_y = ZONE_PADDING_FRAC * frame["w"], ZONE_PADDING_FRAC * frame["h"]
+    return _rect(frame["x"] + pad_x, frame["y"] + pad_y, frame["w"] - 2 * pad_x, frame["h"] - 2 * pad_y)
 
 
 def _layer_top_ids(scene: dict) -> list[str]:
@@ -349,9 +399,8 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
             if not bucket:
                 continue
             frame = frames[zone]
-            pad = ZONE_PADDING_FRAC * min(frame["w"], frame["h"])
             frm = _union_box(idx, bucket)
-            to = pe.aspect_fit(frm["w"], frm["h"], frame, fit="contain", padding=pad)
+            to = _fill_frame(frame)
             ops.append({"op": "resize", "ids": bucket, "from": frm, "to": to})
             placed.update(bucket)
         zones[ZONE_OTHER] = [i for i in zones[ZONE_OTHER] if i not in placed]  # the rest keep the fallback below
@@ -361,9 +410,8 @@ def convert_orientation(scene: dict, target_w: float, target_h: float) -> list[d
         if not ids:
             continue
         frame = frames[zone]
-        pad = ZONE_PADDING_FRAC * min(frame["w"], frame["h"])
         frm = _union_box(idx, ids)
-        to = pe.aspect_fit(frm["w"], frm["h"], frame, fit="contain", padding=pad)
+        to = _fill_frame(frame)
         ops.append({"op": "resize", "ids": ids, "from": frm, "to": to})
 
     for i in zones[ZONE_BACKGROUND]:
