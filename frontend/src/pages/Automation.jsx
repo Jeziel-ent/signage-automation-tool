@@ -1,16 +1,17 @@
 import { useEffect, useRef, useState } from "react";
+import { Building2, CheckCircle2, ExternalLink, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
 import UploadDropzone from "../components/UploadDropzone.jsx";
+import BrandSelect from "../components/BrandSelect.jsx";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
+import { parseShopFile } from "../utils/shopImport.js";
+import { isDraft, resetForNewMaster, shopPayload, toDraftRow } from "../utils/shopPayload.js";
+import { prefetchEditor } from "../utils/prefetchEditor.js";
+import { batchStats, fmtSeconds } from "../utils/batchStats.js";
+import { fmtBytes } from "../utils/fileSize.js";
 
-const UNITS = ["in", "cm", "mm", "ft"];
-// phone/gst/address are optional per-shop contact fields (see CLAUDE.md
-// "Per-shop content replacement") - the backend normalizes a blank string to
-// None ("leave the master's own text alone") at the API boundary, so the
-// form can safely send "" for a field the user left untouched.
-const emptyShopForm = () => ({
-  name: "", width: "", width_unit: "in", height: "", height_unit: "in",
-  phone: "", gst: "", address: "",
-});
+const UNITS = ["in", "ft"];
+// One shared unit per board (applies to both width and height); the server stores it on both dimensions.
+const emptyShopForm = () => ({ name: "", width: "", height: "", unit: "in" });
 
 // CorelEngine's own named steps (see backend/app/engines.py's step() closure
 // and CLAUDE.md "Production hardening"), each with the cumulative percent
@@ -28,20 +29,37 @@ export const CONVERT_STEPS = [
 export default function Automation() {
   const [brands, setBrands] = useState([]);
   const [brand, setBrand] = useState("");
+  const defaultBrandApplied = useRef(false);
   const [addingBrand, setAddingBrand] = useState(false);
   const [newBrand, setNewBrand] = useState("");
 
-  const [job, setJob] = useState(null); // {id, preview_url, preview_error}
+  // Dual-master templates: one upload per orientation, both optional. Shops attach to the first master that
+  // exists (landscape preferred) and carry both ids; the server converts from the master matching each
+  // shop's TARGET orientation (width > height = landscape; square and portrait = portrait), falling back to the other one.
+  const [landscapeJob, setLandscapeJob] = useState(null); // {id, preview_url, preview_error}
+  const [portraitJob, setPortraitJob] = useState(null);
+  const job = landscapeJob || portraitJob;
   const [shops, setShops] = useState([]);
   const [shopForm, setShopForm] = useState(emptyShopForm());
   const [shopError, setShopError] = useState("");
   const [stepEstimates, setStepEstimates] = useState({});
-  const pollers = useRef({});
+  // One timer polls every converting/queued shop in a single request (GET /api/v2/shop-statuses) - not one timer + one
+  // request per shop, which a large Convert All turned into dozens of requests a second.
+  const polling = useRef(new Set());
+  const pollTimer = useRef(null);
 
   useEffect(() => {
     fetch("/api/v2/brands")
       .then((r) => r.json())
-      .then(setBrands)
+      .then((list) => {
+        setBrands(list);
+        // Default to Adinn when it exists (case-insensitive), so the workspace opens ready to use; only once, never overriding a choice.
+        const adinn = list.find((b) => b.toLowerCase() === "adinn");
+        if (adinn && !defaultBrandApplied.current) {
+          defaultBrandApplied.current = true;
+          setBrand((cur) => cur || adinn);
+        }
+      })
       .catch(() => {});
     // Measured average step durations (seconds), used to pace the smoothed
     // per-row progress animation - see useSteppedProgress. Fetched once per
@@ -54,7 +72,7 @@ export default function Automation() {
 
   useEffect(
     () => () => {
-      Object.values(pollers.current).forEach(clearInterval);
+      clearInterval(pollTimer.current);
     },
     [],
   );
@@ -74,9 +92,48 @@ export default function Automation() {
     setAddingBrand(false);
   }
 
-  function onUploaded(body) {
-    setJob(body);
-    setShops([]);
+  // Bumped whenever the masters change; an in-flight convert / Convert All started under older masters stops at its next step.
+  const masterGen = useRef(0);
+  const [queueNotice, setQueueNotice] = useState("");
+
+  // Uploading, replacing or removing a master invalidates every conversion in the queue: each saved shop (done, converting, queued,
+  // failed) becomes a fresh draft with the same name and size, so its next Convert creates a new shop on the NEW master instead of
+  // re-running the old one. Status polling and batch tracking for the old shops stop. The old shops are not deleted - their boards
+  // stay under Recently generated, and a conversion the server already started finishes there.
+  function resetShopsQueueStatus(reason) {
+    masterGen.current += 1;
+    polling.current.clear();
+    clearInterval(pollTimer.current);
+    pollTimer.current = null;
+    setIsBatchConverting(false);
+    setBatch(null);
+    setBatchSummary("");
+    setImportReport(null);
+    setShopError("");
+    const { shops: next, reset } = resetForNewMaster(shops);
+    setShops(next);
+    if (reset) setQueueNotice(`${reason} - ${reset} shop${reset === 1 ? "" : "s"} reset to Convert. Earlier results stay under Recently generated.`);
+  }
+
+  // A master upload: remember the job plus the file name/size for the badge, then reset the queue's conversions.
+  function onUploaded(orientation, body, fileName, fileSize) {
+    const job = { ...body, fileName, fileSize };
+    const replacing = orientation === "landscape" ? landscapeJob : portraitJob;
+    if (orientation === "landscape") setLandscapeJob(job);
+    else setPortraitJob(job);
+    resetShopsQueueStatus(`${orientation === "landscape" ? "Landscape" : "Portrait"} master ${replacing ? "replaced" : "added"}`);
+  }
+
+  function removeMaster(orientation) {
+    const other = orientation === "landscape" ? portraitJob : landscapeJob;
+    if (!other && shops.length > 0 && !window.confirm("Removing the only master clears the shops list in this view (converted shops stay under Recently generated). Continue?")) return;
+    if (orientation === "landscape") setLandscapeJob(null);
+    else setPortraitJob(null);
+    resetShopsQueueStatus(`${orientation === "landscape" ? "Landscape" : "Portrait"} master removed`);
+    if (!other) {
+      setShops([]);
+      setQueueNotice("");
+    }
   }
 
   async function addShop() {
@@ -89,7 +146,11 @@ export default function Automation() {
     const r = await fetch(`/api/v2/jobs/${job.id}/shops`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...f, width: +f.width, height: +f.height }),
+      body: JSON.stringify({
+        ...shopPayload(f),
+        landscape_master_id: landscapeJob?.id || null,
+        portrait_master_id: portraitJob?.id || null,
+      }),
     });
     if (!r.ok) {
       const body = await r.json().catch(() => ({}));
@@ -97,215 +158,543 @@ export default function Automation() {
       return;
     }
     const shop = await r.json();
-    setShops((s) => [...s, shop]);
+    setShops((s) => [...s, { ...shop, unit: shop.width_unit }]);
     setShopForm(emptyShopForm());
+    setShowAddRow(false);
+  }
+
+  // Excel / CSV bulk import: parsed entirely in the browser (SheetJS) into editable draft rows; the server only
+  // hears about a row when it is converted. Bad rows are listed, never silently dropped.
+  const [importReport, setImportReport] = useState(null); // {file, added, errors:[{row, reason}], note}
+  const [importing, setImporting] = useState(false);
+  const importInputRef = useRef(null);
+  const [showAddRow, setShowAddRow] = useState(false);
+  const [shopsDrag, setShopsDrag] = useState(false);
+
+  async function importFile(file) {
+    if (!file) return;
+    setImporting(true);
+    setImportReport(null);
+    try {
+      const parsed = await parseShopFile(file);
+      if (parsed.missing.length) {
+        setImportReport({ file: file.name, added: 0, errors: [], note: `Could not find the ${parsed.missing.map((m) => (m === "size" ? "size (a Size column like 10*4, or Width and Height columns)" : "shop name")).join(" or the ")}.` });
+        return;
+      }
+      // Browser only - no request is made here. Rows become local drafts in the table (fully editable); a draft is
+      // saved to the server the moment it is converted.
+      const errors = [...parsed.errors].sort((a, b) => (a.row ?? 0) - (b.row ?? 0));
+      const added = parsed.shops.length;
+      if (added) setShops((s) => [...s, ...parsed.shops.map(toDraftRow)]);
+      setImportReport({ file: file.name, added, errors, note: parsed.shops.length + parsed.errors.length === 0 ? "No data rows found." : "" });
+    } catch (e) {
+      setImportReport({ file: file.name, added: 0, errors: [], note: `Import failed: ${e.message}` });
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = "";
+    }
   }
 
   function pollShop(shopId) {
-    if (pollers.current[shopId]) return;
-    pollers.current[shopId] = setInterval(async () => {
-      const r = await fetch(`/api/v2/shops/${shopId}/status`);
-      if (!r.ok) return;
-      const data = await r.json();
-      setShops((s) => s.map((x) => (x.id === shopId ? { ...x, ...data } : x)));
-      if (data.status === "done" || data.status === "failed") {
-        clearInterval(pollers.current[shopId]);
-        delete pollers.current[shopId];
+    polling.current.add(shopId);
+    if (pollTimer.current) return;
+    pollTimer.current = setInterval(async () => {
+      const ids = [...polling.current];
+      if (!ids.length) {
+        clearInterval(pollTimer.current);
+        pollTimer.current = null;
+        return;
       }
+      let data;
+      try {
+        const r = await fetch(`/api/v2/shop-statuses?ids=${ids.map(encodeURIComponent).join(",")}`);
+        if (!r.ok) return;
+        data = await r.json();
+      } catch {
+        return; // a network blip: try again on the next tick
+      }
+      for (const [id, st] of Object.entries(data)) {
+        if (st.status === "done" || st.status === "failed") polling.current.delete(id);
+      }
+      // (after a master reset the rows are new drafts with new ids, so a late response for an old shop matches nothing)
+      setShops((s) => s.map((x) => (data[x.id] ? { ...x, ...data[x.id] } : x)));
     }, 800);
   }
 
-  async function convertShop(shopId) {
-    setShops((s) => s.map((x) => (x.id === shopId ? { ...x, status: "queued", progress_pct: 0 } : x)));
-    const r = await fetch(`/api/v2/shops/${shopId}/convert`, { method: "POST" });
-    if (r.ok || r.status === 409) pollShop(shopId);
+  function editShop(shopId, patch) {
+    setShops((s) => s.map((x) => (x.id === shopId ? { ...x, ...patch } : x)));
   }
+
+  // Persist an inline edit when the field loses focus / a unit changes (convert also re-sends everything, so a
+  // conversion never depends on this having landed).
+  async function saveShop(shopId, override) {
+    if (isDraft({ id: shopId })) return; // a draft lives in the browser until it is converted
+    const x = { ...shops.find((y) => y.id === shopId), ...override };
+    if (!x.name || !(+x.width > 0) || !(+x.height > 0)) return; // incomplete edit: keep it local, convert will complain
+    const r = await fetch(`/api/v2/shops/${shopId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(shopPayload(x)),
+    });
+    if (!r.ok) setShopError((await r.json().catch(() => ({}))).detail || "Could not save the change");
+    else setShopError("");
+  }
+
+  async function deleteShop(shopId) {
+    if (isDraft({ id: shopId })) return setShops((s) => s.filter((x) => x.id !== shopId));
+    const r = await fetch(`/api/v2/shops/${shopId}`, { method: "DELETE" });
+    if (r.ok) setShops((s) => s.filter((x) => x.id !== shopId));
+    else setShopError((await r.json().catch(() => ({}))).detail || "Could not remove the shop");
+  }
+
+  async function convertShop(shopId) {
+    let current = shops.find((x) => x.id === shopId);
+    if (!current) return null;
+    setShopError("");
+    const gen = masterGen.current;
+    const masters = { landscape_master_id: landscapeJob?.id || null, portrait_master_id: portraitJob?.id || null };
+    let id = shopId;
+    if (isDraft(current)) {
+      // First save: create the shop from the row's CURRENT (possibly edited) values, then convert that.
+      const c = await fetch(`/api/v2/jobs/${job.id}/shops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...shopPayload(current), ...masters }),
+      });
+      if (!c.ok) {
+        setShopError(`${current.name || "Shop"}: ${(await c.json().catch(() => ({}))).detail || "could not save the shop"}`);
+        return null;
+      }
+      const saved = await c.json();
+      if (gen !== masterGen.current) return null; // the masters changed while saving: don't convert against the old one
+      id = saved.id;
+      current = { ...saved, ...shopPayload(current) };
+      setShops((s) => s.map((x) => (x.id === shopId ? { ...saved, ...shopPayload(current), status: "new", progress_pct: 0 } : x)));
+    }
+    setShops((s) => s.map((x) => (x.id === id ? { ...x, status: "queued", progress_pct: 0 } : x)));
+    // Send the CURRENT row values and master ids with every conversion: a shop row keeps the ids it was created with
+    // (a portrait master uploaded after the shop was added would otherwise be ignored) and inline edits may not
+    // have been saved yet.
+    const r = await fetch(`/api/v2/shops/${id}/convert`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...shopPayload(current), ...masters }),
+    });
+    if (gen !== masterGen.current) return null; // reset while the request was in flight: that row is gone from the queue
+    if (r.ok || r.status === 409) {
+      pollShop(id);
+      return id;
+    }
+    setShops((s) => s.map((x) => (x.id === id ? { ...x, status: "new" } : x)));
+    setShopError(`${current.name || "Shop"}: ${(await r.json().catch(() => ({}))).detail || "could not start the conversion"}`);
+    return null;
+  }
+
+  const convertible = shops.filter((x) => x.status === "new" || x.status === "failed");
+
+  // ---- batch conversion: Convert All swaps for a progress banner until every shop in the batch has finished
+  const [isBatchConverting, setIsBatchConverting] = useState(false);
+  const [batch, setBatch] = useState(null); // {startedAt, total, ids: [real shop ids that started], notStarted}
+  const [now, setNow] = useState(Date.now());
+  const [batchSummary, setBatchSummary] = useState("");
+
+  async function convertAll() {
+    const todo = convertible.map((x) => x.id);
+    if (!todo.length) return;
+    setBatchSummary("");
+    setBatch({ startedAt: Date.now(), total: todo.length, ids: [], notStarted: 0 });
+    setIsBatchConverting(true);
+    // one after another: saving drafts numbers the shops (seq_no), which must not race. The server then converts
+    // the queued shops one at a time.
+    const gen = masterGen.current;
+    for (const id of todo) {
+      if (gen !== masterGen.current) return; // a master changed mid-batch: the queue was reset, stop queuing
+      const realId = await convertShop(id);
+      if (gen !== masterGen.current) return;
+      setBatch((b) => (!b ? b : realId ? { ...b, ids: [...b.ids, realId] } : { ...b, notStarted: b.notStarted + 1 }));
+    }
+  }
+
+  useEffect(() => {
+    if (!isBatchConverting) return undefined;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [isBatchConverting]);
+
+  const stats = batchStats(batch, shops, now);
+  const { batchProgress, estimatedTimeRemaining, currentShopIndex } = stats;
+  useEffect(() => {
+    if (isBatchConverting && stats.allSettled) {
+      setIsBatchConverting(false);
+      setBatchSummary(`Batch finished: ${stats.done} converted${stats.failed + batch.notStarted ? `, ${stats.failed + batch.notStarted} failed` : ""}.`);
+    }
+  }, [isBatchConverting, stats.allSettled, stats.done, stats.failed, batch]);
 
   function openEditor(shop) {
-    window.open(`/editor/${job.id}/${shop.id}`, "_blank");
+    window.open(`/editor/${shop.job_id || job.id}/${shop.id}`, "_blank");
   }
 
-  return (
-    <div className="automation-page">
-      <h1>Automation</h1>
+  const bothMasters = !!(landscapeJob && portraitJob);
+  const masterBadge = bothMasters ? "Dual-Master Ready" : landscapeJob ? "Landscape master only" : portraitJob ? "Portrait master only" : "No master yet";
 
-      <section className="card">
-        <h2>1. Brand</h2>
-        <div className="row">
-          <select value={brand} onChange={(e) => setBrand(e.target.value)}>
-            <option value="">Select brand…</option>
-            {brands.map((b) => (
-              <option key={b}>{b}</option>
-            ))}
-          </select>
+  return (
+    <div className="ws-page">
+      {/* BAR 1 - brand selector + status badges */}
+      <header className="ws-bar">
+        <div className="ws-bar-left">
+          <span className="ws-bar-title">
+            <Building2 size={14} /> Brand
+          </span>
+          <BrandSelect value={brand} options={brands} onChange={setBrand} />
           {addingBrand ? (
             <>
               <input
+                className="ws-input"
                 autoFocus
                 placeholder="New brand name"
                 value={newBrand}
                 onChange={(e) => setNewBrand(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && addBrand()}
               />
-              <button className="btn" onClick={addBrand} disabled={!newBrand.trim()}>
+              <button className="ws-cta" onClick={addBrand} disabled={!newBrand.trim()}>
                 Add
               </button>
-              <button className="btn ghost" onClick={() => setAddingBrand(false)}>
+              <button className="ws-cta-ghost" onClick={() => setAddingBrand(false)}>
                 Cancel
               </button>
             </>
           ) : (
-            <button className="btn-icon" title="Add brand" onClick={() => setAddingBrand(true)}>
-              +
+            <button className="ws-cta" onClick={() => setAddingBrand(true)}>
+              <Plus size={14} /> New Brand
             </button>
           )}
         </div>
-      </section>
+        <div className="ws-badges">
+          <span className="ws-badge">
+            <Store size={13} /> {shops.length} Shop{shops.length === 1 ? "" : "s"} Loaded
+          </span>
+          <span className={"ws-badge" + (bothMasters ? " ok" : "")}>
+            <span className={"ws-dot" + (bothMasters ? " live" : "")} aria-hidden="true" /> {masterBadge}
+          </span>
+        </div>
+      </header>
 
-      <section className="card">
-        <h2>2. Master file</h2>
-        {!brand ? (
-          <p className="hint">Select a brand first.</p>
-        ) : (
-          <>
-            <UploadDropzone brand={brand} onUploaded={onUploaded} />
-            {job && (
-              <div className="preview-row">
-                {job.preview_url ? (
-                  <img className="master-preview" src={job.preview_url} alt="master preview" />
+      <div className="ws-grid">
+        {/* LEFT - master templates */}
+        <section className="ws-card ws-col-5" aria-label="Master Templates">
+          <div className="ws-card-head">
+            <h2>Master Templates</h2>
+          </div>
+          <div className="ws-card-body">
+            {/* two side-by-side upload cards, both always visible (no tab switch); each becomes a file badge once filled */}
+            <div className="mc-grid">
+              {[
+                ["landscape", landscapeJob, { title: "Landscape Master", help: "Drag & drop .cdr file (Width > Height)", browse: "Browse Landscape", tone: "red" }],
+                ["portrait", portraitJob, { title: "Portrait Master", help: "Drag & drop .cdr file (Width ≤ Height, incl. square)", browse: "Browse Portrait", tone: "rose" }],
+              ].map(([orientation, mjob, card]) =>
+                mjob ? (
+                  <div key={orientation} className="master-card filled" data-slot={orientation}>
+                    <div className="mc-filled-head">{card.title}</div>
+                    <div className="master-thumb">
+                      {mjob.preview_url ? (
+                        <img src={mjob.preview_url} alt={`${orientation} master preview`} />
+                      ) : (
+                        <div className="preview-missing">{mjob.preview_error || "Preview not available"}</div>
+                      )}
+                    </div>
+                    <div className="file-badge">
+                      <FileCheck2 size={18} className="ok" />
+                      <div className="file-badge-text">
+                        <div className="file-badge-name" title={mjob.fileName}>{mjob.fileName || "master.cdr"}</div>
+                        <div className="file-badge-size">{fmtBytes(mjob.fileSize)}</div>
+                      </div>
+                      <button className="icon-btn" onClick={() => removeMaster(orientation)} title={`Remove the ${orientation} master`} aria-label={`Remove the ${orientation} master`}>
+                        <X size={16} />
+                      </button>
+                    </div>
+                  </div>
                 ) : (
-                  <div className="preview-missing">{job.preview_error || "Preview not available"}</div>
+                  <div key={orientation} className="mc-slot" data-slot={orientation}>
+                    <UploadDropzone
+                      card={card}
+                      disabled={!brand}
+                      brand={brand}
+                      orientation={orientation}
+                      label={orientation}
+                      onUploaded={(body, name, size) => onUploaded(orientation, body, name, size)}
+                    />
+                  </div>
+                ),
+              )}
+            </div>
+            {!brand && <p className="hint hero-note">Pick or create a brand above to enable uploads.</p>}
+          </div>
+        </section>
+
+        {/* RIGHT - shops queue */}
+        <section className="ws-card ws-col-7" aria-label="Shops Queue">
+          <div className="ws-card-head">
+            <h2>Shops Queue</h2>
+            <div className="ws-actions">
+              <input
+                ref={importInputRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                hidden
+                data-testid="shop-import-input"
+                onChange={(e) => importFile(e.target.files[0])}
+              />
+              {/* hidden until a sheet (or sample data) has put shops in the queue; the empty-state card is the way in until then.
+                  The file input above stays mounted - the empty-state "Import Excel File" button uses it. */}
+              {shops.length > 0 && (
+                <>
+                  <button className="btn-gradient" disabled={!job || importing} onClick={() => importInputRef.current?.click()}>
+                    <FileSpreadsheet size={16} /> {importing ? "Importing..." : "Import Excel (.xlsx / .csv)"}
+                  </button>
+                  <button className="btn ghost" disabled={!job} onClick={() => setShowAddRow((v) => !v)}>
+                    <Plus size={15} /> Add Shop
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+
+          {queueNotice && (
+            <div className="import-report queue-notice" role="status">
+              <span>{queueNotice}</span>
+              <button className="icon-btn" onClick={() => setQueueNotice("")} aria-label="Dismiss">×</button>
+            </div>
+          )}
+          {importReport && (
+                <div className="import-report" role="status">
+                  {importReport.added > 0 && (
+                    <div>Successfully imported {importReport.added} shop{importReport.added === 1 ? "" : "s"} from {importReport.file}</div>
+                  )}
+                  {importReport.errors.length > 0 && (
+                    <div>{importReport.errors.length} row{importReport.errors.length === 1 ? "" : "s"} skipped:</div>
+                  )}
+                  {importReport.note && <div className="err">{importReport.note}</div>}
+                  {importReport.errors.length > 0 && (
+                    <ul className="err">
+                      {importReport.errors.map((e, i) => (
+                        <li key={i}>Row {e.row}: {e.reason}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+          {shopError && <div className="err ws-error">{shopError}</div>}
+          {!job || (shops.length === 0 && !showAddRow) ? (
+            <div className="ws-card-body">
+              <ShopsEmptyState
+                hasJob={!!job}
+                importing={importing}
+                dragOver={shopsDrag}
+                setDragOver={setShopsDrag}
+                onImportClick={() => importInputRef.current?.click()}
+                onManual={() => setShowAddRow(true)}
+                onDropFile={importFile}
+              />
+            </div>
+          ) : (
+            <>
+              <div className="ws-table-wrap">
+              <div className="ws-table-scroll">
+                <table className="shops-table">
+                  <thead>
+                    <tr>
+                      <th>S.no</th>
+                      <th>Shop name</th>
+                      <th>Width</th>
+                      <th>Height</th>
+                      <th>Unit</th>
+                      <th>Convert</th>
+                      <th>Editor</th>
+                      <th aria-label="Remove"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {showAddRow && <NewShopRow seqNo={shops.length + 1} form={shopForm} setForm={setShopForm} onAdd={addShop} onCancel={() => setShowAddRow(false)} />}
+                    {shops.map((s, i) => (
+                      <ShopRow
+                        key={s.id}
+                        index={i + 1}
+                        shop={s}
+                        onEdit={(patch) => editShop(s.id, patch)}
+                        onSave={(override) => saveShop(s.id, override)}
+                        onDelete={() => deleteShop(s.id)}
+                        onConvert={() => convertShop(s.id)}
+                        onOpen={() => openEditor(s)}
+                        stepEstimates={stepEstimates}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              </div>
+              <div className="ws-card-foot">
+                {isBatchConverting ? (
+                  <BatchBanner
+                    progress={batchProgress}
+                    index={currentShopIndex}
+                    total={batch?.total ?? 0}
+                    remaining={estimatedTimeRemaining}
+                  />
+                ) : (
+                  <>
+                    {batchSummary && <span className="ws-summary">{batchSummary}</span>}
+                    {convertible.length > 0 && (
+                      <button className="btn-gradient" onClick={convertAll}>
+                        <Play size={15} /> Convert All ({convertible.length})
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
-            )}
-          </>
-        )}
-      </section>
-
-      {job && (
-        <section className="card">
-          <h2>3. Shops</h2>
-          <table className="shops-table">
-            <thead>
-              <tr>
-                <th>S.no</th>
-                <th>Shop name</th>
-                <th>Width</th>
-                <th>Unit</th>
-                <th>Height</th>
-                <th>Unit</th>
-                <th>Phone</th>
-                <th>GST</th>
-                <th>Address</th>
-                <th>Convert</th>
-                <th>Editor</th>
-              </tr>
-            </thead>
-            <tbody>
-              {shops.map((s) => (
-                <tr key={s.id}>
-                  <td>{s.seq_no}</td>
-                  <td>{s.name}</td>
-                  <td>{s.width}</td>
-                  <td>{s.width_unit}</td>
-                  <td>{s.height}</td>
-                  <td>{s.height_unit}</td>
-                  <td>{s.phone || "—"}</td>
-                  <td>{s.gst || "—"}</td>
-                  <td className="shop-address-cell">{s.address || "—"}</td>
-                  <td>
-                    <ConvertCell shop={s} onConvert={() => convertShop(s.id)} stepEstimates={stepEstimates} />
-                  </td>
-                  <td>
-                    {s.status === "done" ? (
-                      <button className="btn small" onClick={() => openEditor(s)}>
-                        Open
-                      </button>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                </tr>
-              ))}
-              <NewShopRow seqNo={shops.length + 1} form={shopForm} setForm={setShopForm} onAdd={addShop} />
-            </tbody>
-          </table>
-          {shopError && <div className="err">{shopError}</div>}
+            </>
+          )}
         </section>
-      )}
+      </div>
     </div>
   );
 }
 
-function NewShopRow({ seqNo, form, setForm, onAdd }) {
+// Empty state of the Shops Queue: an upload hero (click or drop a sheet) with the quick-start actions.
+function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportClick, onManual, onDropFile }) {
   return (
-    <tr className="new-shop-row">
-      <td>{seqNo}</td>
+    <>
+      <div
+        className={"empty-hero" + (dragOver ? " drag" : "") + (hasJob ? "" : " disabled")}
+        onClick={() => hasJob && onImportClick()}
+        onDragOver={(e) => {
+          e.preventDefault();
+          if (hasJob) setDragOver(true);
+        }}
+        onDragLeave={() => setDragOver(false)}
+        onDrop={(e) => {
+          e.preventDefault();
+          setDragOver(false);
+          if (hasJob) onDropFile(e.dataTransfer.files[0]);
+        }}
+        role="button"
+        tabIndex={hasJob ? 0 : -1}
+        onKeyDown={(e) => hasJob && (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onImportClick())}
+      >
+        <div className="hero-icon sheet">
+          <FileSpreadsheet size={40} />
+        </div>
+        <div className="hero-title">Import Shop Details Sheet</div>
+        <div className="hero-help">Supports .xlsx, .xls, and .csv files directly parsed in your browser via SheetJS</div>
+        <div className="hero-actions" onClick={(e) => e.stopPropagation()}>
+          <button className="btn-gradient" disabled={!hasJob || importing} onClick={onImportClick}>
+            <FolderOpen size={15} /> {importing ? "Importing..." : "Import Excel File"}
+          </button>
+          <button type="button" className="hero-outline" disabled={!hasJob} onClick={onManual}>
+            <Plus size={14} className="plus" /> Enter Manually
+          </button>
+        </div>
+        {!hasJob && <div className="hero-note">Upload a master template first - shops convert from it.</div>}
+      </div>
+    </>
+  );
+}
+
+// One editable row: name, width, height and the shared unit are live inputs (disabled while the shop is queued or
+// converting, or once it is done - its output would no longer match the row); text/number fields save on blur, the unit
+// on change.
+function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, stepEstimates }) {
+  const locked = shop.status === "queued" || shop.status === "converting" || shop.status === "done";
+  const field = (key, label, extra = {}) => (
+    <input
+      value={shop[key] ?? ""}
+      disabled={locked}
+      aria-label={label}
+      onChange={(e) => onEdit({ [key]: e.target.value })}
+      onBlur={() => onSave()}
+      {...extra}
+    />
+  );
+  return (
+    <tr data-shop-id={shop.id}>
+      <td>{index}</td>
+      <td>{field("name", "Shop name", { type: "text" })}</td>
+      <td>{field("width", "Width", { type: "number", min: "0", step: "any" })}</td>
+      <td>{field("height", "Height", { type: "number", min: "0", step: "any" })}</td>
       <td>
-        <input placeholder="Shop name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
-      </td>
-      <td>
-        <input
-          type="number"
-          min="0"
-          step="any"
-          value={form.width}
-          onChange={(e) => setForm({ ...form, width: e.target.value })}
-        />
-      </td>
-      <td>
-        <select value={form.width_unit} onChange={(e) => setForm({ ...form, width_unit: e.target.value })}>
+        <select
+          value={shop.unit || "in"}
+          disabled={locked}
+          aria-label="Unit"
+          onChange={(e) => {
+            onEdit({ unit: e.target.value });
+            onSave({ unit: e.target.value });
+          }}
+        >
           {UNITS.map((u) => (
             <option key={u}>{u}</option>
           ))}
         </select>
       </td>
       <td>
-        <input
-          type="number"
-          min="0"
-          step="any"
-          value={form.height}
-          onChange={(e) => setForm({ ...form, height: e.target.value })}
-        />
+        <ConvertCell shop={shop} onConvert={onConvert} stepEstimates={stepEstimates} />
       </td>
       <td>
-        <select value={form.height_unit} onChange={(e) => setForm({ ...form, height_unit: e.target.value })}>
-          {UNITS.map((u) => (
-            <option key={u}>{u}</option>
-          ))}
-        </select>
+        {shop.status === "done" ? (
+          <button className="btn small icon-label" onMouseEnter={prefetchEditor} onFocus={prefetchEditor} onClick={onOpen}>
+            <ExternalLink size={13} /> Open
+          </button>
+        ) : (
+          "\u2014"
+        )}
       </td>
       <td>
-        <input
-          placeholder="optional"
-          value={form.phone}
-          onChange={(e) => setForm({ ...form, phone: e.target.value })}
-        />
-      </td>
-      <td>
-        <input
-          placeholder="optional"
-          value={form.gst}
-          onChange={(e) => setForm({ ...form, gst: e.target.value })}
-        />
-      </td>
-      <td>
-        <input
-          placeholder="optional"
-          value={form.address}
-          onChange={(e) => setForm({ ...form, address: e.target.value })}
-        />
-      </td>
-      <td colSpan={2}>
-        <button className="btn" onClick={onAdd}>
-          Add shop
+        <button
+          className="icon-btn"
+          disabled={shop.status === "queued" || shop.status === "converting"}
+          onClick={onDelete}
+          title="Remove this shop"
+          aria-label="Remove this shop"
+        >
+          <Trash2 size={16} />
         </button>
       </td>
     </tr>
   );
 }
 
+function NewShopRow({ seqNo, form, setForm, onAdd, onCancel }) {
+  return (
+    <tr className="new-shop-row">
+      <td>{seqNo}</td>
+      <td>
+        <input autoFocus placeholder="Shop name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} onKeyDown={(e) => e.key === "Enter" && onAdd()} />
+      </td>
+      <td>
+        <input type="number" min="0" step="any" value={form.width} onChange={(e) => setForm({ ...form, width: e.target.value })} />
+      </td>
+      <td>
+        <input type="number" min="0" step="any" value={form.height} onChange={(e) => setForm({ ...form, height: e.target.value })} />
+      </td>
+      <td>
+        <select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })}>
+          {UNITS.map((u) => (
+            <option key={u}>{u}</option>
+          ))}
+        </select>
+      </td>
+      <td colSpan={3}>
+        <button className="btn" onClick={onAdd}>
+          Add shop
+        </button>{" "}
+        <button className="btn ghost" onClick={onCancel}>
+          Cancel
+        </button>
+      </td>
+    </tr>
+  );
+}
+
+// The Convert column: a button while a shop is new, then a status badge (queued / processing with the eased % / completed).
 function ConvertCell({ shop, onConvert, stepEstimates }) {
   // Called unconditionally (hooks can't be conditional) - it's a no-op
   // until `shop.status === "converting"` actually starts reporting steps.
@@ -313,30 +702,28 @@ function ConvertCell({ shop, onConvert, stepEstimates }) {
 
   if (shop.status === "new") {
     return (
-      <button className="btn small" onClick={onConvert}>
-        Convert
+      <button className="btn small icon-label" onClick={onConvert}>
+        <Play size={13} /> Convert
       </button>
     );
   }
-  if (shop.status === "queued") return <span className="pill">Queued…</span>;
+  if (shop.status === "queued") return <span className="badge badge-queued">Queued</span>;
   if (shop.status === "converting") {
-    // Eased toward (but capped just below) the next real step threshold -
-    // never a straight jump to the backend's last-polled value, and never
-    // 100% here (that only happens once status flips to "done").
+    // Eased toward (but capped just below) the next real step threshold - never a straight jump to the backend's
+    // last-polled value, and never 100% here (that only happens once status flips to "done").
+    return <span className="badge badge-processing">Processing {smoothedPct}%</span>;
+  }
+  if (shop.status === "done") {
     return (
-      <div className="row-progress">
-        <div className="progress-bar small">
-          <div className="progress-fill" style={{ width: `${smoothedPct}%` }} />
-        </div>
-        <span className="progress-pct">{smoothedPct}%</span>
-      </div>
+      <span className="badge badge-done">
+        <CheckCircle2 size={13} /> Completed
+      </span>
     );
   }
-  if (shop.status === "done") return <span className="pill done">Done</span>;
   if (shop.status === "failed") {
     return (
       <div>
-        <span className="pill error" title={shop.error}>
+        <span className="badge badge-failed" title={shop.error}>
           Failed
         </span>{" "}
         <button className="btn small" onClick={onConvert}>
@@ -347,4 +734,37 @@ function ConvertCell({ shop, onConvert, stepEstimates }) {
     );
   }
   return null;
+}
+
+// Replaces the Convert All button while a batch runs: circular % loader, "Converting i of n" + time estimate, linear bar.
+function BatchBanner({ progress, index, total, remaining }) {
+  const R = 22;
+  const C = 2 * Math.PI * R;
+  return (
+    <div className="batch-banner" role="status" aria-live="polite">
+      <svg width="56" height="56" viewBox="0 0 56 56" className="batch-ring" aria-hidden="true">
+        <circle cx="28" cy="28" r={R} fill="none" stroke="#e2e8f0" strokeWidth="5" />
+        <circle
+          cx="28" cy="28" r={R} fill="none" stroke="url(#batchGrad)" strokeWidth="5" strokeLinecap="round"
+          strokeDasharray={C} strokeDashoffset={C * (1 - progress / 100)} transform="rotate(-90 28 28)"
+          style={{ transition: "stroke-dashoffset 0.6s ease" }}
+        />
+        <defs>
+          <linearGradient id="batchGrad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stopColor="#dc2626" />
+            <stop offset="100%" stopColor="#e11d48" />
+          </linearGradient>
+        </defs>
+        <text x="28" y="32" textAnchor="middle" fontSize="12" fontWeight="700" fill="#0f172a">{progress}%</text>
+      </svg>
+      <div className="batch-text">
+        <div>
+          Converting {index} of {total} &bull; Estimated time remaining: ~{fmtSeconds(remaining)}
+        </div>
+        <div className="batch-bar" aria-hidden="true">
+          <div className="batch-bar-fill" style={{ width: `${progress}%` }} />
+        </div>
+      </div>
+    </div>
+  );
 }

@@ -67,13 +67,12 @@ class CorelEngine:
         import win32com.client  # noqa: F401
 
     def process(self, master_path: Path, shop: dict, out_dir: Path, on_step=None) -> dict:
-        import pythoncom
-
-        pythoncom.CoInitialize()
-        try:
-            return self._process(master_path, shop, out_dir, on_step)
-        finally:
-            pythoncom.CoUninitialize()
+        # COM stays initialised on this thread for the thread's lifetime - NOT CoUninitialize()d per job. The pooled CorelDRAW proxy
+        # lives in this apartment; tearing it down after every job disconnected it ("Object is not connected to server", verified
+        # live), so Quit() silently failed and every conversion waited out the 15 s force-kill, and a pooled instance could never
+        # be reused. See corel_util.ensure_com.
+        corel_util.ensure_com()
+        return self._process(master_path, shop, out_dir, on_step)
 
     @staticmethod
     def _shape_text(s) -> str | None:
@@ -346,7 +345,8 @@ class CorelEngine:
             cdr_path = out_dir / f"{base}.cdr"
             pdf_path = out_dir / f"{base}.pdf"
             png_path = out_dir / f"{base}.png"
-            step("saveas", lambda: doc.SaveAs(str(cdr_path), None))
+            step("saveas", lambda: corel_util.save_cdr(doc, cdr_path))
+            cdr_format = corel_util.check_cdr_format(cdr_path, warnings)
             step("pdf", lambda: doc.PublishToPDF(str(pdf_path)))
             # Native-resolution PNG export can be tens of thousands of px on a side for
             # large-format signage; cap the preview's longest side instead.
@@ -376,6 +376,8 @@ class CorelEngine:
             corel_util.release_instance(pid, success)
 
         report = _report((page_w, page_h), (new_w, new_h), placed, timings, warnings, free_ram_gb)
+        report["cdr_format"] = cdr_format
+        report["corel"] = dict(corel_util.connected)  # which CorelDRAW (ProgID + version) produced this board
         (out_dir / f"{base}_report.json").write_text(json.dumps(report, indent=2))
         return {"files": {"cdr": cdr_path.name, "pdf": pdf_path.name,
                           "preview": png_path.name, "report": f"{base}_report.json"},

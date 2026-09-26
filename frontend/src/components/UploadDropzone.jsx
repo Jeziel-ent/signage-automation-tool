@@ -1,4 +1,5 @@
 import { useRef, useState } from "react";
+import { UploadCloud } from "lucide-react";
 
 /**
  * Click-or-drag .cdr upload with a REAL progress bar driven by the
@@ -8,7 +9,7 @@ import { useRef, useState } from "react";
  * files (e.g. 300MB) since the browser streams the multipart body and
  * reports real bytes-sent/bytes-total as it goes.
  */
-export default function UploadDropzone({ brand, onUploaded, disabled }) {
+export default function UploadDropzone({ brand, onUploaded, disabled, orientation = "landscape", label = "master", compact = false, card = null }) {
   const inputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
   const [progress, setProgress] = useState(null); // null = idle; 0-100 while uploading
@@ -28,6 +29,7 @@ export default function UploadDropzone({ brand, onUploaded, disabled }) {
     const fd = new FormData();
     fd.append("master", file);
     fd.append("brand", brand || "");
+    fd.append("orientation", orientation);
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/v2/upload");
@@ -38,7 +40,7 @@ export default function UploadDropzone({ brand, onUploaded, disabled }) {
       if (xhr.status >= 200 && xhr.status < 300) {
         setProgress(100);
         try {
-          onUploaded(JSON.parse(xhr.responseText), file.name);
+          onUploaded(JSON.parse(xhr.responseText), file.name, file.size);
         } catch {
           setError("Upload succeeded but the response was malformed");
         }
@@ -61,9 +63,10 @@ export default function UploadDropzone({ brand, onUploaded, disabled }) {
   }
 
   return (
-    <div>
+    <div className={card ? "mc-root" : undefined}>
       <div
-        className={`dropzone${dragOver ? " drag" : ""}`}
+        data-orientation={orientation}
+        className={card ? `master-card${dragOver ? " drag" : ""}` : `dropzone${dragOver ? " drag" : ""}${compact ? " compact" : ""}`}
         onClick={() => !disabled && inputRef.current?.click()}
         onDragOver={(e) => {
           e.preventDefault();
@@ -86,9 +89,22 @@ export default function UploadDropzone({ brand, onUploaded, disabled }) {
         />
         {progress === null ? (
           <>
-            <div className="dropzone-icon">&#8679;</div>
-            <div>Click or drag a master .cdr file here</div>
-            <div className="dropzone-hint">Up to 300 MB</div>
+            {card ? (
+              <>
+                <div className={`mc-icon ${card.tone || ""}`}>
+                  <UploadCloud size={24} />
+                </div>
+                <h4 className="mc-title">{card.title}</h4>
+                <p className="mc-help">{card.help}</p>
+                <span className="mc-browse">{card.browse}</span>
+              </>
+            ) : (
+              <>
+                <UploadCloud className="dropzone-icon" size={compact ? 26 : 32} />
+                <div>Click or drag the {label} .cdr file here</div>
+                <div className="dropzone-hint">Up to 300 MB</div>
+              </>
+            )}
           </>
         ) : (
           <div className="upload-progress">

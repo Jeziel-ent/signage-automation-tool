@@ -123,7 +123,7 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
               </span>
               {!row.isLayer && <span className="ed-kind"><KindIcon kind={n.kind} type={n.type} /></span>}
               <span className="ed-name" title={rowLabel(n)}>{row.isLayer ? n.name : rowLabel(n)}</span>
-              {n.stale && <span className="ed-badge" title="Edited - preview refreshes after Save and Generate">edited</span>}
+              {n.stale && <span className="ed-badge" title={n.text ? "Edited - drawn as live text here; CorelDRAW's exact result appears after Save and Generate" : "Edited - preview refreshes after Save and Generate"}>edited</span>}
               {row.locked && <span className="ed-lock" title="Locked"><Lock /></span>}
               {!row.isLayer && n.kind === "group" && (
                 <button className="ed-icon-only" title="Ungroup" onClick={(e) => { e.stopPropagation(); ungroup(n.id); }}><UngroupIcon /></button>

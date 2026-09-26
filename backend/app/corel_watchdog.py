@@ -15,6 +15,7 @@ Two uses:
 """
 from __future__ import annotations
 
+import re
 import threading
 import time
 from datetime import datetime
@@ -25,6 +26,24 @@ import win32gui
 import win32process
 
 DEFAULT_SHOT_DIR = Path(__file__).resolve().parents[1] / "dataset_analysis" / "diagnose"
+# Never treated as a dialog, whatever the CorelDRAW version: its main frame ("CorelDRAW21" in 2019, "CorelDRAW27"-style in newer
+# builds - the class name carries the version, so matching one literal name broke on every other version) and helper windows it
+# creates. Verified live on 27.0.0.121 launched hidden: its only visible top-level window is an untitled "Internet Explorer_Hidden".
+# The old check (class != "CorelDRAW21") let that helper through, so on every conversion longer than 20 s the watchdog "dismissed"
+# it with WM_CLOSE - 23 real reports carried "dialog '' open >=20s, dismissed via WM_CLOSE (no default button found)".
+MAIN_FRAME_RE = re.compile(r"^CorelDRAW\d+$")
+HELPER_CLASSES = {"Internet Explorer_Hidden", "MSCTFIME UI", "IME", "tooltips_class32", "GDI+ Hook Window Class"}
+
+
+def is_dialog(info: dict) -> bool:
+    """Whether a top-level window of CorelDRAW's process could be a blocking dialog: not the main frame, not a known helper, and
+    showing something a person could act on (a title or child controls). An untitled window with no controls is not a dialog."""
+    cls = info.get("class") or ""
+    if MAIN_FRAME_RE.match(cls) or cls in HELPER_CLASSES:
+        return False
+    return bool((info.get("title") or "").strip() or info.get("children"))
+
+
 BS_DEFPUSHBUTTON = 0x0001
 BS_TYPEMASK = 0x000F
 
@@ -110,11 +129,10 @@ class Watchdog:
     long after first being seen gets logged (title + every child control's
     text - covers the dialog's message and button labels), screenshotted,
     and closed via its own default button. Windows belonging to the main
-    CorelDRAW application frame (class "CorelDRAW21") are never dismissed -
+    CorelDRAW application frame (any version, MAIN_FRAME_RE) and its helper windows are never dismissed -
     only secondary dialogs.
     """
 
-    MAIN_FRAME_CLASS = "CorelDRAW21"
 
     def __init__(self, pid: int, interval_s: float = 2.0, log_fn=None,
                  dismiss_after_s: float | None = None, shot_dir: Path | None = None):
@@ -162,11 +180,14 @@ class Watchdog:
                         for c in info["children"]:
                             self._emit(f"           child: {c}")
                         self.events.append({"hwnd": hwnd, **info})
-                        self._screenshot(hwnd, "new")
+                        # dev diagnosis only: in production (dismiss mode) every job would otherwise save a screenshot
+                        # into its shop's output folder (it did - one per conversion, of CorelDRAW's hidden helper window)
+                        if self._dismiss_after_s is None and is_dialog(info):
+                            self._screenshot(hwnd, "new")
 
                     if (self._dismiss_after_s is not None
                             and hwnd not in self._dismissed_hwnds
-                            and info["class"] != self.MAIN_FRAME_CLASS
+                            and is_dialog(info)
                             and now - self._first_seen[hwnd] >= self._dismiss_after_s):
                         self._dismiss(hwnd, info)
             except Exception as e:
@@ -199,7 +220,8 @@ class Watchdog:
             from PIL import ImageGrab
 
             path = self._shot_dir / f"dialog_{tag}_{hwnd}_{int(time.time())}.png"
-            ImageGrab.grab().save(path)
+            # only the dialog itself, never the whole screen (which records whatever else the user has open)
+            ImageGrab.grab(bbox=win32gui.GetWindowRect(hwnd), all_screens=True).save(path)
             self._emit(f"[{_ts()}] screenshot -> {path}")
         except Exception as e:
             self._emit(f"[{_ts()}] screenshot failed: {e}")

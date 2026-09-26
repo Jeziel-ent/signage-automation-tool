@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { CheckCircle2, Download, FileArchive, FileCode, FileText, Image as ImageIcon, RotateCw, X } from "lucide-react";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 import { STEP_LABELS, fmtBytes, missingFonts, resolveRaster } from "./exportMath.js";
 import { fmt } from "./units.js";
@@ -9,6 +10,8 @@ const FORMATS = [
   ["png", "PNG", "Image, optional transparent background"],
   ["jpeg", "JPEG", "Image (white background)"],
 ];
+// File-type icon + tint per format (Lucide): CDR = code file, PDF = text file, PNG/JPEG = image.
+const FILE_ICON = { cdr: [FileCode, "cdr"], pdf: [FileText, "pdf"], png: [ImageIcon, "img"], jpeg: [ImageIcon, "img"] };
 const SIZE_PRESETS = [
   ["max_px:1600", "Preview - 1600 px wide"],
   ["max_px:4000", "Standard - 4000 px wide"],
@@ -86,6 +89,16 @@ export default function ExportDialog({ jobId, shopId, scene, opsCount, fonts, fl
   }
 
   const fileUrl = (name) => `/api/editor/${jobId}/${shopId}/exports/${job.export_id}/files/${encodeURIComponent(name)}`;
+  // "Download All": one .zip of every generated file, built by the server (a CDR can be hundreds of MB - zipping it in
+  // the browser would hold it all in memory). The server names it {ShopName}_Signage_Export.zip.
+  function handleDownloadAll() {
+    const a = document.createElement("a");
+    a.href = `/api/editor/${jobId}/${shopId}/exports/${job.export_id}/zip`;
+    a.download = "";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
   const label = status && status.status === "done" ? "Finished" : status && status.step ? STEP_LABELS[status.step] || status.step : "Queued";
   const closable = phase !== "running";
 
@@ -94,7 +107,11 @@ export default function ExportDialog({ jobId, shopId, scene, opsCount, fonts, fl
       <div className="ed-modal ed-export">
         <div className="ed-export-head">
           <h2>Save and Generate</h2>
-          {closable && <button className="ed-btn" onClick={onClose} aria-label="Close">Close</button>}
+          {closable && (
+            <button className="ed-icon-btn" onClick={onClose} aria-label="Close" title="Close">
+              <X size={18} />
+            </button>
+          )}
         </div>
 
         {phase === "choose" && (
@@ -225,26 +242,44 @@ export default function ExportDialog({ jobId, shopId, scene, opsCount, fonts, fl
               <div className="ed-warn" key={i}>{w}</div>
             ))}
 
+            <button className="ed-dl-all" onClick={handleDownloadAll}>
+              <FileArchive size={16} /> Download All (ZIP)
+            </button>
             <div className="ed-results">
-              {Object.entries(status.files).map(([kind, name]) => (
-                <div className="ed-result" key={kind}>
-                  <div>
-                    <strong>{kind.toUpperCase()}</strong>{" "}
-                    <span className="ed-hint">
-                      {status.report.file_bytes && status.report.file_bytes[kind] ? fmtBytes(status.report.file_bytes[kind]) : ""}
-                      {status.report.pixels && status.report.pixels[kind] ? ` · ${status.report.pixels[kind][0]} × ${status.report.pixels[kind][1]} px` : ""}
-                    </span>
+              {Object.entries(status.files).map(([kind, name]) => {
+                const [Icon, tone] = FILE_ICON[kind] || [FileText, "pdf"];
+                const meta = [
+                  status.report.file_bytes && status.report.file_bytes[kind] ? fmtBytes(status.report.file_bytes[kind]) : "",
+                  status.report.pixels && status.report.pixels[kind] ? `${status.report.pixels[kind][0]} \u00d7 ${status.report.pixels[kind][1]} px` : "",
+                ].filter(Boolean);
+                return (
+                  <div className="ed-file-row" key={kind}>
+                    <div className="ed-file-info">
+                      <span className={`ed-file-ico ${tone}`}><Icon size={18} /></span>
+                      <div>
+                        <div className="ed-file-title">{kind.toUpperCase()}</div>
+                        <div className="ed-file-meta">{meta.join(" \u00b7 ")}</div>
+                      </div>
+                    </div>
+                    <a className="ed-dl-btn" href={fileUrl(name)} download={name}>
+                      <Download size={14} /> Download
+                    </a>
                   </div>
-                  <a className="btn small" href={fileUrl(name)} download={name}>Download</a>
-                </div>
-              ))}
+                );
+              })}
             </div>
             {(status.files.png || status.files.jpeg) && (
-              <img className="ed-result-preview" alt="Exported preview" src={fileUrl(status.files.png || status.files.jpeg)} />
+              <div className="ed-preview">
+                <img alt="Exported preview" src={fileUrl(status.files.png || status.files.jpeg)} />
+              </div>
             )}
-            <div className="ed-modal-actions">
-              <button className="ed-btn" onClick={() => { setPhase("choose"); setJob(null); setStatus(null); }}>Export again</button>
-              <button className="btn" onClick={onClose}>Done</button>
+            <div className="ed-foot">
+              <button className="ed-btn-secondary" onClick={() => { setPhase("choose"); setJob(null); setStatus(null); }}>
+                <RotateCw size={14} /> Export again
+              </button>
+              <button className="ed-btn-primary" onClick={onClose}>
+                <CheckCircle2 size={15} /> Done
+              </button>
             </div>
           </>
         )}

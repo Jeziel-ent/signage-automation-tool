@@ -101,6 +101,13 @@ _MIGRATIONS = [
     ("shops", "phone", "ALTER TABLE shops ADD COLUMN phone TEXT"),
     ("shops", "gst", "ALTER TABLE shops ADD COLUMN gst TEXT"),
     ("shops", "address", "ALTER TABLE shops ADD COLUMN address TEXT"),
+    # Dual-master templates: each uploaded master is its own `jobs` row and says which orientation it is
+    # ('landscape' by default - every job created before this column existed was a single master); a shop
+    # may point at a landscape master and/or a portrait master and the convert worker picks by target
+    # orientation (orientation_adapter.select_master). NULL = "use the job's own master", as before.
+    ("jobs", "orientation", "ALTER TABLE jobs ADD COLUMN orientation TEXT NOT NULL DEFAULT 'landscape'"),
+    ("shops", "landscape_master_id", "ALTER TABLE shops ADD COLUMN landscape_master_id TEXT"),
+    ("shops", "portrait_master_id", "ALTER TABLE shops ADD COLUMN portrait_master_id TEXT"),
 ]
 
 
@@ -142,11 +149,11 @@ def add_brand(name: str) -> list[str]:
 
 # ------------------------------------------------------------------ jobs
 
-def create_job(job_id: str, brand: str, master_filename: str, master_path: str) -> None:
+def create_job(job_id: str, brand: str, master_filename: str, master_path: str, orientation: str = "landscape") -> None:
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO jobs (id, brand, master_filename, master_path, created_at) VALUES (?, ?, ?, ?, ?)",
-            (job_id, brand, master_filename, master_path, time.time()),
+            "INSERT INTO jobs (id, brand, master_filename, master_path, orientation, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (job_id, brand, master_filename, master_path, orientation, time.time()),
         )
 
 
@@ -175,7 +182,8 @@ def list_jobs() -> list[dict]:
 def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float, width_unit: str,
                  height: float, height_unit: str, reference: str | None,
                  reference_file_path: str | None = None, phone: str | None = None,
-                 gst: str | None = None, address: str | None = None) -> None:
+                 gst: str | None = None, address: str | None = None,
+                 landscape_master_id: str | None = None, portrait_master_id: str | None = None) -> None:
     """`reference` is the free-text note shown in the UI today.
     `reference_file_path`, if given, is a path to an uploaded reference
     file - the data model supports it (per review feedback) ahead of any
@@ -192,10 +200,12 @@ def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float,
         conn.execute(
             """INSERT INTO shops
                (id, job_id, seq_no, name, width, width_unit, height, height_unit,
-                reference, reference_file_path, phone, gst, address, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
+                reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
+                status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
             (shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
-             reference, reference_file_path, phone, gst, address, time.time()),
+             reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
+             time.time()),
         )
 
 
@@ -209,6 +219,30 @@ def get_shop(shop_id: str) -> dict | None:
     with _conn() as conn:
         row = conn.execute("SELECT * FROM shops WHERE id = ?", (shop_id,)).fetchone()
     return dict(row) if row else None
+
+
+def update_shop_fields(shop_id: str, f: dict) -> None:
+    """Overwrite the user-editable columns from a dict already validated by main._parse_shop_payload."""
+    with _conn() as conn:
+        conn.execute(
+            """UPDATE shops SET name = ?, width = ?, width_unit = ?, height = ?, height_unit = ?,
+               phone = ?, gst = ?, address = ? WHERE id = ?""",
+            (f["name"], f["width"], f["width_unit"], f["height"], f["height_unit"], f["phone"], f["gst"], f["address"],
+             shop_id))
+
+
+def delete_shop(shop_id: str) -> None:
+    """Remove a shop row and its editor/export bookkeeping (generated files on disk are left alone)."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM editor_ops WHERE shop_id = ?", (shop_id,))
+        conn.execute("DELETE FROM exports WHERE shop_id = ?", (shop_id,))
+        conn.execute("DELETE FROM shops WHERE id = ?", (shop_id,))
+
+
+def set_shop_masters(shop_id: str, landscape_master_id: str | None, portrait_master_id: str | None) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE shops SET landscape_master_id = ?, portrait_master_id = ? WHERE id = ?",
+                     (landscape_master_id, portrait_master_id, shop_id))
 
 
 def set_shop_status(shop_id: str, status: str, step: str | None = None, error: str | None = None) -> None:

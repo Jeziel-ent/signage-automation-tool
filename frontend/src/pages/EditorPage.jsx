@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { collectImageUrls, mapBuild, mapPreload, preloadImages } from "../utils/loadStages.js";
 import { useParams } from "react-router-dom";
 import "../editor/editor.css";
 import Canvas from "../editor/Canvas.jsx";
 import LayersPanel from "../editor/LayersPanel.jsx";
-import ProductPanel from "../editor/ProductPanel.jsx";
+import ShopDetailsPanel from "../editor/ShopDetailsPanel.jsx";
 import PropertiesPanel from "../editor/PropertiesPanel.jsx";
 import PageResizeDialog from "../editor/PageResizeDialog.jsx";
 import ExportDialog from "../editor/ExportDialog.jsx";
@@ -15,13 +16,29 @@ import { cloneWithNewIds, shiftNode, unionBox } from "../editor/model.js";
 import { applyOps, buildIndex } from "../editor/ops.js";
 import { UNIT_NAMES, fmt, fromUnit, toUnit, UNITS } from "../editor/units.js";
 import { fitView, zoomAt } from "../editor/view.js";
+import { ensureFont, missingFonts, sceneFonts } from "../utils/fontLoader.js";
+// Static, not lazy: it is small (plain SVG, no three.js since the 2D rewrite) and must paint at once - a lazy chunk added a
+// second network round trip before anything showed.
+import EditorLoader from "../components/EditorLoader.jsx";
+
+const FONT_SOURCE = {
+  loading: "loading…",
+  local: "installed in this browser",
+  server: "loaded from the server's installed copy",
+  google: "loaded from Google Fonts",
+  missing: "not available - edited text in this font is drawn in a fallback font (the export still uses CorelDRAW's fonts)",
+};
 
 const PX_PER_MM_100 = 96 / 25.4; // CorelDRAW's "100%" is 96 dpi
+
 
 export default function EditorPage() {
   const { jobId, shopId } = useParams();
   const [load, setLoad] = useState({ phase: "loading", progress: 0, step: "" });
   const [attempt, setAttempt] = useState(0);
+  const [loaderDone, setLoaderDone] = useState(false); // the loader has finished its exit (see EditorLoader)
+  // real-time load tracking: BUILD 0-35 (scene request / CorelDRAW build), TRANSFORM 35-75 (saved edits + every object image), PAINT 75-100 (first frame)
+  const [prog, setProg] = useState({ progress: 2, text: "Contacting the server..." });
   const [base, setBase] = useState(null);
   const [assetBase, setAssetBase] = useState("");
   const [ops, setOps] = useState([]);
@@ -78,6 +95,10 @@ export default function EditorPage() {
           retry.current = false;
           const b = await r.json();
           setLoad({ phase: "building", progress: b.progress_pct, step: b.step });
+          setProg({
+            progress: mapBuild(b.progress_pct),
+            text: b.step && b.step.startsWith("images ") ? `CorelDRAW is rendering objects ${b.step.slice(7)}` : b.step === "page_image" ? "Rendering the full-page reference" : "CorelDRAW is opening the master...",
+          });
           timer = setTimeout(go, 800);
           return;
         }
@@ -93,6 +114,7 @@ export default function EditorPage() {
         }
         retry.current = false;
         const { ops: saved, asset_base: ab, ...scene } = await r.json();
+        setProg({ progress: 35, text: "Applying shop dimensions and saved edits..." });
         let usable = saved;
         try {
           applyOps(scene, saved);
@@ -100,6 +122,12 @@ export default function EditorPage() {
           usable = [];
           say(`Saved edits could not be replayed and were ignored: ${e.message}`);
         }
+        // load every object's image for real (this also warms the browser cache, so the canvas paints at once)
+        await preloadImages(collectImageUrls(scene, ab), (loaded, total) => {
+          if (!cancelled) setProg({ progress: mapPreload(loaded, total), text: `Loading object images ${loaded}/${total}` });
+        });
+        if (cancelled) return;
+        setProg({ progress: 75, text: "Painting the first frame..." });
         setBase(scene);
         setAssetBase(ab);
         setOps(usable);
@@ -111,6 +139,8 @@ export default function EditorPage() {
       }
     }
     setLoad({ phase: "loading", progress: 0, step: "" });
+    setLoaderDone(false);
+    setProg({ progress: 2, text: "Contacting the server..." });
     go();
     return () => {
       cancelled = true;
@@ -127,6 +157,24 @@ export default function EditorPage() {
       return base;
     }
   }, [base, ops, cursor]);
+
+  // Fonts the board's text uses, made renderable in this browser for the live text (local, the server's copy, or Google Fonts).
+  const [fontStatus, setFontStatus] = useState({}); // family -> "loading" | "local" | "server" | "google" | "missing"
+  const fontKey = scene ? sceneFonts(scene).join("\n") : "";
+  useEffect(() => {
+    if (!fontKey) return undefined;
+    let alive = true;
+    for (const family of fontKey.split("\n")) {
+      setFontStatus((s) => (family in s ? s : { ...s, [family]: "loading" }));
+      ensureFont(family).then((st) => alive && setFontStatus((s) => (s[family] === st ? s : { ...s, [family]: st })));
+    }
+    return () => {
+      alive = false;
+    };
+  }, [fontKey]);
+  const fontEntries = Object.entries(fontStatus).filter(([f]) => fontKey.split("\n").includes(f));
+  const fontsMissing = missingFonts(Object.fromEntries(fontEntries));
+  const fontsLoading = fontEntries.some(([, s]) => s === "loading");
 
   useEffect(() => {
     if (scene && !fitted.current && sizeMeasured.current) {
@@ -399,8 +447,29 @@ export default function EditorPage() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // The workspace mounts underneath the loader as soon as the scene is ready; two animation frames later it has painted once -> 100%.
+  useEffect(() => {
+    if (load.phase !== "ready") return undefined;
+    let a;
+    let b;
+    a = requestAnimationFrame(() => {
+      b = requestAnimationFrame(() => setProg({ progress: 100, text: "Ready" }));
+    });
+    return () => {
+      cancelAnimationFrame(a);
+      cancelAnimationFrame(b);
+    };
+  }, [load.phase]);
+
   // ----------------------------------------------------------------- render
-  if (load.phase !== "ready") {
+  const loaderEl = loaderDone ? null : (
+    <Suspense fallback={<div className="el-root" />}>
+      <EditorLoader progress={prog.progress} statusText={prog.text} onDone={() => setLoaderDone(true)} />
+    </Suspense>
+  );
+  // The loader stays mounted (same tree slot) from the first request until the workspace has painted - see EditorLoader.
+  if (load.phase !== "error" && load.phase !== "ready") return <>{null}{loaderEl}</>;
+  if (load.phase === "error") {
     return (
       <div className="ed-splash">
         <div className="ed-splash-card">
@@ -447,6 +516,7 @@ export default function EditorPage() {
   const ctxNode = ctx ? idxNow.get(ctx)?.node : null;
 
   return (
+    <>
     <div className="ed-root">
       <header className="ed-top">
         <span className="dot" />
@@ -496,6 +566,7 @@ export default function EditorPage() {
           <div style={{ gridArea: "3 / 3", position: "relative", minWidth: 0, minHeight: 0, overflow: "hidden" }}>
             <Canvas
               scene={scene}
+              baseScene={base}
               assetBase={assetBase}
               sel={sel}
               ctx={ctx}
@@ -520,7 +591,7 @@ export default function EditorPage() {
         </div>
         <aside className="ed-side">
           <PropertiesPanel scene={scene} sel={sel} unit={unit} onCommit={commit} fonts={fonts} onTextPreview={setTextPreview} />
-          <ProductPanel scene={scene} sel={sel} jobId={jobId} shopId={shopId} onSelect={select} onCommit={commit} onToast={say} />
+          <ShopDetailsPanel scene={scene} shop={shop} shopId={shopId} onSelect={select} onCommit={commit} onToast={say} onTextPreview={setTextPreview} />
           <LayersPanel scene={scene} sel={sel} ctx={ctx} onSelect={select} onCommit={commit} nextId={() => `n${Date.now().toString(36)}g${++idCounter.current}`} />
         </aside>
       </div>
@@ -533,6 +604,21 @@ export default function EditorPage() {
             : "Nothing selected"}
           {ctxNode ? ` · inside “${ctxNode.name || "Group"}” (Esc to leave)` : ""}
         </span>
+        {fontEntries.length > 0 && (
+          <span
+            className={fontsMissing.length ? "ed-fonts-missing" : undefined}
+            title={
+              fontEntries.map(([f, s]) => `${f}: ${FONT_SOURCE[s] || s}`).join("\n") +
+              "\n\nOnly edited text is drawn by the browser; everything else is CorelDRAW's own render."
+            }
+          >
+            {fontsLoading
+              ? "Loading fonts…"
+              : fontsMissing.length
+                ? `Font${fontsMissing.length > 1 ? "s" : ""} missing: ${fontsMissing.join(", ")}`
+                : `Fonts: all ${fontEntries.length} available`}
+          </span>
+        )}
         <span>{ops.length ? `${cursor}/${ops.length} operations` : "No edits"}</span>
         <span>{scene.stats && scene.stats.mock ? "Mock scene (no CorelDRAW)" : `${scene.stats?.leaves ?? "?"} rendered objects`}</span>
       </footer>
@@ -563,6 +649,8 @@ export default function EditorPage() {
 
       {toast && <div className="ed-toast" role="status">{toast}</div>}
     </div>
+      {loaderEl}
+    </>
   );
 }
 

@@ -73,3 +73,78 @@ def installed_fonts(refresh: bool = False) -> dict:
             return _cache
     _cache = {"available": True, "fonts": sorted(set(fonts), key=str.casefold), "source": source}
     return _cache
+
+
+# ------------------------------------------------------------- font files
+#
+# The editor draws edited text itself (frontend editor/LiveText.jsx), so a browser on ANOTHER machine needs the board's fonts too.
+# `GET /api/fonts/file?family=...` serves the installed file for a family, found through the registry's font list (value name ->
+# file). Only .ttf/.otf/.ttc files from the Windows fonts folders the registry points at are ever served, never an arbitrary path.
+
+FONT_EXTS = (".ttf", ".otf", ".ttc")
+_STYLE_WORDS = {"regular", "normal", "book", "roman"}
+
+
+def resolve_font_file(family: str, entries: list[tuple[str, str]], fonts_dir: str) -> str | None:
+    """Pick the file for `family` from registry `entries` [(value name, data)], data being a file name (in `fonts_dir`) or a full path.
+
+    Exact family match first ("Arial" -> "Arial (TrueType)"), then the family plus a plain style word ("Arial Regular"); a bold or
+    italic face is never returned for a plain family. Case-insensitive. None if nothing matches or the file type is not a font."""
+    want = " ".join((family or "").split()).casefold()
+    if not want:
+        return None
+    exact, plain = None, None
+    for value_name, data in entries:
+        for name in parse_registry_name(value_name):
+            n = " ".join(name.split()).casefold()
+            if n == want and exact is None:
+                exact = data
+            elif n.startswith(want + " ") and n[len(want) + 1:] in _STYLE_WORDS and plain is None:
+                plain = data
+    data = exact or plain
+    if not data or not str(data).lower().endswith(FONT_EXTS):
+        return None
+    import os
+
+    return data if os.path.isabs(data) else os.path.join(fonts_dir, data)
+
+
+def _registry_entries() -> tuple[list[tuple[str, str]], list[str]]:
+    """(entries, allowed folders): every registered font value, and the folders a served file must live in."""
+    import os
+    import winreg
+
+    windir = os.environ.get("WINDIR", r"C:\Windows")
+    folders = [os.path.join(windir, "Fonts")]
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        folders.append(os.path.join(local, "Microsoft", "Windows", "Fonts"))  # per-user installs (full paths in HKCU)
+    entries: list[tuple[str, str]] = []
+    for hive, path in (
+        (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+        (winreg.HKEY_CURRENT_USER, r"SOFTWARE\Microsoft\Windows NT\CurrentVersion\Fonts"),
+    ):
+        try:
+            with winreg.OpenKey(hive, path) as key:
+                for i in range(winreg.QueryInfoKey(key)[1]):
+                    name, data, _ = winreg.EnumValue(key, i)
+                    entries.append((name, str(data)))
+        except OSError:
+            continue
+    return entries, folders
+
+
+def font_file(family: str):
+    """Path of the installed font file for `family`, or None (not installed, non-Windows, or not inside a Windows fonts folder)."""
+    if sys.platform != "win32":
+        return None
+    from pathlib import Path
+
+    entries, folders = _registry_entries()
+    found = resolve_font_file(family, entries, folders[0])
+    if not found:
+        return None
+    p = Path(found).resolve()
+    if not p.is_file() or not any(p.is_relative_to(Path(f).resolve()) for f in folders):
+        return None
+    return p

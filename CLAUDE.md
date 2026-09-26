@@ -272,8 +272,9 @@ fail a real export. `_write_json` now retries for up to ~3 s and
   export time; positions/sizes/tree/z-order are read from COM.
 - Approximate: after a **resize** the image is stretched, not re-rendered
   (fine for logos, not identical to Corel for text or strokes); after a
-  **text change** the canvas keeps showing Corel's original render and
-  marks the object "edited" until Phase D regenerates it; rotated shapes
+  **text change** the canvas draws the new text as live SVG text (see "Live
+  text on the canvas" - browser font metrics, not Corel's) and marks the
+  object "edited" until Phase D regenerates it; rotated shapes
   keep their rotation baked into the image and are resized by bounding box.
 - Not implemented: editing **inside** a PowerClip (deliberately deferred:
   none of the exported dalmia boards contains one, and doing it right needs
@@ -1366,6 +1367,118 @@ existed to recover it. Two layers fixed this:
      from an earlier run - both the generate step and both dumps happen
      inside the one worker call per file.
 
+### Performance: the ~15 s per CorelDRAW job was a bug, not CorelDRAW (measured and fixed)
+
+Measured before changing anything (real CorelDRAW 27, dalmia master, `backend/` scratch runs - `signage_dataset/` untouched):
+89 past conversions' own step timings summed to a median 13.9 s, but a live single-shop conversion took **25.2 s** end to end
+while its CorelDRAW work was done at ~9 s. Every job ended with ~16 s of dead time. Root causes, each confirmed live:
+
+1. **`CorelEngine.process` did `pythoncom.CoInitialize()` ... `CoUninitialize()` around every job.** The pooled CorelDRAW
+   proxy lives in that apartment, so after every job it was disconnected ("Object is not connected to server") while the
+   CorelDRAW process kept running. `quit_corel`'s `app.Quit()` then raised (swallowed by its `try/except`), CorelDRAW was
+   never told to quit, and the pool waited out `QUIT_TIMEOUT_S` (15 s) and force-killed it - on EVERY conversion. Fix:
+   `corel_util.ensure_com()` initialises COM once per thread and leaves it initialised for the thread's lifetime.
+2. **CorelDRAW only exits after `Quit()` once the last COM reference to it is released** (held: still running after 30 s;
+   released: exited 1.3 s after `Quit()`). `quit_corel` used to block its caller for up to 15 s while that caller still
+   held a reference. Now the pool drops its own reference before quitting (`_quit_pooled`), and `quit_corel` waits only
+   `QUIT_CALLER_GRACE_S` (0.5 s) before handing the rest to a background reaper (`_reap`), which force-kills after 15 s
+   only if CorelDRAW really never exits. `wait_for_pending_quits()` runs at process exit so no pid stays tracked. This
+   also removes the same ~15 s from every scene build and every Save-and-Generate export (both quit through `quit_corel`).
+3. **`cleanup_orphaned_instances()` killed the pooled instance that was IN USE** (it is tracked and running, so it looked
+   orphaned). That, together with (1), is why reusing an instance in a batch always failed with "Object is not connected
+   to server" - which this file used to attribute to memory pressure (see "Content check" and "Remaining limitations").
+   It also saved `tracked - running`, i.e. kept exactly the DEAD pids and dropped the live ones; a stale pid can be
+   reused by Windows for a designer's own CorelDRAW, which a later cleanup would then kill. Now it spares the in-use pooled
+   pid and keeps only that one tracked.
+4. An instance that has done its last allowed job (`SIGNAGE_COREL_RECYCLE_N`) is quit right after it, instead of idling
+   hidden in RAM until the next job.
+
+**Batching** (`main._v2_convert_worker`): with reuse working, consecutive queued v2 shops (Convert All) are converted in ONE
+corel_worker session, up to `CONVERT_BATCH_MAX` = 5, reusing one CorelDRAW; still strictly one CorelDRAW job at a time (one
+task on the single-worker `_pool`), each shop's result stored the moment it finishes, and a shop that fails at index > 0 is
+retried once alone in a fresh worker (the path a single shop always took). `/status` reads a batch's shared heartbeat only
+for that shop's own index (`_batch_slots`). **Not done, deliberately**: N parallel CorelDRAW instances - COM `Dispatch`
+attaches to an already registered CorelDRAW, the documented RAM floor (1.5 GB; free RAM here 1.8-4 GB) leaves room for one,
+and the "one CorelDRAW job at a time" rule is load-bearing for the watchdog/orphan logic. Deferring PDF to download time was
+also not done (median 0.6-1.7 s per shop; it would make every download slow instead).
+
+| Measured live (real CorelDRAW) | before | after |
+|---|---|---|
+| one shop, end to end | 25.2 s | **10.1 s** |
+| 3 shops in one worker batch | 34.4 s, shop 2 failed ("not connected") | **20.2 s**, all done (shops 2-3: launch 0.0 s) |
+| 4 shops through the API (Convert All) | ~100 s (4 x 25 s) | **30.5 s** (DB completion times 11.2 / 20.3 / 25.4 / 30.5 s) |
+| force-kills, leftover CorelDRW.exe, stale tracked pids | every job | none |
+
+**Frontend.** Editor-tab load was dominated by the loader, not by data: the workspace had painted at 0.4-2.0 s, but the loader
+(eased at a fixed 45 %/s) left at 3.0-3.4 s. It now also closes 14/s of the remaining gap and finishes at 97 %: an in-page
+trace on the production build shows the loader gone at **0.69 s warm / 1.0 s cold** (dalmia). The editor route is lazy
+(`App.jsx`, `utils/prefetchEditor.js`, prefetched on hover/focus of an "Open in editor" button): main bundle 306 -> **221 kB**
+(gzip 99.5 -> 71.3 kB), editor chunk 100 kB; `EditorLoader` is a static import again (no three.js since the 2D rewrite, and
+a lazy chunk added a round trip before anything painted). Scene images are served under a build-versioned URL
+(`asset_base` = `.../asset/v/<scene.json mtime>/`, `Cache-Control: immutable`), so re-opening a board no longer
+re-validates its 100-350 images. The Automation page polls all converting/queued shops with ONE request per tick
+(`GET /api/v2/shop-statuses?ids=`) instead of one request per shop every 800 ms (6 shops in flight: 5 requests instead of 30,
+verified in Edge). Server-Sent Events were not added: one batched poll gets the same saving with no connection management.
+**Not applicable here** (the brief assumed another stack): Fabric.js batching (`renderOnAdd`) - the canvas is SVG of
+CorelDRAW-rendered images; a Redis/AST template cache - the .cdr is opened by CorelDRAW itself and a reused instance already
+reopens the master in 0.4 s instead of 1.4 s; Web Workers for font measurement - measuring is a few ms per edited text.
+
+Tests: `test_corel_quit.py` (9, a fake CorelDRAW that exits only when its last reference is released),
+`test_convert_batching.py` (7, fake supervisor: one batch, cap, retry-alone, RAM refusal, per-index heartbeat, the batched
+status endpoint), `test_editor_api.py` (versioned immutable assets). Backend 678 passed, frontend 170.
+
+### CorelDRAW version: discovered from the registry, never hardcoded
+
+The code has always dispatched the version-independent ProgID `CorelDRAW.Application` (never a numbered one), which Windows
+resolves through `HKCR\CorelDRAW.Application\CurVer` to the newest registered install - on this machine
+`CorelDRAW.Application.27` (build 27.0.0.121), next to a still-installed `.21` (2019, 21.2.0.706). (The `21` elsewhere in this
+file is the SAVE format target for the designers - `save_cdr`, `Version = 21` - not the connection.) What the generic ProgID
+cannot survive is a stale registration, e.g. `CurVer` still naming an uninstalled version. `corel_util.progid_candidates()` now
+reads every `CorelDRAW.Application[.N]` from the registry, keeps those whose `LocalServer32` executable exists on disk, and orders
+them generic first, then numbered newest first (a numbered ProgID with the generic one's CLSID is skipped - same server).
+`dispatch_corel` tries the next candidate immediately when one fails with a "no such server" HRESULT (class not registered,
+invalid class string, app not found, server exec failure) instead of the 6 s busy-instance retry, and raises "no usable
+CorelDRAW installation" once all are exhausted. `SIGNAGE_COREL_PROGID` pins one (e.g. `CorelDRAW.Application.21`). The connected
+ProgID and `Application.Version` are logged and written to every conversion report as `report["corel"]`.
+
+Deliberately NOT done (both were in the request): probing each ProgID with `Dispatch` in a loop - every successful Dispatch
+launches a hidden CorelDRAW that the probe would leak; and attaching to a running instance with `GetActiveObject` by default -
+that would drive a designer's own open CorelDRAW (the codebase keeps that dev-only, `SIGNAGE_REUSE_COREL=1`). No hardcoded
+version list either: the one proposed stopped at `.25` and would have missed this machine's `.27`.
+
+Verified live: default conversion -> `{"progid": "CorelDRAW.Application", "version": "Version 27.0.0.121"}`, 10.1 s; a
+non-existent `.99` first in line -> fell through to the next candidate and launched in 2.7 s; pinned to `.21` -> a full
+conversion on CorelDRAW 2019 (21.2.0.706) succeeded, CDR written as v21 (`CDRM`/2100), no warnings - but slower: 31.3 s
+(launch 5.5 s, resize 5.7 s, PDF 12.0 s vs 1.9 / 1.9 / 0.6 s on 27). Nothing left running or tracked after any of them.
+Tests: `test_corel_progid.py` (8, fake registry + fake COM).
+
+### Input files from any CorelDRAW version; the watchdog was version-specific (fixed)
+
+**Input: verified, no code change needed.** `OpenDocument` reads every format tested. The dalmia master was saved down to 17
+formats - CorelDRAW 27 can write back only to X5 (v15; for v11-v14 its `SaveAs` returned WITHOUT error and wrote no file), the
+installed CorelDRAW 2019 wrote v11-v14 (v11-v13 are pre-X4 RIFF files, `CDRB`/`CDRC`/`CDRD`, not zips) - and each was converted
+through the real pipeline on CorelDRAW 27 in one batch (105 s for 17): all 17 done, the same 112 objects, no warnings, output
+saved as v21. Renders are pixel-identical for v17-v27 inputs; v11-v16 inputs differ by ~1/255 mean, only in the bottom text bar
+(text a few px off - older formats store text spacing differently). `_suppress_prompts` now also sets `EventsEnabled = False`
+(no document/GMS macro event handlers during automation). (`app.SDK...` from the request is not part of the object model.)
+
+**Output version: unchanged on purpose.** Saved .cdr files still target v21 (`save_cdr`, see "CDR file version") because the
+designers' CorelDRAW 2019 cannot open the newer native format. `SIGNAGE_CDR_VERSION=0` already gives "whatever the running
+CorelDRAW writes" for anyone who wants native output.
+
+**Two watchdog bugs found doing this, both fixed (`corel_watchdog.py`):**
+1. The main-frame check was the literal class `"CorelDRAW21"` (2019). On CorelDRAW 27 launched hidden, the only visible
+   top-level window is an untitled `Internet Explorer_Hidden` helper, so on every conversion longer than 20 s the watchdog
+   "dismissed" it with WM_CLOSE - 23 real reports carry `dialog '' open >=20s, dismissed via WM_CLOSE`. Now `is_dialog()`:
+   never a `CorelDRAW<N>` main frame (`MAIN_FRAME_RE`) or a known helper class, and only a window with a title or child
+   controls.
+2. Production screenshotted EVERY new window with `ImageGrab.grab()` - the whole screen, all monitors - into the shop's output
+   folder: `data/jobs_v2` held 123 whole-desktop screenshots (23 MB): 100 `dialog_new_*.png` plus 23 `dialog_stuck_*.png` from
+   the bogus WM_CLOSE "dismissals" above. Now only dev-diagnosis mode (no `dismiss_after_s`) screenshots new windows, and any
+   screenshot is of the dialog's own rectangle only. The 100 `dialog_new_*.png` were deleted at the user's request; the 23
+   `dialog_stuck_*.png` are still there.
+Tests: `test_corel_watchdog.py` (6).
+
 ### CorelEngine COM notes (verified against real CorelDRAW 2019, v21)
 
 These were wrong or untested before verification against real master
@@ -1574,6 +1687,52 @@ cross-language parity, not independent re-derivation of the formula):
   a slot were added alongside the COM replay work below, since replaying
   them is just `Replayer._apply_text` - already built for `text` - there
   was no reason to leave them editor-only).
+
+**Editor sidebar: "Product slots" replaced by "Shop details" (`editor/ShopDetailsPanel.jsx`, helpers in `editor/shopDetails.js`).** The
+`ProductPanel` UI below was removed from the editor (file deleted); the product-slot ops, `product_engine`, the upload endpoint and the COM
+replay all remain and are still tested. The new panel shows the shop record's name for reference and edits the board's **shop-name text** and
+its **Phone/GST text** (found by label, `contactIds` = product_engine's contact slot). Edits are ordinary `text` ops (undoable, replayed by Save
+and Generate; Enter applies, Shift+Enter adds a line, CorelDRAW's `
+` line breaks are kept). Finding the shop-name text: a `shopname`-tagged
+text, else a text whose content matches the shop's name, else the designer picks it from a dropdown of the board's text objects once
+(remembered per shop in localStorage). Picking is usually needed: a v2 conversion keeps the MASTER's own shop-name text, so e.g. shop "Shop 3"
+reads "ஸ்ரீ கவி ஸ்டீல்ஸ்" on the board (checked on 10 cached scenes: no board text equalled its shop's name, none tagged). A "Use <record name>"
+button writes the record's name into the board text. The panel does NOT rename the shop record. 10 unit tests (`shopDetails.test.mjs`,
+165 frontend total). Checked in Edge on a real converted dalmia board with the ops autosave intercepted (the shop's saved edits untouched):
+pick -> canvas selection, edit -> `text` op, Ctrl+Z reverts, no console errors.
+
+**Live text on the canvas (`editor/LiveText.jsx`).** Typing in the Shop details fields (and the Properties Text/Font fields) now
+updates the board as you type, and the change STAYS visible after it is committed: every text object whose content/font an op changed
+(`stale`), plus the one being typed (`textPreview`, uncommitted, never an op), is drawn as an SVG `<text>` instead of CorelDRAW's image
+(which is hidden, not covered). It sits in the object's own box as a nested `<svg>` registered in `imgRefs`, so drags move/resize it like
+an image. Size: the glyphs are measured (`getBBox`, re-measured after web fonts load) and scaled so one line has the height one line of the
+ORIGINAL text had (line counts from the pristine scene, so an edit that drops a line does not double the size); the width follows, so a
+longer name runs wider, as it would in CorelDRAW. Colour: alpha-weighted average of the opaque pixels of CorelDRAW's own render of that
+text (a 96 px, alpha >= 200 first version failed on thin glyphs and fell back to near-black - invisible on dalmia's blue). The old preview
+drew only for a SELECTED text, so text inside a group (the dalmia shop name) never previewed; this one does not depend on selection.
+Still an approximation until Save and Generate: browser font metrics, kerning and alignment (always centred here) differ from
+CorelDRAW's, and text inside a non-live PowerClip still shows the clip's old flat render under the live text. Checked in Edge on a real
+dalmia board (autosave intercepted): the image is replaced while typing, the white live text stays after Enter, Ctrl+Z restores the
+original render, no console errors.
+
+**Board fonts for the live text (`utils/fontLoader.js`, `GET /api/fonts/file`).** Fonts only matter for text the browser draws itself
+(LiveText); everything else is CorelDRAW's render. When the editor loads, `sceneFonts(scene)` lists the families the board's text uses (read
+from the scene export's `text.font` - there is no separate .cdr parser; CorelDRAW itself reports the fonts) and `ensureFont` makes each
+renderable: already renderable -> "local"; else the server's installed copy (`/api/fonts/file?family=`, loaded with `FontFace`, only
+tried when `/api/fonts` lists the family) -> "server"; else Google Fonts css2 (fetched first; a family Google doesn't serve answers 400
+and no stylesheet is injected) -> "google"; else "missing". Detection measures canvas text widths against monospace/serif/sans-serif
+(Latin + Tamil probe) because `document.fonts.check()` returns true for any family the FontFaceSet doesn't track, installed or not.
+LiveText re-fits on every `document.fonts` `loadingdone`. The editor footer shows "Fonts: all N available" / "Font missing: X" (warning
+colour) with per-font sources in its tooltip. `fonts.font_file` resolves a family through the registry's font list (exact name, then
+"<family> Regular"; never a bold/italic face for a plain family) and only serves .ttf/.otf/.ttc files inside the Windows fonts folders
+(tests: `test_fonts.py`, +6). Verified in Edge against real boards: dalmia (Arial, Yu Gothic Medium) -> all local, no requests; the
+Agarbathi board -> "Copperplate Gothic Bold" reported missing (not on this server, not on Google); a dalmia board with the shop name
+switched to Noto Sans Tamil -> loaded from Google and the live text rendered real Tamil glyphs (CorelDRAW's own render of that text shows
+tofu boxes here); the server path loads Arial and the .ttc collections Nirmala UI and Yu Gothic Medium. Not done: the Local Font Access
+API (`queryLocalFonts`, needs a permission prompt) - measuring needs no permission. Limits: only regular weight is fetched from the
+server; Google's lookup is by exact family name (no fuzzy "AvantGarde-Demi" -> "TeX Gyre Adventor"); a Google miss leaves one
+unavoidable "Failed to load resource" line in the console; the exported file is unaffected by any of this (CorelDRAW uses the fonts
+installed on the machine that runs it).
 
 ### Replacement-image upload: `POST /api/editor/{job}/{shop}/product-assets`
 
@@ -2325,6 +2484,946 @@ confirming zero overlap and exact bitmap-aspect preservation at both a
 landscape and a portrait target. All 436 backend tests and 121 frontend
 tests pass.
 
+### Portrait footer height + product-zone absorption fix (a real bug, found via a UI report)
+
+A UI test reported that converting a wide master (125x48in, R~2.6) to a
+30x40in portrait target (R=0.75) left "huge top/bottom dead space and
+cramped horizontal content". Reproduced live with a synthetic wide scene
+(logo badge, product bitmap, brand text, secondary bitmap, footer text) -
+**the stack template itself was not the problem** (it already does
+vertical stacking for R < GRID_RATIO and was already measured at ~89.8%
+vertical zone-fill on a real board - see "Three templates"/`_fill_frame`
+above). The real cause: an untagged VECTOR shape (a curve/group logo or
+badge, not text and not a bitmap) has **no slot at all** in
+`product_engine.py` (`SLOT_KINDS` covers only `product_image`/bitmap and
+four text kinds - see "Product slots") - it can only reach a named zone
+through `convert_orientation`'s "absorb leftover `other` content into an
+empty zone" fallback, and that fallback deliberately excluded
+`ZONE_PRODUCT` (correct for the WIDE template, where product is a
+full-height side column, not comparable to header/main_text/footer by
+vertical position - but that exclusion doesn't hold for the STACK
+template, where product occupies the same top-to-bottom band as the
+others). Confirmed live: a vector-only repro (no bitmaps, so product was
+ALSO empty) crushed 3 distinct shapes into the same absorbed zone.
+
+Two targeted fixes, both gated so the wide/grid templates are provably
+unaffected (verified: all 438 existing backend tests still pass unmodified):
+
+- **`FOOTER_FRAC_PORTRAIT = 0.15`** (was the shared `FOOTER_FRAC = 0.20`)
+  for the stack template only (`R < GRID_RATIO`) - matches this task's own
+  explicit "bottom 15% height, full width" footer spec; wide/grid keep 0.20.
+- **`ZONE_PRODUCT` joins the absorbing set when the target is portrait**
+  (`target_w < target_h`) and product is genuinely empty - gives an
+  untagged logo/badge/secondary-graphic content a real, properly
+  -sized zone instead of falling through to the weak `other` fallback
+  (`fit_scale = min(target_w/page_w, target_h/page_h)`, a single global
+  uniform scale applied per-shape at its own unchanged proportional
+  position - literally "shrinks into the canvas centre" for a target this
+  much narrower than the source). Confirmed via the actual
+  `/api/scene/convert-orientation` endpoint on the 125x48in->30x40in
+  reproduction: with product bitmaps present (so product zone was already
+  non-empty and unaffected by this change), header/product/main_text/
+  footer all populate distinctly and stay on-page; a second, vector-only
+  repro (product genuinely empty) went from 3 shapes crushed into one
+  zone to 3 shapes in 3 distinct vertical positions.
+
+2 new tests in `test_orientation_adapter.py` (67 total, up from 65): the
+portrait footer fraction (0.15 for stack, 0.20 unchanged for wide/grid),
+and the product-absorption fix (confirms product joins absorption only
+when portrait AND genuinely empty, and that a landscape target on the
+same scene is provably unaffected - the `other`-fallback resize op for
+that id set never appears in the wide-target op list). All 438 backend
+tests pass (up from 436).
+
+**Honest remaining gap, not closed by this fix**: there is still no
+untagged HEURISTIC for a vector logo/badge shape the way bitmaps get one
+(`product_image`) and contact text gets one (regex match) - see "Product
+slots"/"Designer dataset analysis" (real logos are often raw ungrouped
+curves). This fix gives such content a *chance* at a properly-sized zone
+via absorption when one is empty, but doesn't give it a genuine `header`
+-role identity the way a real `brand_title`-tagged text shape gets -
+absorption still assigns purely by vertical-position capacity, not by
+role. Per this codebase's established rule of engagement (CLAUDE.md
+"Example-based layout engine" - don't add a heuristic without real data
+to validate it against), no new slot kind was added here; that remains a
+larger, separately-scoped piece of future work, not attempted in this
+change.
+
+### Portrait stack template rewritten as ratio-driven normalized bands (supersedes the 0.15 footer above)
+
+The previous subsection's `FOOTER_FRAC_PORTRAIT = 0.15` and the old 0.42/0.52/0.06 header/product/
+main_text fractions are **superseded**. The stack template (`R < GRID_RATIO`, every portrait aspect) is
+now `_stack_bands`: fixed normalized bands of the canvas height (0 = bottom, 1 = top), identical for
+every ratio - footer 0-0.20 (`FOOTER_FRAC_PORTRAIT = 0.20`), product 0.20-0.55, branding/`main_text`
+0.55-0.72, header 0.72-0.98 - each inset only by the usual margin/gap. Order is header, brand,
+product, footer: the brand logo is a "roof" strictly above the products, whose base sits right above
+the footer. Non-degeneracy holds for any `target_w < target_h` (proof in `_stack_bands`). Verified
+identical band edges at 0.75 (30x40), 0.667 (24x36), 0.707 (A-series), 0.375, 0.25 and 0.975.
+
+For portrait targets, untagged (`other`) shapes are no longer split by capacity: each joins the zone
+whose band contains its own normalized centre-y on the SOURCE page (same boundaries), so header badges
+reach the existing left/right-by-x corner split, the brand logo lands in the branding band and the
+table/products fill the product band. Found by running a vector-only wide master through the first
+version of the new bands: capacity absorption pulled the brand logo into the header and stretched a
+thin object across the brand band. Landscape/grid targets keep the old capacity absorption unchanged.
+Honest limit: a band with no source shape in it stays empty (not padded with unrelated content), and
+a shape is judged only by its centre, so a tall shape straddling two source bands goes to one of them.
+Tests: 447 backend tests pass (new: band edges across 6 portrait sizes, and an end-to-end distribution
+test at 0.75/0.667/0.707 checking bands, left/right badges, brand-above-products and no overlaps),
+also checked through `POST /api/scene/convert-orientation`.
+
+#### Follow-up: top-right badge promotion and portrait main-object boost
+
+**Promotion.** A secondary badge on the source's upper right (a "BLACK STONE" header badge, source
+centre-y ~0.65) routed by centre-y alone landed in the branding band and left the top-right corner
+empty. For portrait targets, untagged shapes with source centre-y > 0.50, lying wholly in the right half
+(left edge >= 0.50) and badge-sized (height <= 40% of the source page) are promoted into the header,
+where the existing left/right-by-x split puts them top-right beside the left badge (constants
+`PROMOTE_*`). Two deviations from the literal ask, both found by tests: "centre-x > 0.50" promoted a
+central logo at x = 0.525 (broke `..._absorbs_other_into_empty_named_zones_by_vertical_band`), so the
+test is on the shape's LEFT edge; and the height cap keeps a tall right-side product composite out.
+
+**Boost.** A plain 1.25-1.35x scale cannot be applied to a zone's content: vector content already
+fills its band, and a bitmap's uniform contain-fit already fills one axis, so scaling further overflows
+into neighbouring bands or columns. Measured: with bitmap products the table was only ~11% of canvas
+height, width-limited inside a narrow middle column. The boost is therefore realized by widening the
+main object's column (`PORTRAIT_FILL_BOOST` = 1.3 x the default 0.5 share, capped at 0.85), which scales
+the main object ~1.3x (table 335 -> 445 mm at 30x40, aspect drift 0.0000%) while the flanking sticks/box
+columns narrow - no overlap. Portrait only; a zone with a single object is unchanged (it already fills
+its frame).
+
+**Not changed / limits.** The branding logo was already vertically centred in its band (centre 0.635 vs
+band centre 0.635) so no change was made there. Bitmap groups are centred vertically in the product
+band, not bottom-anchored, so the table's base sits above 0.20 (0.30 in the 30x40 check) rather than on
+it (**superseded: see "Product zone stands on the baseline" below**). Tests: 455 backend tests pass (new: promotion at 3 ratios, the two must-not-promote cases, boost at
+3 ratios, portrait-only).
+
+### Page-covering PowerClips are unwrapped: their foreground children are extracted and routed
+
+`classify_zones` used to treat a page-covering PowerClip as an opaque background, so on the real AL
+MADEENA and DARSHAN masters (one clip holds nearly everything) no cross-orientation routing could ever
+reach the content inside it. Now, for a page-covering shape of `kind == "powerclip"` that is not locked,
+the container keeps the `background` role and its direct children that are **separable foreground** are
+extracted and routed (`_is_separable_foreground`, `_child_zone`):
+- a slot tag on the child wins (image tag only if it contains a bitmap, text tag only on text); contact
+  text (`pe.CONTACT_RE`) goes to the footer; otherwise the child's normalized centre-y on the SOURCE
+  page picks the zone: footer < 0.20, product 0.20-0.55, branding (`main_text`) 0.55-0.72, header >= 0.72.
+- plain page-covering shapes, groups and gradients, locked containers, and clips whose children are all
+  backdrop/clipped art behave exactly as before.
+
+**A rule the spec did not have, found by reading the real scenes**: not every child is foreground. Each
+real clip holds (1) a full-bleed backdrop bitmap (coverage 1.07-1.22), (2) a small group of bitmaps (`s46`,
+the table composite) and (3) a huge art group (`s50`, 159-318 leaves) whose centre is BELOW the page
+(cy -0.06 / -0.10). Routing (3) by centroid would squash a mostly-hidden bounding box into the footer
+band, so a child counts as foreground only if it is not backdrop-sized (< 90% of the page) and lies >= 90%
+inside the page (`SEPARABLE_MIN_INSIDE`). On both real boards exactly `s46` is extracted; `s45`/`s50` stay
+with the container.
+
+**Op ordering changed** (needed for correctness): `convert_orientation` now emits the background cover-fit
+ops right after the `page` op and computes every zone op from the scene AFTER them. `_scale` carries a
+container's children with it, so a child op computed from its original box and applied after the container
+op would be transformed twice. Op order in the list therefore differs from before (background first);
+final positions do not, and no existing test depended on the order.
+
+**Verified through `POST /api/scene/convert-orientation` on the real cached scenes** (30x40in portrait and
+240x36in wide): the container still covers the page exactly; `s46` lands inside the product frame (portrait:
+y 0.26-0.49 / 0.22-0.53 of the canvas against a 0.21-0.54 product frame); its bitmaps' aspect drift is
+< 0.0003%; the clipped art group scales by exactly the container's factor. One existing test
+(`..._page_covering_container_as_background_even_with_a_heuristic_slot_nested_inside`) asserted the old
+behaviour (nested bitmap dropped) and was updated: the container is still the background and the bitmap is
+now routed to `product`. 9 new tests (92 in `test_orientation_adapter.py`): routing into all four zones,
+backdrop/clipped art excluded, tag beats band, contact regex beats band, non-PowerClip and locked containers
+untouched, and end-to-end placement inside the zone frames at two portrait and one landscape target with no
+double transform.
+
+**Limits.** Only direct children of the clip are considered (a group is one unit; nothing inside a child group
+is split up). A child is judged by its centre, so a shape straddling two bands goes to one of them. The
+top-right badge promotion is NOT applied to extracted children. Moving PowerClip children uses the editor's
+existing move/resize-inside-a-clip support; the CorelDRAW replay of those ops was not re-verified live in this
+change. `other` still receives the real boards' loose top-level shapes as before.
+
+### Product zone stands on the baseline (bottom-anchored) + bounded boost
+
+Bitmap groups were centred vertically in their zone, so a table/pedestal shorter than the product band
+hovered above the footer (real AL MADEENA table: base at 0.26 of the canvas height instead of ~0.20).
+`_zone_fit` now takes `anchor_bottom` and `boost`; for the **portrait product zone only**
+(`_place_zone_content`: `zone == ZONE_PRODUCT and portrait`) every object - a lone one, the main object and
+its flanking columns - has its bottom edge on the product frame's bottom edge (the baseline just above the
+footer, 0.207 of the canvas height at every portrait ratio) and stays horizontally centred in its frame or
+column. Vector/text content anchors the same way. Branding (`main_text`), header, footer, and the wide/grid
+templates keep their standard centred fit (tests lock this in).
+
+**Boost, honestly measured.** A contain fit already fills one axis of its frame, so a lone object can only grow
+by the padding that was reserved. `boost` (`PORTRAIT_FILL_BOOST` = 1.3) is bounded by the UNPADDED frame on both
+axes - the top can never pass the frame top (below the branding band) nor the width the frame width - and the
+factor actually applied is min(1.3, that headroom): **measured 1.03x (3:1 table) to 1.06x (bottle, box, 2:1
+table)**, not 1.25-1.35x. A real ~1.3x exists only for a main object with flanking objects, via the widened main
+column from the previous round (table 335 -> 445 mm at 30x40); that path is not boosted again, so the total
+stays ~1.3x. Reaching 1.3x for a lone object would need it to leave its frame.
+
+**Verified** on the real cached boards at 30x40in through `POST /api/scene/convert-orientation`: AL MADEENA
+`s46` (table composite) and `s6`, DARSHAN `s46` and `s4` all have their bottom exactly on the product baseline
+(0.207; offset 0.000 mm) and their tops at 0.44-0.52, below the branding frame; the container still covers the
+page. 19 new tests (111 in `test_orientation_adapter.py`, 482 backend total): lone product at 3 portrait
+ratios x bitmap/vector, main + flanks on one baseline, product never reaching the branding zone or footer,
+boost bounded/aspect-kept/never shrinking, anchoring limited to the portrait product zone, and the two real
+boards (skipped if the cached scenes are absent from a checkout).
+
+### Portrait -> wide: an explicit direction, a wide "stage" template, horizontal unstacking
+
+A portrait master converted to a wide target used to hit the old 3-bucket capacity split (or, for a tall
+master, the per-shape proportional fallback), so a vertical arrangement shrank into a dense central block.
+`convert_orientation` now derives an explicit `Direction(page_w, page_h, target_w, target_h)` = (source,
+target) orientation, replacing the single `portrait = target_w < target_h` flag (which said nothing about the
+source). `direction.to_portrait` keeps the old meaning for the helpers that still take that flag;
+`direction.portrait_to_wide` selects the new path.
+
+**Scope decision (deviation from "all target_w > target_h")**: the new geometry applies only when the SOURCE
+is portrait. `calculate_zone_rects(..., portrait_source=True)` returns `_wide_stage_bands`; a landscape
+source keeps `_wide_zones`/`_grid_zones` exactly as before, because those carry the documented and tested
+real-board results (header centred over 240x36in, etc.) and a portrait-only report gave no reason to move them.
+Any wide target (R > 1, so also 1 < R < 2) from a portrait source uses the stage.
+
+**Stage bands** (fractions of canvas height, identical for every wide ratio, all full width): footer 0-0.12,
+product stage 0.12-0.65, branding roof 0.65-0.83, header 0.83-1.0, each inset by gap/2 (m at the page edges);
+non-degeneracy proof in `_wide_stage_bands` (min(W,H) = H for a wide target).
+
+**Routing**: untagged shapes of a portrait source are routed by the same source-y bands as a portrait target
+(footer < 0.20 <= product < 0.55 <= branding < 0.72 <= header), plus promotion of small upper-quadrant badges
+(centre-y > 0.5, wholly in the left OR right half, <= 20% of page height and <= 50% of width - stricter than the
+portrait-target rule because a portrait page is tall, so a product must not pass for a badge) into the header
+(`P2L_BADGE_*`). Extracted PowerClip children (see above) flow through unchanged.
+
+**Placement** (`_place_p2l`): header badges go to the far top-left / top-right slots by source side (uniform
+scale, aligned to the corner and the row top, each slot `CORNER_SLOT_FRAC` = 25% of the width); band-routed header
+shapes near the horizontal middle (centre-x in the middle third, not promoted) join the branding roof, which is one
+centred, uniformly scaled slot (`BRAND_SLOT_FRAC` = 50% width). Uniform, not the fill-to-frame used elsewhere: a
+square badge stretched into a 120in x 5in strip would be unusable. Products go through `_unstack_products`:
+`_unstack_order` groups items whose x-ranges overlap >= 50% of the narrower into a column (a vertical stack),
+reads each column top to bottom, and columns left to right; ONE common uniform scale (largest that fits the
+stage width less the minimum clearance, and its height) keeps every product's proportions and the relative sizes
+between products; all bottoms stand on the stage's bottom edge (the shared baseline, y ~ 0.13); leftover width is
+spread as equal gaps between products and at both ends, and a tight row keeps exactly the minimum clearance
+(`UNSTACK_MIN_CLEARANCE_FRAC` = 2% of the stage width). Footer keeps the English-left / Tamil-right banner.
+
+**Verified**: a synthetic 30x40in master (two badges, brand roof, three vertically stacked products, footer) at
+2:1, 4:1 and 6:1: the stack unfolds A, B, C left to right, all on the baseline, proportions kept, clearance kept,
+lineup spans 0.5+ of the stage, badges in the far corners, brand centred, footer slim, zero overlaps. The REAL
+DARSHAN board (a genuine 762x1016mm portrait master) through `POST /api/scene/convert-orientation` at the same
+ratios: container still covers the page, `s38`/`s23` in the far top corners, `s5` centred in the roof, the
+English/Tamil footer lines side by side, `s46`/`s4` on the baseline.
+
+**Honest limits.** On DARSHAN the products do NOT fill the stage: the tall `s46` table composite scales to the
+stage height (so it is only ~6-12% of the width) and the small `s4` bitmap keeps its small relative size (under
+2% of the width at 2:1 and less at wider ratios) - faithful to the source's relative sizes, but a mostly empty
+stage; a designer would enlarge the small product. Each product is one whole id, so products that intentionally
+overlap on the source (sticks standing in front of a table) are separated. The source-band routing assumes the
+portrait master follows the usual header / brand / product / footer stacking. **Tests changed on purpose**: four
+existing tests converted the 400x1000 portrait fixture to a wide target and asserted behaviour this path
+replaces - the two "untagged `other` stays at its proportional position" tests now use a transposed (landscape)
+copy of the fixture, the header non-uniform-stretch test uses a portrait target, and the assembly-group test uses
+the portrait-source frames. 19 new tests (130 in `test_orientation_adapter.py`, 501 backend total).
+
+### Extreme aspect-ratio matrix and live CorelDRAW replay (final verification round)
+
+**1. Matrix** (`backend/tests/test_orientation_matrix.py`, 45 cells, all passing): five fixtures (the REAL AL
+MADEENA landscape master, the REAL DARSHAN portrait master, and three synthetic masters) x nine targets - 1:4, 1:3,
+1:2 (tall), 1:1, 4:3 (square/near-square), 2:1, 4:1, 6:1, 8:1 (wide). Asserted in every cell: every op applies;
+every foreground shape is inside the canvas (no NaN); no NEW bounding-box collision (overlaps already present on the
+source are kept, AL MADEENA has 2 and the synthetic tall master 2); bitmap aspect drift <= 6.2e-6 (measured; the test
+allows 1e-4); conversion time 0.1-4 ms (the test allows 1 s). Where a baseline is defined it holds: portrait
+targets put the lowest product on the product frame's bottom edge, 0.2025 (1:4) - 0.2098 (0.975) of the height and
+0.207 at 30x40 (the "0.207" of the spec is aspect-dependent by construction, so the test asserts the frame bottom and
+the 0.20-0.21 band); a portrait master unfolded to a wide target sits on exactly 0.13. Two matrix cells first "failed"
+because MY expectation was wrong, not the engine: a vertically stacked pair of products moves as one flank group, so
+only its LOWEST member is on the baseline - the invariant is the lowest product bottom.
+
+**Defined gap**: a LANDSCAPE master converted to a wide/grid target (AL MADEENA at 2:1..8:1, 1:1, 4:3) has no product
+baseline - it uses the original side-column template (see the portrait->wide section for why); square targets (1:1)
+use the grid template for every source. The "Y ~ 0.13 for wide" requirement is therefore met for portrait sources
+only.
+
+**Ratio limits (measured, not asserted).** Bitmaps never distort, but VECTOR/TEXT groups fill their zone
+non-uniformly, and at extreme ratios that is a large stretch: worst single-shape stretch (width factor / height
+factor) - AL MADEENA 12x at 1:4, 9x at 1:3, 6x at 1:2, 5.7x at 1:1, 4.2x at 4:3, 2.7x at 2:1, 3.9x/6x/8x at
+4:1/6:1/8:1; DARSHAN 12x, 9x, 6x, 8.2x, 3.5x, 2.3x, 1.3x, 1.9x, 2.6x; synthetic masters up to ~20x. It is visible
+in the live renders: at 1:2 the "Sugandha Swarna" Tamil badge glyphs are tall and narrow, at 1:4 that badge and the
+footer lines are badly distorted. Shrink is the other extreme: DARSHAN's small `s4` bitmap is scaled to 0.067x at 8:1
+(relative sizes are preserved). **Practical limit at the time of this matrix: portrait targets down to about 1:2 and wide targets up to
+about 4:1 looked right; beyond that vector logos/text distorted.** (Superseded: the stretch cap below was added
+right after and removes this limit at the cost of coverage.)
+
+**2. Live CorelDRAW replay** (real `corel_worker` export_replay job, CorelDRAW build **27.0.0.121** - the earlier
+sections verified 2019/v21, so this is also new version-compatibility evidence; ops from `convert_orientation`
+written to a scratch folder, the shops' saved edit history in the database untouched). All five exports: `.cdr`,
+`.pdf`, `.jpeg`; CorelDRAW's own verification re-walks the replayed document and compares it with the expected scene
+(structure, z-order, positions, visibility, text) - **0 mismatches and 0 warnings on all five**:
+
+| Board -> target | objects compared | wall time | launch / open / replay / verify / cdr / pdf / jpeg (s) |
+|---|---|---|---|
+| DARSHAN -> 120x30in (4:1) | 208 | 39.4 s | 1.5 / 4.7 / 1.1 / 1.4 / 10.0 / 2.7 / 0.7 |
+| DARSHAN -> 20x40in (1:2) | 208 | 40.5 s | 1.5 / 4.8 / 1.1 / 1.5 / 10.0 / 3.4 / 0.9 |
+| DARSHAN -> 10x40in (1:4) | 208 | 40.3 s | 1.5 / 4.7 / 1.0 / 1.2 / 10.0 / 3.2 / 0.8 |
+| AL MADEENA -> 30x40in | 371 | 35.3 s | 1.5 / 3.3 / 1.8 / 2.5 / 5.9 / 2.2 / 0.5 |
+| AL MADEENA -> 240x30in (8:1) | 371 | 35.3 s | 1.4 / 3.1 / 1.9 / 2.6 / 5.9 / 2.3 / 0.5 |
+
+**The "<1 minute per board" goal is met: 35-41 s wall-clock for launch + replay + verify + all three formats;**
+converting itself is milliseconds. The .cdr save (6-10 s, the 125-209 MB embedded backdrop) dominates. Exported .cdr
+sizes equal the source's (208.8 MB source vs 208.76 MB), so the file is not inflated by the conversion.
+
+**A real bug found by looking at the JPEG, fixed**: `export_raster` called `ExportBitmap(cdrCurrentPage,
+ExportArea=None)`, which was verified live to render the whole DRAWING extent, not the page, once content lies off the
+page. An orientation conversion's cover-fit background deliberately overflows it (5.3x the page height for
+DARSHAN -> 4:1), so every foreground shape in the JPEG was squeezed to ~1/5 of its height around the centre - while
+the .cdr, the verification and the PDF (MediaBox 120x30in, checked) were all correct. `_page_export_area` now builds
+the page rectangle with `Application.CreateRect` and passes it as `ExportArea` (falls back to None if the document
+cannot provide one); the earlier phases never met this because their boards had nothing off the page. 2 new tests.
+Same function serves PNG; PNG was covered by the unit test but not exported live in this round (JPEG was).
+
+**What the rendered files show** (viewed, not just compared): the extracted PowerClip child `s46` renders as the
+table-with-box composite standing on the baseline; the unstacked wide products, the promoted corner badges
+("Sugandha Swarna" top-left, "BLACK STONE" top-right) and the centred brand roof render without corruption or missing
+layers, and every text line is present; AL MADEENA at 30x40 and DARSHAN at 1:2 are clean, complete boards.
+
+**Known visual limits found in the renders** (documented, not fixed): (a) at wide targets the cover-fit crops the
+background's maroon footer band away, so the white shop-name text sits on cream and is low-contrast (DARSHAN 4:1,
+AL MADEENA 8:1); (b) the vector stretch above; (c) at AL MADEENA 30x40 the footer text block is slightly taller than
+the maroon band and crosses its scalloped edge; (d) DARSHAN's small product stays small on the wide stage, leaving it
+mostly empty.
+
+**Final stats**: backend `pytest` 548 passed (was 501 before this round: +45 matrix cells, +2 export tests);
+frontend `npm test` unchanged. Not exercised: the editor UI in a browser, a `swap_image`/product-slot replay, PNG/PDF
+option variants, CorelDRAW versions other than 27.0. **Readiness verdict**: geometry, replay fidelity and speed are
+production-grade and verified live; the two visible-quality limits (stretch at extreme ratios, cropped footer band on
+wide targets) are known and unfixed, so deploy for designer-tweak use with tall targets limited to ~1:2 and wide to
+~4:1, or land the stretch cap first.
+
+### Stretch cap: vector/text groups fall back to a uniform contain fit (`MAX_STRETCH_RATIO`)
+
+Vector and text groups are resized as one rigid unit into a zone frame and used to be stretched non-uniformly to FILL it
+(`_fill_frame`) - at extreme ratios that warped Tamil glyphs and logos (12x on both real boards at 1:4, see the matrix
+section). `_zone_fit` - which every non-bitmap placement goes through (`_place_main_and_subobjects`, the footer banner,
+the header split, the absorption path) - now computes the group's aspect stretch `max(sx/sy, sy/sx)` (sx = fill width /
+source width, sy likewise) and, above `MAX_STRETCH_RATIO` (**2.0**), abandons the fill: it applies the SMALLER factor to
+both axes (a uniform contain fit) and centres the group in its frame, or stands it on the frame's bottom edge on the
+product stage (`anchor_bottom`). Within the cap behaviour is unchanged (still fills the frame). Configurable per call:
+`convert_orientation(scene, w, h, max_stretch=...)` (1.0 = never distort; a huge value restores the old fill-to-frame
+behaviour) via a context variable, so the override cannot leak out of the call (tested). The API endpoint does not
+expose it.
+
+**Exemptions** (`_stretch_exempt`): a plain `rectangle` (a solid colour panel) and, for a top-level shape, a bare
+childless non-text shape spanning >= 95% (`FULL_BLEED_FRAC`) of the SOURCE page in either dimension (a full-bleed border
+bar) keep stretching edge to edge; a rigid group with any text/children/glyph-carrying member is not exempt. The
+page-covering background container never reaches `_zone_fit` (it is cover-fit, uniformly, and still covers the page -
+tested). Bitmaps keep their existing uniform logic. Nested shapes are not page-tested for full-bleed (their coordinates
+have been cover-scaled). The source page size reaches `_zone_fit` through `_Idx`, a `dict` subclass with a `.page`
+attribute (nothing iterates `idx`).
+
+**Measured on the real boards (all nine ratios):** worst vector/text stretch is now **<= 1.97x everywhere** (was 12x at
+1:4, 9x at 1:3, 6x at 1:2, up to 8x wide); the matrix test asserts it in all 45 cells. **The cost is coverage**
+(foreground area as a share of the canvas): AL MADEENA 1:4 56.6% -> 26.8%, 1:3 58.1% -> 31.1%, 1:2 61.0% -> 42.2%,
+8:1 52.1% -> 24.3%; DARSHAN 1:4 70.0% -> 39.4%, 1:2 61.7% -> 41.4%, 4:3 22.0% -> 17.7%; DARSHAN at 4:1 and 6:1 is unchanged
+(its stretch was already within the cap there). Groups that used to fill a zone are now smaller and centred, so extreme
+targets show more empty background.
+
+**Live check** (CorelDRAW 27, real replay + verification, DARSHAN -> 10x40in, 1:4): 208 objects compared, 0 mismatches,
+0 warnings, 40.4 s. The rendered JPEG has an undistorted "Sugandha Swarna" Tamil badge, brand roof and footer lines - the
+warped glyphs of the uncapped 1:4 render are gone. Visible consequences: the header badges are small and centred in their
+half-frames, leaving an empty band at the top, and the two footer lines are small and sit apart in the tall footer band.
+
+**Tests:** 13 new in `test_orientation_adapter.py` (143 in the file) - fills while within the cap, uniform + centred
+beyond it (scale_x == scale_y), bottom-anchored on the product stage, per-call configuration, exemptions (solid panel,
+full-bleed bar, mixed group, non-bar), <= cap for vector/text at 1:4 and 8:1 on three masters, end-to-end uniform
+footer with the container still covering the page - plus the stretch invariant added to all 45 matrix cells. One
+existing test asserted the old 3.9x stretch (`..._stretches_a_text_only_zone_non_uniformly`) and now checks a moderate
+stretch that stays within the cap. **Suite: backend 561 passed (548 before), frontend 121 of 121, zero regressions.**
+
+**Limits.** 2.0 is a judgement call between distortion and coverage (the spec suggested 1.8-2.0); it is one constant.
+The cap is per rigid group, so a group whose members differ a lot in shape is judged as a whole. Uniform fallback shrinks
+wide footer text lines to the frame height, so at wide targets they end up centred and narrower than the frame. The
+earlier statements in this file that vector/text zones "fill the zone bounds" (the 85-90% utilization figures) describe
+the pre-cap behaviour and hold only within the cap.
+
+### Real-board round: shattered Dalmia logos, snapped corner badges, footer sizing, table width
+
+**1. The Dalmia "giant white rectangles" - real bug, different cause than reported.** Reproduced on the real
+Dalmia 120x48 master (scene exported from a scratch COPY of the dataset file; `signage_dataset/` untouched) and on a
+cached Dalmia board: a live 30x40 conversion rendered a white house shape cut off mid-word ("FOUNDATI"), a white
+rectangle holding a cropped Tamil fragment and a stranded icon. The cause is NOT a solid rectangle wrapped inside a
+text/logo group: the Dalmia masters are 138 LOOSE top-level curves (the documented ungrouped-logo structure), and band
+routing sent each fragment to a zone by ITS OWN centre - a white card and its content (and the card and its shadow)
+landed in different zones, the largest fragment (the card) became a zone's "main object" as a giant slab, and its
+content was stranded as tiny pieces. Stripping the rectangles was NOT done: those white cards are the design (they
+carry dark-blue text; without them the text is invisible on the blue board).
+
+Fix: `_group_fragments` emits `group` ops at the start of `convert_orientation` (after the `page` op), so every later
+stage sees ONE object per logo. Loose vector shapes cluster by bounding-box proximity (`CLUSTER_GAP_FRAC` = 0.009 of the
+page's long side, ~20 mm on the 90x30in Dalmia board; 0.0066 left "EXPERT" split) - result on the real Dalmia
+masters: **24 / 50 / 58 members = the documented badge / Tamil card / roof graphic**. Only top-level, visible,
+unlocked, untagged, non-text, non-bitmap shapes/groups are candidates; a cluster is grouped only with >= 2 members and
+>= 1 LOOSE shape (so AL MADEENA and DARSHAN, whose logos are already groups, get no group ops - tested on the real
+scenes). Second defect found in the first live re-render: each card's soft drop shadow is a GROUP HOLDING A BITMAP,
+which the product-image heuristic claimed and dragged away (a stray dark rectangle, the card shadowless). A
+bitmap-bearing, text-free shape whose box overlaps a cluster's box by >= `SHADOW_IOU` (0.6) now joins that cluster (a
+product photo next to a logo does not), and `classify_zones` ignores heuristic slots inside a synthesized "Logo
+cluster" group so the logo is not mistaken for a product. The extracted-PowerClip-children path and the cluster path
+share the same downstream code.
+
+**2. Corner badges snap to canvas points** (`_place_snapped_badges`, called from the header branch of
+`_place_zone_content`, portrait targets only - the spec named `_place_main_and_subobjects`, which handles the
+product/branding zones, not badges): left group centred on X = 0.18 of the width, right group on X = 0.82, top edge
+on Y = 0.92 of the height (`BADGE_*`), each group one rigid unit scaled UNIFORMLY (contain) in a slot that reaches
+from the margin to the mirrored point. A LONE header badge snaps to the side it sat on in the source (left/right
+third; middle third keeps the centred fit) - the Dalmia master's single top-right badge was being centred and
+stretched. Verified on real DARSHAN: X 0.180 / 0.820, top 0.920 exactly. Consequence: DARSHAN's Sugandha Swarna oval is
+now small (0.30W x 0.04H) - its true source proportion; the old stretch had inflated it. The brand roof is centred at
+X = 0.500 and Y = 0.635 (the band centre; the spec said ~0.65 - 0.015 off, band positions were locked earlier).
+
+**Table width 85-92%: not achievable for DARSHAN, measured.** Its `s46` composite is tall (source 338 x 728 mm = 0.44W
+x 0.72H, aspect 0.464) and its "table" bitmap `s47` is itself nearly square (0.87). 85-92% of the canvas width
+would need 1.37-1.49x the canvas height = 4.1-4.4x the product frame (0.335H), i.e. overflowing the canvas or
+stretching a photo 4x - neither done. What exists: a lone bottom-anchored bitmap composite fills its zone but is now
+capped at exactly 92% of the canvas width (`PRODUCT_MAX_WIDTH_OF_FRAME`); a wide table (3:1) lands at 85-92% at
+every portrait ratio (tested). To make DARSHAN's composite bigger the product BAND would have to grow (the composite is
+0.31H tall in a 0.335H zone, source 0.72H) - a design decision, not made here.
+
+**3. Footer text**: shop name/contact occupy `FOOTER_CONTENT_FRAC` = 0.65 of the footer band's height (centred in it) on
+portrait targets and the portrait->wide stage (`_place_footer_banner(content_frac=...)`). Measured: a single block that
+can fill it ~61%; the stacked English/Tamil pair on the real boards 53-62% of the band - i.e. 60-70% is NOT guaranteed
+for very wide lines, because the stretch cap stops them being stretched to full height. 0.73 was tried to push it up
+and reverted: at 24x36 a 10:1 footer line's stretch crossed the 2.0 cap and the uniform fallback HALVED its height
+(0.68 -> 0.34 of the band) - the cap is discontinuous at its threshold, worth knowing. Contrast (white text on cream when
+a wide target crops away the maroon band) is unchanged and unaddressed.
+
+**4. Validation.** Suite: backend `pytest` **595 passed** (561 before; +34 tests: clustering, shadows, classification guard,
+snapping incl. the lone badge and real DARSHAN, footer share, wide-table width, and the real 138-fragment Dalmia board
+added to the ratio matrix). Two existing tests were updated on purpose (badge top edge 0.95 -> the 0.92 snap; Dalmia
+cluster sizes). `POST /api/scene/convert-orientation` at 30x40 on the real Dalmia 120x48 master (12 ops incl. 3 `group`
+ops -> 10 after the shadow fix) and DARSHAN: HTTP 200, nothing outside the canvas. Live CorelDRAW replay (build 27.0),
+CorelDRAW's own verification: Dalmia master -> 30x40 145 objects, 0 mismatches, 0 warnings, 24 s; DARSHAN 208 objects,
+0 mismatches, 41 s. Rendered JPEGs viewed: DARSHAN is a clean board (badges at the snapped points, brand roof centred,
+products on the baseline, large legible English/Tamil footer inside the maroon band); the Dalmia master is coherent
+(badge top-right, "ROOF COLUMN FOUNDATION EXPERT" complete, the Tamil card with its icon, wordmark and shadow intact).
+
+**Honest limits.** "Matches human designer standards" cannot be asserted from here - the numbers above are met or
+explained, but a designer's eye was not in the loop. Remaining visible weaknesses: the Dalmia board has a large empty
+band and its Tamil card is very large (65% of the width) because clusters are routed as single objects; DARSHAN's
+composite is narrow and there is empty space between the brand roof and the products; the Tamil footer lines on Dalmia
+render as boxes (the missing-font limitation documented earlier); grouping touching loose vector shapes is a
+heuristic - two genuinely separate objects that touch WILL be merged (seen once in a synthetic fixture). The op list now
+begins with `group` ops for fragmented masters; they replay through CorelDRAW (verified) and appear in the editor as
+groups named "Logo cluster".
+
+### Pedestal stage expansion and central brand-roof boost (portrait targets)
+
+**Pedestal.** `_has_bottom_support(node)`: a group with >= 2 children where one child is bottom aligned to the group
+(within `SUPPORT_BOTTOM_TOL` = 3% of its height) and spans >= `SUPPORT_MIN_WIDTH_SHARE` (50%) of its width - the table of a
+table-with-products composite. `_place_main_and_subobjects(..., pedestal=True)` (portrait PRODUCT zone only, bottom-anchored)
+uses it when all flanking products sit on ONE side: the main column gets `PEDESTAL_TARGET_W_FRAC` = 80% of the CANVAS width
+(+ the padding `_zone_fit` removes), the flanks share the remaining column on their own side (floor
+`PEDESTAL_MIN_FLANK_FRAC` = 9% of the frame; 10% held the table at 78%). Applied only if the widened composite still fits the
+stage height (top <= the 0.55 ceiling), otherwise the old symmetric split is kept. Anchored contain fits now pad only the top,
+so the bottom stays on the baseline (Y = 0.207). Real landscape DARSHAN (120x40in -> 30x40): table `s46` **0.584W -> 0.800W**,
+Y 0.207-0.531; the bottle `s4` shrinks to 0.081W (~55% of its former size) to make room. At 24x36 the table reaches 79.5%
+(the flank floor binds) - just under the 80% asked; 21x29.7 likewise ~79.8%. Not widened: a tall composite (the portrait
+DARSHAN board's, aspect 0.46) - 80% of the width would need ~4x the zone height; unchanged, tested.
+
+**Brand roof.** `_boost_brand_roof`: a LONE group in the branding zone is scaled uniformly, centred on X = 0.5, as large as fits
+between the header badges above and the products below (`BRAND_CLEARANCE_FRAC` clearance, ceiling default = the badge line 0.92),
+up to `BRAND_MAX_WIDTH_FRAC` = 72% of the zone width; never smaller than the standard fit. Real DARSHAN: 0.290W -> 0.336W
+(+16%), Y 0.557-0.726. **72% is geometrically unreachable here**: the snapped badges leave a 0.34W gap between them and the
+right badge's bottom is at Y 0.738, so a wider logo would touch it; the bound is the badges, not the cap. The snapped badges
+stay at X 0.18 / 0.82, top 0.92 (verified).
+
+**Validation.** Backend `pytest` **607 passed** (+12: `_has_bottom_support`, pedestal width/ceiling/baseline/no-overlap at 3
+portrait sizes, tall-composite exception, pedestal-flag scope, brand boost at 3 sizes, no-room fallback, real DARSHAN scene).
+`POST /api/scene/convert-orientation` (Cache-Control no-store) on the cached landscape DARSHAN board -> 30x40: HTTP 200 with
+the numbers above. NOTE: no 125x48 DARSHAN scene is cached; the 120x40 landscape board was used. Live CorelDRAW replay: 9 ops,
+208 objects, 0 mismatches, no warnings, 40 s; the rendered JPEG shows the wooden table spanning the lower stage and the
+logo centred under the badges. Limits: the bottle is small, and the empty band beside the roof remains.
+
+### Dual-master templates: landscape + portrait uploads, same-orientation routing
+
+**Why.** Cross-orientation conversion (a portrait master unfolded to a wide target and vice versa) is where the
+layout artefacts documented above come from. With one master per orientation a job can convert
+landscape -> landscape and portrait -> portrait only.
+
+**Model.** Each upload is still its own `jobs` row; `POST /api/v2/upload` takes an optional `orientation` form field
+(`landscape` default, `portrait`) stored in the new `jobs.orientation` column. `POST /api/v2/jobs/{id}/shops` accepts
+optional `landscape_master_id` / `portrait_master_id` (new `shops` columns): they must exist (404), belong to the job's
+brand and have been uploaded as the orientation of their slot (400). `db._MIGRATIONS` adds the three columns to an
+existing database. Shops attach to the first master that exists (landscape preferred), so the editor, scene and export
+paths (`<job>/out/<shop>`) are untouched. Both masters are optional; a shop with neither id converts from its job's own
+master exactly as before.
+
+**Routing.** `orientation_adapter.select_master(target_w, target_h, landscape_id, portrait_id)` (rule
+`target_orientation`: ONLY width > height is landscape; square and portrait targets use the portrait master - changed from the original
+"width >= height", so a square target used to be landscape. Width within `SQUARE_TOL_MM` = 0.01 mm of the height counts as square, because
+sizes are compared in mm after unit conversion and 48 in = 1219.1999999999998 mm while 4 ft = 1219.2 mm: a plain `>` sent that mixed-unit
+square board to the landscape master; tested in `test_dual_master.py`, incl. through the API) returns (orientation, id,
+fallback). `main._select_shop_master` uses it in `_v2_convert_worker`; if only the OTHER orientation was uploaded it is
+used for every size and the choice is recorded as `fallback: true`. The choice is written to the shop's
+`report.master_used` ({job_id, orientation, reason, fallback}). Editor "Re-convert at this size" passes the shop's
+master ids on to the new shop, so it re-routes by the NEW size's orientation.
+
+**Same-orientation fit.** `convert_orientation(scene, w, h, same_orientation_fit=True)` (also `same_orientation_fit` on
+`POST /api/scene/convert-orientation`): when `Direction.same_orientation`, `_same_orientation_ops` emits a `page` op, a
+cover fit for the page-covering background, and ONE resize of every other unlocked top-level shape as a rigid unit -
+uniform scale by min(target_w/page_w, target_h/page_h), centred, so an aspect mismatch becomes padding; no re-zoning, no
+unstacking, no stretch. A cross-orientation call ignores the flag. **Default is off**: the zone/band machinery above is
+unchanged for every existing caller and test, and the editor's OrientationControl does not send the flag yet.
+
+**Which path actually runs a conversion.** The Automation-page conversion goes through `CorelEngine`/`layout.py`
+(`compute_layout`), not `orientation_adapter` - so what the dual masters change there is WHICH MASTER FILE is opened;
+`layout.py` already scales uniformly and keeps proportions. `orientation_adapter` is the editor's re-layout path, where
+the new flag applies.
+
+**UI.** `pages/Automation.jsx` (the spec named `components/Automation.jsx`, which does not exist) shows two
+`UploadDropzone`s - "Landscape Master (.cdr)" and "Portrait Master (.cdr) - optional" (both optional; the dropzone now
+takes `orientation`/`label` props and sends the orientation) - each with its own preview, and sends both ids when adding
+a shop. Verified only by `vite build` and code review: no browser click-through this session (no Playwright).
+
+**Validation.** Backend `pytest` 626 passed (607 + 19 in `tests/test_dual_master.py`: the routing rule, fallback, upload
+orientation, 120x48in shop converting from the landscape master and 30x40in from the portrait one - checked via the
+report and via the master file path chosen -, ids validation, no-dual-master shops unchanged, and same-orientation fit
+uniform/padded/relative-layout-preserving at four size pairs, ignored across orientations, off by default, and through
+the endpoint); frontend `npm test` 121 passed. Limits: MockEngine ignores the master file, so end-to-end "the right
+`.cdr` was opened" is verified by the chosen path, not by a live CorelDRAW conversion; a masters' brand is checked but
+their content (are they really the same design?) is not.
+
+**Follow-up: portrait master ignored (stale shop ids).** Reproduced as a logic bug, not a payload-name bug: a shop row
+keeps the master ids it was CREATED with, so a portrait master uploaded after the shop was added left
+`portrait_master_id = NULL` and the landscape master won by fallback (the add-shop payload names were already
+correct). `POST /api/v2/shops/{id}/convert` now accepts `{landscape_master_id, portrait_master_id}` (same validation,
+`_validated_master_ids`), stores them on the shop and converts with them; `Automation.jsx` sends the current ids with
+every convert. The worker logs `Shop <id> (WxH mm, <orientation> target): Selected master file path -> <path> (<reason>)`
+(logger `signage.convert`). A portrait target with a portrait master opens that master directly: `select_master` runs
+before the engine, and the orientation adapter is not on this path at all. Tests: 3 in `test_dual_master_convert.py`
+(629 backend total). NOT done: a live Shop 2 conversion checking the rendered layers against the portrait CDR - the
+user's masters are not available here, so the "roof badge at bottom / Tamil card upper-mid" check is still to do by eye.
+
+### Excel / CSV shop import (Automation page, section 3)
+
+"Import Excel (.xlsx / .csv)" under the Shops header (the sample-template button was removed on request). Parsing is
+client-side with SheetJS (`xlsx` 0.20.3 from the vendor tarball `cdn.sheetjs.com` - the npm copy is 0.18.5 with known
+advisories; lazy-loaded, ~500 KB chunk). `src/utils/shopImport.js` reads ONLY shop name, width and height from ANY layout
+(phone/GST/address columns are ignored): sheets are read as arrays of rows; the header row is the first of the top 10
+rows with a recognisable header (titles above it are skipped) and a sheet with no header at all is treated as data.
+- **Name**: headers matching shop|store|name|client|outlet|particulars|dealer, preferring shop/store > client/outlet/
+  dealer/particulars > bare "name"; never phone/GST/address/S.No or size/width/height headers ("Store Size"). Fallback:
+  the first mostly-text column that is not a size or phone column.
+- **Size**: a combined column (header size|dimension|board|measurement|recce whose values parse) split by a regex that,
+  unlike the one in the request, also allows a unit between the number and the separator - the plain
+  `(\d+)\s*[*xX-]\s*(\d+)` cannot match "10ft x 4ft" or "12' * 4'" - so "120 * 48", "10 x 4", "30X40", "10.5 x 4",
+  "10 by 4", "10ft x 4ft", "12' * 4'" all work. Otherwise separate columns (width|^w$|breadth, height|^h$|length). Failing
+  both, the column whose values look like sizes is used.
+- **Unit**: ft / feet / ' (in the cell or the header, e.g. "Size (ft)") -> ft; otherwise in. cm/mm/in words are also
+  honoured; a unit on one side of "10 x 4 ft" applies to both. Width and height keep separate units (the UI has one each).
+Good rows are POSTed to `POST /api/v2/jobs/{id}/shops/batch` (job-scoped; per-row validation shared with single add;
+<= 500 rows; bad batch-level master ids reject the whole request) and appear as ordinary shops; the page says
+"Successfully imported X shops from <file>" and lists skipped rows with their spreadsheet row numbers. Not built:
+editing a row before adding (the table was never editable). Tests: `test_shops_batch.py` (5) and `shopImport.test.mjs`
+(13; 134 frontend total) including real .xlsx/.csv files for a single-column "10*4" size, separate Width/Height and custom
+client headers; backend 634 passed; `vite build` OK. No browser click-through (no Playwright).
+
+**Inline-editable Shops table.** Every row of section 3 (imported or added by hand) is now a set of live inputs -
+name, width, width unit, height, height unit, phone, GST, address (units offer in/ft/cm/mm, a superset of the in/ft asked
+for, because an import can yield cm/mm) - plus a Remove button; inputs are disabled while a shop is queued/converting or
+done. Field names stay snake_case (`width_unit`), matching the API. Text fields save on blur and units on change via the
+new `PATCH /api/v2/shops/{id}` (validated like an add, only the named fields change, blank phone/GST/address clear the
+field, 409 while converting); `DELETE /api/v2/shops/{id}` removes the row and its editor/export rows (files on disk are left).
+Convert (single row, or the new "Convert all (N)" button for every new/failed row) sends the row's CURRENT values in the
+`POST /api/v2/shops/{id}/convert` body (`shopPayload` in `utils/shopPayload.js`), which the server saves before queuing, so
+an edit whose blur-save had not landed yet is still what gets converted; an invalid edit (e.g. emptied width) is a 400 shown
+under the table and nothing starts. Tests: `test_shops_edit.py` (6; 640 backend total) - including import "10x4", convert
+carrying width 12 -> converted at 12 - and `shopPayload` tests (136 frontend total); `vite build` OK. The actual typing in the
+browser (retyping 10 to 12 in the input) was NOT driven - no Playwright/jsdom here - so that step is covered by the payload
+helper and the API test, not by clicking.
+
+**Import is browser-only (draft rows).** "Import failed: Not Found" came from the import calling
+`POST /api/v2/jobs/{id}/shops/batch` - a route that a backend started before it was added does not have (restart the
+server after pulling). Import no longer makes ANY request: `importFile` parses with SheetJS and appends local draft rows
+(`toDraftRow`, ids `draft-...`, status `new`) to the `shops` state; they render as the same editable inputs as saved rows
+(name, width + unit, height + unit, phone, GST, address, Remove). Editing or removing a draft is local; a draft is saved
+(`POST /api/v2/jobs/{id}/shops` with its CURRENT values and the master ids) when it is converted - single Convert or "Convert
+all", which runs sequentially so seq numbers do not race - and then converted under its real id. The batch endpoint and its
+tests remain in the backend, unused by the UI. Row numbers are now the table position. Tests: draft-row and "importFile makes
+no network request" guard in `shopPayload.test.mjs` (138 frontend total); backend 640; `vite build` OK. Not driven in a
+browser (no Playwright).
+
+**Simplified Shops table.** Columns are now S.no | Shop name | Width | Height | Unit | Convert | Editor | trash icon (inline SVG, no
+icon library in the project; grey, red on hover, disabled while converting). Phone/GST/Address are gone from the UI - table, manual
+add row, import and payloads; the backend still accepts them (engine feature), so an API client can send them. Each row has ONE
+`unit` (`in`/`ft`) for both dimensions; the UI sends only `{name, width, height, unit}` (`shopPayload`), and the server
+(`_parse_shop_payload`, `_apply_shop_edits`) expands `unit` onto `width_unit`/`height_unit` (explicit per-dimension units still
+win, DB columns unchanged). Import (`resolveUnit` in `shopImport.js`): no unit -> in; a unit on one side applies to both (so
+"12'" next to a bare "48" gives 12 x 48 ft - ambiguous input, the ft rule wins); ft or in on both -> that unit; ft next to in, cm
+or mm -> converted to inches (rounded to 0.01) so the numbers stay true - a deliberate refinement of "ft present means ft", which
+would have turned "10ft x 48in" into 10 x 48 ft. Tests: 1 new backend (641 total), parser/payload tests updated and one added
+(139 frontend); `vite build` clean. Not viewed in a browser.
+
+**Full-bleed dashboard shell (App.jsx / Automation.jsx / styles.css).** The app is a fixed `100vh x 100vw` flex shell
+(`.app-shell`, no page scroll): a pinned sidebar (256 px, 64 px collapsed, 300 ms width transition, never scrolls, a
+ChevronLeft/Right toggle at the bottom, `data-tip` tooltips on the collapsed rail, state remembered in localStorage) and a
+`.app-main` that alone scrolls. Automation is a brand bar (dropdown, "+ New Brand", "N Shops Loaded" / "Dual-Master Ready"
+badges) over a 12-column grid `calc(100vh - 140px)` tall: Master Templates (span 5 - landscape and portrait slots stacked, each
+with an UploadCloud dropzone + thumbnail + Required/Optional/Uploaded tag) and Shops Queue (span 7 - gradient "Import Excel",
+"Add Shop" toggle for the manual row, "Convert All (N)", and the table in its own scroll region with a sticky header).
+lucide-react icons: UploadCloud, FileSpreadsheet, Trash2, Play, ExternalLink, Plus, CheckCircle2, chevrons, Workflow, History.
+**Deviation:** the spec's classes are Tailwind; the project has none and adding Tailwind's preflight would restyle the editor
+and Recently-generated pages, so the same values (rounded-2xl cards, red-600 -> rose-600 gradient buttons, slate-50 canvas,
+w-64/w-16) are written as plain CSS classes (`ws-*`, `app-*`, `btn-gradient`). The old `.shell`/`.sidebar`/`.content` CSS is
+now unused. **Verified in a real browser (Edge via playwright-core, mock backend on a scratch data dir, 1440x800):** document
+height = viewport (no page scroll); sidebar 256 -> 64 -> 256; main pane 1184 -> 1376 px and back; the table scrolls inside its
+card (554 px visible of 724) and keeps its scroll position across the collapse; thumbnails still render after the toggle; the
+collapsed tooltip shows; a 12-row import made 0 requests and rendered 12 editable rows; editing width 10 -> 12 in the input and
+pressing Convert sent `POST /api/v2/jobs/../shops {name, width: 12, height: 4, unit: "in", landscape_master_id, portrait_master_id}`
+then `/convert` with the same body; the trash icon removed a draft row; the Recently-generated page renders in the new shell.
+One console 404 is the missing favicon (pre-existing). Not done: mobile/tablet layout beyond a single-column fallback under
+1000 px.
+
+**Data-grid table + batch loader.** The Shops table is a borderless grid (rounded, hairline-bordered container, slate header,
+row hover, cells that are transparent inputs revealing a border on hover and a red ring on focus; the manual-add row keeps
+visible borders). The Convert column shows status badges - Completed (emerald, check icon), Processing NN% (amber, pulsing;
+the eased `useSteppedProgress` value), Queued (slate), Failed (red + Retry). Plain CSS again (no Tailwind), same values.
+"Convert All (N)" (N = shops that are new/failed, not `shops.length`, so finished shops are not counted for re-conversion) now
+sits in the card footer; while a batch runs it is replaced by a banner: SVG ring with the percentage, "Converting i of n -
+Estimated time remaining: ~Ns" and a linear bar. State: `isBatchConverting`, `batch`, and derived `batchProgress` /
+`estimatedTimeRemaining` / `currentShopIndex` from `utils/batchStats.js` (unit-tested): progress = (finished shops + each
+in-flight shop's backend %) / total; remaining = average seconds per finished shop x shops left, or, before the first shop
+finishes, extrapolated from the overall fraction (shows "calculating..." until > 5%). Drafts are saved and queued one by one,
+the server converts them sequentially, the batch ends when every shop is done/failed and a one-line summary replaces the
+banner. `convertShop` now returns the real shop id (null if it did not start). Browser check (Edge, mock backend; the
+status endpoint was intercepted to make each conversion last 3 s, because the mock engine finishes instantly): the button
+disappeared on click, the ring/bar went 0 -> 93% smoothly, text and estimate updated ("Converting 2 of 4 ~12s"), badges went
+Queued -> Processing -> Completed, and the button/summary returned at the end. Input hover/focus colours verified via computed
+styles (a hover-vs-focus specificity bug that hid the red focus ring was found and fixed). The estimate is only as good as the
+backend's step percentages and the per-shop time; it is not a promise.
+
+**Executive brand bar.** The top bar (`.ws-bar`) is a translucent, blurred, rounded card (sticky, hover border shift) with a
+Building2 "BRAND" label, a native `<select>` restyled with `appearance: none` inside a `.ws-select` wrapper and a
+ChevronDown overlay (`pointer-events: none`; red focus ring), a gradient "+ New Brand" button (lift on hover; it becomes an
+input + Add/Cancel while adding) and, on the right, a "N Shops Loaded" pill (Store icon) and the master-status pill with a
+pulsing emerald dot when both masters are uploaded (grey static dot otherwise). Plain CSS with the requested values (no
+Tailwind). Checked in Edge: page still fits the viewport (grid bottom 769 of 800), chevron ignores pointer events, native
+appearance is off, the dot animates, no console errors.
+
+**Custom brand dropdown.** The brand `<select>` is replaced by `components/BrandSelect.jsx` (pill trigger with Building2 icon and a
+ChevronDown that rotates when open; a floating blurred card with fade/zoom-in, items with red hover, the selected one bold with a
+Check; a search box when there are 5+ brands). `hooks/useOnClickOutside.js` closes it on an outside press; Escape closes, Arrow
+keys move, Enter picks. Verified in Edge with 6 brands: no native select in the bar, menu opens with the animation, search filters,
+keyboard and mouse selection work, outside click and Escape close it, no console errors. The table's Unit dropdown (in/ft) is still
+a native select - only the brand one was asked to change.
+
+**Export dialog polish + "Download All (ZIP)".** `editor/ExportDialog.jsx` (the "Save and Generate" modal lives in the editor, not
+Automation.jsx): header with an X icon button, a dark full-width "Download All (ZIP)" action, one row per generated file with a
+Lucide type icon (FileCode CDR, FileText PDF, Image PNG/JPEG), the size/pixel metadata and a gradient Download button, a framed
+preview, and a footer with "Export again" (RotateCw) and "Done" (CheckCircle2). **Deviation:** the zip is built by the server
+(`GET /api/editor/{job}/{shop}/exports/{id}/zip`, members STORED, temp file removed after sending, named
+`{ShopName}_Signage_Export.zip` with the shop name reduced to filename-safe characters, other scripts kept), not JSZip in the
+browser - a CDR is often 100-300 MB and would have to sit in browser memory; "sequential downloads" would also trigger the
+browser's multiple-download prompt. `handleDownloadAll()` just clicks a download link to that endpoint. Verified in Edge against the
+mock engine: rows with icons, the icon close button, footer buttons, and Download All saved `Sri_Kumar_Stores_Signage_Export.zip`
+containing the .cdr/.pdf/.png; 3 new backend tests (644 total). Not verified: the pixel-size metadata (the mock report has none;
+real CorelDRAW exports do) and the requested "clean Tamil text on the preview banner" - the preview is CorelDRAW's own PNG, so
+Tamil glyphs render as boxes when the font is missing on the machine, exactly the limitation documented earlier; the dialog cannot
+fix that.
+
+### CDR file version: every saved `.cdr` targets CorelDRAW 2019 (v21)
+
+**Problem.** The server's CorelDRAW is now 27 (CorelDRAW 2025); a bare `doc.SaveAs(path, None)` writes the newest format, which
+the designers' CorelDRAW 2019 (v21) refuses to open. **Fix** (`corel_util.save_cdr`): both places that write a `.cdr` -
+`CorelEngine`'s `saveas` step and the editor export (`export_replay`, format `cdr`) - now save through
+`app.CreateStructSaveAsOptions()` with `Version = 21` (`cdrFileVersion.cdrVersion21`) and `Overwrite = True`. The spec's
+`CreateSaveOptions()` does not exist in the object model; the factory is `CreateStructSaveAsOptions` (confirmed in the generated
+typelib, where `Version` is an int property of `StructSaveAsOptions`). `SIGNAGE_CDR_VERSION` overrides the target (`0` = whatever
+the running CorelDRAW writes); a CorelDRAW older than the target saves as itself; a failure to build the options object raises
+rather than falling back to a plain SaveAs (that would silently reintroduce the bug).
+
+**How it was verified (live, CorelDRAW 27.0.121).** A fresh document saved both ways: default -> `content/root.dat` RIFF form type
+`CDRU`, `META-INF/metadata.xml` `cdr:CoreVersion` 2700; `Version = 21` -> form type `CDRM`, `CoreVersion` 2100 (and a smaller styles
+part). Those are exactly the markers of the designers' own files: all 77 `.cdr` in `signage_dataset/` (opened read-only as zips) are
+`CDRM` with `CoreVersion` 2100 (one true CorelDRAW 2019.2 file: `AppVersion` 2120; the others 2700, i.e. saved as v21 from a newer
+CorelDRAW). `AppVersion` records the writing application and stays 2700 - that is normal and is not the format. Then a real
+"Shop 1" (120x48in) conversion through `CorelEngine` and a real editor export from a real dalmia board: both wrote
+`CDRM` / `CoreVersion` 2100. Each save is now READ BACK (`corel_util.check_cdr_format` -> `report.cdr_format` =
+`{form, version, requested}`) and a warning is added if the file's version is not the requested one (same verify-don't-trust pattern
+as fonts). 7 new tests (`test_cdr_version.py`; fake COM document + zip fixtures); backend suite green.
+
+**Not verified:** opening a produced file in an actual CorelDRAW 2019 - none is installed here. The evidence is that the produced
+files carry the same format markers as files that do open there. Also note: an uploaded MASTER is never modified, and
+PDF/PNG/JPEG are unaffected. Existing outputs generated earlier by CorelDRAW 27 are not converted retroactively - regenerate them.
+Features newer than 2019 (if a master uses any) are dropped or flattened by CorelDRAW's own down-save; that is CorelDRAW's
+behaviour, not something this code controls.
+
+**Recently generated = asset console (`pages/RecentlyGenerated.jsx`).** Same full-viewport shell (the sidebar is pinned by the app shell, only
+`.rg-scroll` scrolls). A blurred control bar holds a live search (`searchTerm`; `utils/recentFilter.js matchesSearch`: shop name, master
+filename or any generated filename, case-insensitive), custom pill dropdowns for brand and status (new generic
+`components/PillSelect.jsx`, same look/keyboard/outside-click behaviour as `BrandSelect`) and a Refresh button (icon spins while loading).
+The grid: PREVIEW (56x36 thumb, click opens it, hover zoom) | BRAND | SHOP DETAILS (name + mono master filename, ellipsised) | DIMENSIONS
+(pill, one unit shown when both match) | GENERATED | STATUS (the shared `.badge` styles) | DOWNLOAD ASSETS (segmented CDR/PDF/PNG-or-SVG/Report
+group) | EDITOR (gradient button, done rows only), sticky header, an "N of M jobs" footer. The 3 s auto-refresh while something is queued or
+converting is kept. Plain CSS (`rg-*`) with the requested values, not Tailwind. Verified in Edge (mock backend, 4 shops): 8 columns, no
+page scroll, search by name / master filename, brand + status filters combine ("1 of 4 jobs"), reset restores all; no console errors. 3 new
+frontend tests (148 total). With the mock engine the preview is an SVG and there is no PDF - real CorelDRAW rows show CDR/PDF/PNG/Report.
+
+**3D launch splash (`components/SplashScreen.jsx`, `App.jsx`).** `three` 0.169 + `@react-three/fiber` 8 + `@react-three/drei` 9 +
+`framer-motion` 11 (fiber 8 / drei 9 because the app is React 18; `@types/three` skipped - the project is plain JS). The screen shows a
+slowly sweeping, floating signboard (drei `RoundedBox` metallic frame, dark bezel, emissive face painted on a 2D canvas so no font is
+fetched, two posts), drei `Stars` + two `Sparkles` fields, key/rim spot lights on a fogged dark background, pointer-tracking camera
+parallax (lerp), the gradient title "SIGNAGE AUTOMATION PLATFORM", the subtitle and the "Start Automation" button (shimmer bar on hover).
+Click or Enter: `leaving` makes the camera dive at the board and the overlay fade, then `onStart` after 450 ms and the parent's
+`AnimatePresence` runs the 0.5 s opacity/scale exit. `Shell` holds `showSplash`, initialised to `true` with NO storage check, so the
+splash appears on every load (refresh, hard reload, deep link such as `/recent`); leftover flags from the earlier once-per-session version
+(`signage.splashSeen`, `splashSeen`, `hasSeenSplash`) are removed at start-up. A "Welcome screen" sidebar button (`onOpenSplash`)
+re-opens it without a refresh; the editor tab route has none. Verified in Edge: with stale flags seeded, first load, reload, cache-disabled
+reload (Ctrl+Shift+R equivalent) and a `/recent` deep link all show the splash first, and Enter/Start then reveals the workspace. The chunk is `React.lazy`-loaded (~943 KB, 262 KB gzip - the main bundle stays ~300 KB) and Vite prints its
+usual chunk-size warning for it. Fallbacks: no WebGL or a canvas error -> the same overlay on a CSS gradient; `prefers-reduced-motion`
+-> no sweep/float/drift, fewer stars, no zoom delay. Verified in Edge (SwiftShader WebGL): canvas 1440x800 renders the board and
+particles, hover scales/shines the button, click removes the splash and shows the dashboard, reload does not show it again, the sidebar
+button and Enter re-trigger/dismiss it, no page errors (the only console noise: React Router v7 future-flag warnings and the pre-existing
+favicon 404). Real GPU frame rate was not measured.
+
+**Splash = Adinn identity + fly-through.** The board face now carries the real Adinn logo: `assets/logo.jpeg` (repo root) was copied to
+`frontend/src/assets/logo.jpeg` and imported (`useTexture`, sRGB, `LinearFilter` without mipmaps, max anisotropy). The JPEG is a 1600x1440
+square with wide white margins, so the UV window is cropped to the logo's own box (repeat 0.85 x 0.46, offset 0.075 / 0.30 -> ~2.05:1,
+matching the 4.2 x 2.1 face plane) - unstretched; the face is emissive-white so the panel glows like a lit sign. Palette: background
+`#0D0D0D`, `#E31E24` red accent bezel, dark anodized frame `#1A1A1E` (metalness 0.8, roughness 0.2), a red rim spot light BEHIND the
+board plus a red point light for the halo, red/white particles, white title/subtitle with a red underline and glow, red gradient button
+(the earlier amber is gone). Launch: a global `keydown` for Enter or Space (`preventDefault`, guarded so a key + click can't double-start),
+the button, or a click sets `isZooming`; the board squares up to face the camera and the camera eases (exponential, frame-rate independent
+equivalent of `lerp(z, target, 0.08)`) from z 7.2 to 0.35 at the board centre - not 0.1: that is behind the face plane (z 0.125) - and when
+z < 1.4 the screen fades (250 ms) and `onStart` runs; a 1.6 s timer guarantees `onStart` if frames stall, and without WebGL it starts
+immediately. Verified in Edge with software WebGL: the logo renders sharp and correctly proportioned; a mid-flight frame shows the camera
+inside the logo fading into the dashboard; Enter and Space both reach the workspace (1.2-1.7 s with SwiftShader, so faster on a GPU). The
+splash chunk is now ~946 KB (263 KB gzip) plus the 65 KB logo.
+
+**Splash metals (frame + poles).** Root cause of the "invisible" frame: a metallic material with nothing to reflect renders near-black (no
+environment map), so lights alone could not fix it. The scene now has a procedural drei `Environment` built from `Lightformer` strips (white
+top/sides, an Adinn-red strip behind) - no HDR download - plus the requested lights: front-low point light, white key spot, and a red
+directional rim from behind. Light intensities were scaled up (45 / 140) from the spec's 2.5 / 3.0 because three r155+ uses physical
+units where those values are invisible; the directional rim keeps 2.0. Frame: dark chrome `#2A2A32` (metalness 0.9, roughness 0.15,
+envMapIntensity 1.5) over a slightly larger light-silver slab `#E0E0E6` that forms the outer rim; poles: radius 0.12 (was ~0.06-0.08), length 2.2
+(was 1.0), `#33333E` metalness 0.85 / roughness 0.2, top tucked into the frame, placed at x = +/-1.7 so they clear the button. The face
+material got roughness 0.95 and almost no env reflection so the new lights do not wash out the logo. Verified in Edge (software WebGL): silver
+rim and chrome highlights on the frame, both poles clearly visible with red/white edge highlights, no console errors. The poles pass behind the
+title and subtitle (long poles were asked for); the logo's black reads as dark grey under the emissive/tone-mapped face.
+
+**Automation empty states + default brand.** On load the brand list is fetched and, if a brand named Adinn exists (case-insensitive), it is
+selected once (`defaultBrandApplied`; a later choice is never overridden). The spec's `useState('Adinn')` was not used literally: it could
+select a brand that does not exist in the list. Master Templates with no master uploaded now shows a full-width dashed hero dropzone
+(`UploadDropzone hero`: gradient UploadCloud, "Upload Master CDR Templates", drag/drop or browse, real upload progress) with a
+Landscape/Portrait toggle - the dropped file's orientation cannot be inferred client-side, so the user picks it - and a dual-master routing
+tip; once either master exists the two-slot view returns. Shops Queue with no shops shows the matching emerald "Import Shop Details Sheet" hero
+(click, Enter/Space or drop a sheet) with "Import Excel File", "Load Sample Data" (4 demo shops via `utils/sampleShops.js`, local drafts exactly
+like an import; covers both orientations) and a sheet-format tip; both are disabled until a master is uploaded (drafts need a job to be saved on
+convert). The hero returns when the last shop is removed; the import report and errors show above it. Verified in Edge (mock backend): Adinn
+preselected, two heroes and two tips instead of the old plain text, hover border, upload through the hero, sample data -> 4 editable rows,
+deleting them brings the hero back; no errors. 1 new frontend test (149 total).
+
+**Empty states, trimmed.** The two instructional tip banners (dual-master routing under Master Templates, sheet format under Shops Queue) were
+removed, and the Shops Queue header's "Import Excel" / "Add Shop" buttons are shown only when `shops.length > 0`; with no shops the only way in is
+the centred empty-state card ("Import Excel File" / "Load Sample Data" / drop a sheet). Consequence: with an empty queue there is no manual
+"Add Shop" until at least one shop exists. The hidden file input stays mounted so the card's button still works. Verified in Edge: no
+tip text on load, header actions absent until an import, present after, gone again once every shop is removed; the card's button opens the file chooser.
+
+**"Enter Manually" replaces "Load Sample Data".** The Shops Queue empty-state card's secondary button is now "+ Enter Manually" (outline style, red plus).
+There is no manual-entry MODAL in the app - manual entry is the inline add-row of the shops table - so the button opens that row
+(`setShowAddRow(true)`, which swaps the card for the table with the add row), name field auto-focused, Enter in it adds; the row gained a Cancel button
+(back to the card when the queue is empty). Like the import button it is disabled until a master is uploaded. The sample-data loader, its
+util and test were deleted as dead code (148 frontend tests). Verified in Edge: disabled before a master, opens the row focused on the name, adding
+a shop works and brings back the header buttons, Cancel returns to the card.
+
+**Empty-state heroes are full-card now.** The inner dashed/rounded box is gone from both cards: `.empty-hero` has no border, radius or own background, fills
+its `ws-card-body` (`flex: 1; width/height 100%; min-height 350px`, body padding and gap zeroed via `:has(.empty-hero)`) and centres its content; hover,
+drag-over and keyboard focus are shown as a soft red tint (plus an inset focus ring) instead of an outline. `UploadDropzone` in hero mode wraps in
+`.hero-root` so the dropzone can grow; the Landscape/Portrait toggle sits above it, so the Master hero is the card minus that toggle (555 of 607 px in
+Edge) while the Shops hero is exactly the card body (651 x 607). Disabled heroes (no master yet) show no hover tint.
+
+**Master Templates = two side-by-side upload cards (tab switch removed).** The Landscape/Portrait toggle and the single hero dropzone are gone. The
+card body is always two cards (`.mc-grid`, `auto-fit minmax(190px, 1fr)` so they stack when narrow): "Landscape Master - Drag & drop .cdr file (Width >= Height)"
+and "Portrait Master - ... (Width < Height)", each a bordered click-or-drop card (`UploadDropzone card={{title, help, browse, tone}}`, real upload progress kept).
+A filled card turns into the master's thumbnail plus a file badge (name, human size via `utils/fileSize.js fmtBytes`, X to remove). The upload callback now receives the file
+name/size (`onUploaded(body, name, size)`). Removing a master clears that slot (a confirm appears only when it is the last master AND shops are listed - it then clears the list,
+converted shops stay under Recently generated). Deliberate related changes: replacing/adding a master no longer clears the shop queue (saved shops carry their own `job_id`,
+drafts attach to whichever master exists at convert time), and "Open" in the editor now uses `shop.job_id`. Uploads are disabled until a brand is chosen. Removing a master
+only clears it in the UI - the uploaded file stays on the server (no job-delete endpoint exists). Verified in Edge: no tab bar, both cards visible side by side, filling one leaves the
+other empty, badges show `land.cdr 1.2 KB` / `port.cdr 1.1 KB`, the header badge goes Dual-Master Ready -> Portrait master only after a remove; 1 new test (149).
+
+**A master change resets the Shops queue (supersedes "replacing/adding a master no longer clears the shop queue" above).** Uploading,
+replacing (= remove + upload in this UI) or removing a master calls `resetShopsQueueStatus` (`pages/Automation.jsx`): every row that was
+saved to the server - done, converting, queued or failed, all tied to the OLD master's job - becomes a fresh draft with the same name,
+size and unit (`utils/shopPayload.js resetForNewMaster`, unit-tested), so its next Convert creates a NEW shop on the new master instead of
+re-running the old one (a plain status flip would have re-converted against the old master). Untouched drafts stay. Status pollers are
+cleared, batch tracking and the import/batch messages are reset, and `masterGen` stops an in-flight convert or Convert All at its next
+step (no convert request after a reset; a draft already POSTed at that moment stays on the server as an unconverted shop). The old
+shops are not deleted - their boards stay under Recently generated, and a conversion the server already started finishes there. A
+dismissible notice says what happened ("Portrait master added - 4 shops reset to Convert..."). Verified in Edge against a mock-engine
+backend on a scratch data dir: 4 x Completed/Open -> 4 x Convert and "Convert All (4)" after adding a master; a row pinned at
+"Processing" reset on remove with 0 status polls afterwards; the next convert saved the shop on the new landscape master's job.
+
+**Splash poles + text layout.** Poles are now 6.0 long (top tucked into the frame, centre y -4.2 in the board group) so they run off the bottom of the viewport
+instead of stopping mid-air. Because a pole that reaches the bottom edge necessarily passes the text lines (they sit 238 px either side of centre, the title is
+~1080 px wide), a dark gradient scrim (`.splash-scrim`, bottom 58%, 0.97 -> 0 opacity) sits between the canvas and the text: the poles sink into shadow and the
+title, subtitle and button read cleanly; the text block is anchored in the lower third (padding-bottom 5vh, slightly tighter gaps). The board was NOT moved
+up: at the current camera it already sits ~50 px from the top edge, so more height would clip its top. The optional `ContactShadows` at y -3.5 was skipped - the
+poles now leave the screen, so a ground contact would be off-screen. The poles remain faintly visible behind the title (by design of the fade). Verified in Edge with
+software WebGL; no console errors.
+
+**3D editor loader (`components/EditorLoader.jsx`, used by `pages/EditorPage.jsx`).** The editor tab (opened from "Open in editor") shows an Adinn-themed WebGL loader
+while it initialises: floating badge (chrome torus, `metalness 0.9 / roughness 0.1`, a counter-rotating glowing `#E31E24` ring, a wireframe red core with a bright heart, sine-wave bobbing
+and X/Y rotation), red sparkles + stars on `#0D0D0D`, and a HUD - "ADINN AUTOMATION EDITOR" with a pulsing red dot, three status messages cycling every 1.2 s, and a glass progress bar with a
+red -> rose -> amber fill. **Deviation from the spec's "setTimeout 2200 ms":** it is driven by the REAL load state, not a fixed timer - `ready` is the scene actually loading, `realProgress`/`step`
+are the server's CorelDRAW scene-build progress (shown as "rendering objects n/m" when building), the bar shows max(real, an eased estimate creeping to 90%) and jumps to 100% when ready, and the
+loader stays at least `MIN_SHOW_MS` = 1.8 s so a cached scene does not flash it, then fades (250 ms) and hands over. Errors (503 low RAM, 409 not converted) still use the old 2D card with Retry;
+a retry shows the loader again. The chunk is lazy (`React.lazy`), sharing the three.js chunk with the launch splash; no WebGL -> HUD only. Bug found while testing: the first version's "finish"
+timers lived in an effect keyed on the progress value, so the next progress tick cleared them and the loader hung at 100% - the finish is now a one-shot flag. Verified in Edge by clicking
+"Open in editor" on the Recently generated page (a real new tab): canvas rendered, progress 19 -> 84 -> 100 %, messages cycled, editor appeared after ~2.2 s, no errors.
+
+**Launch-screen readiness check (`GET /api/corel/health`, `utils/corelHealth.js`, `SplashScreen.jsx`).** The splash checks the
+server before letting anyone in: "Checking CorelDRAW installation on this machine..." (button disabled), then either
+"CorelDRAW 27.0 detected" (+ the fallback version, + a low-RAM warning when free RAM is under the 1.5 GB batch floor) and an
+automatic fly-in after 1.4 s (Enter/click start at once), or an error with a "Retry Connection" button (Enter retries). There is
+no long-running CorelDRAW to "connect" to - each job launches its own hidden instance - so the endpoint checks what a job would
+use WITHOUT starting CorelDRAW (a test launch costs seconds and RAM and would race a running conversion): the engine
+(`SIGNAGE_ENGINE`; mock is always ready), the installs from `corel_util.corel_installs()` (registry + each executable's version
+resource, in the order a job tries them), free RAM. States: ok / error (no usable install) / offline (the server did not answer
+within 8 s). The request uses the proxied relative URL, not a hardcoded host. A small "Continue without CorelDRAW" link on the
+error states is a deliberate addition so a false negative cannot lock people out (Recently generated works without CorelDRAW).
+Tests: `test_corel_health.py` (5, incl. that it never dispatches CorelDRAW), `corelHealth.test.mjs` (6). Verified in Edge on the
+production build against a fresh backend: real check -> "CorelDRAW 27.0 detected / Fallback ... 21.2" -> auto-entered the app;
+simulated "no install" -> error, Enter did not enter, the link did; server refusing connections -> offline, Retry -> ready.
+**Update: the flow is now click-driven, nothing automatic.** On load the splash only shows "Connect to CorelDRAW" - no request
+is made (verified: 0 health requests in 3 s). Clicking it runs the check ("Connecting to local CorelDRAW engine...", button
+disabled); success shows "CorelDRAW 27.0 detected" + a "Start Automation" button and waits (no auto-start - verified still on
+the splash after 4 s); failure shows the reason, "Retry Connection" and the "Continue without CorelDRAW" link. Enter/Space press
+whichever button is showing. Starting (or continuing without CorelDRAW) navigates to "/" - the Automation view - even when the
+splash was opened over another page (e.g. a /recent deep link, or the sidebar "Welcome screen" button on Recently generated).
+**Update: 3D billboard + enterprise controls (current; supersedes the flat "enterprise redesign" that briefly replaced the 3D
+scene, and the arcade-style 3D splash before it).** `SplashScreen.jsx` was REBUILT from this file's descriptions - the flat redesign had
+overwritten it and it was never committed (untracked), so no copy existed in git, editor history or dist. The billboard: light-silver
+outer rim + dark chrome frame (drei `RoundedBox`, metalness 0.9) over a matte, evenly self-lit logo face (UV crop repeat 0.85 x 0.46,
+offset 0.075 / 0.30), two 6-unit poles, reflections from a neutral procedural `Environment` (white/grey `Lightformer`s), a white key spot,
+a cool fill and a grey back light - the red rim/halo lights, red `Sparkles` and the fly-into-the-logo launch were dropped as "game-like";
+a sparse, slow `Stars` field stays. Slow sway/float and pointer parallax (off with reduced motion). Layout: the canvas lives in a flex
+"stage" above the panel (`.sp3-stage`), so a taller panel (error steps) shrinks the board instead of overlapping it, and the camera
+distance follows the stage width (`fitDistance`) so the whole board fits on a phone. Controls (`sp3-*`): title in sentence case, small
+uppercase subtitle, one glassy panel; tactile red buttons (bevel highlight, darker lip, 1 px press) "Connect to CorelDRAW" (power icon)
+-> spinner line "Connecting to local CorelDRAW engine..." -> a raised badge "CorelDRAW v27.0 Connected / Fallback: v21.2 · Memory nominal"
++ "Start Automation"; failure: callout with remediation steps, "Retry Connection" and an underlined "Continue without CorelDRAW".
+No "press Enter" copy (Enter still presses the primary button). Start: camera push-in + 0.4 s fade, then "/" and `onStart`. Splash chunk
+back to ~1 MB (three.js), still lazy. Verified in Edge with software WebGL on the production build: 0 requests on load, every state,
+no auto-start, Enter -> "/", error layout without overlap, 390 px phone fits, no page errors (only the pre-existing favicon 404).
+
+**Connection HUD (supersedes the plug -> socket animation, which was removed on request - `Plug3DAnimation.jsx` deleted).** The top of
+the splash panel is `StatusHud` (in `SplashScreen.jsx`), CSS 3D - no second WebGL context: two tilted halo rings (conic arc masked to an
+annulus, `rotateX`/`rotateY` + spin) orbit a glass core - slow slate when idle, fast with a red accent arc while checking; on success three
+emerald pulse waves radiate from a shield core and the details appear as small industrial chips (`describeHealth().badges`: CorelDRAW
+27.0 / Fallback 21.2 / Memory Nominal - amber when low); on failure a red core and a high-contrast status pill (`.pill`: "CorelDRAW not
+found" / "Server unreachable") above the remediation callout. Button copy: "Connect to CorelDRAW" -> "Establishing COM Bridge..."
+(disabled, spinner; the user's chosen wording - the check itself only reads the registry, which the helper line under the HUD says:
+"Scanning the server for installed CorelDRAW COM registrations...") -> "Start Automation →". The requested "Local Session Re-use Active"
+line was not used (a single conversion gets a fresh CorelDRAW); the chips show real values instead. Reduced motion: rings/waves static.
+Verified in Edge on the user's own dev server (:5173 + backend :8000): every state, Enter -> "/", error pill, 390 px phone, one canvas.
+
+**Connection modal (current).** The splash page itself is now static: billboard, title and ONE button, "Connect to CorelDRAW" (`.sp3-cta`)
+- no status on the page, so the 3D layout never changes size (verified: the title stays at the same y through every state). The button
+opens a centred glass modal (`.sp3-backdrop` with a 12 px backdrop blur + `.sp3-modal`, framer-motion fade/scale) that runs the check
+and holds every state, with the `StatusHud` at its top: checking - "Connecting to CorelDRAW / Establishing connection with local
+CorelDRAW COM engine..."; success - "CorelDRAW Connected Successfully / Version 27.0 detected • Engine Active", the other chips
+(Fallback, Memory) and "Start Automation ->"; failure - "Connection Failed", the pill, the remediation callout, "Retry Connection" and
+"Continue without CorelDRAW". The X or Esc closes it and discards a check still in flight (the late result is ignored); focus returns to
+the Connect button. Enter: opens + connects, then starts / retries. Verified in Edge on the user's dev server: page has one button and
+no status elements, checking/ok/error modals, Esc (also mid-check), Enter -> "/", "Continue" -> "/", 390 px phone without h-scroll.
+
+**Modal visual = `components/ConnectionVisual.jsx` (replaces `StatusHud`, removed).** checking - "radar handshake": dashed outer ring and a
+red-arc inner ring counter-rotating, a 360 deg conic radar sweep, two scan rings pulsing outward, three signal nodes pinging on the orbit,
+a breathing chip (`Cpu`) core, and a ticker cycling the check's REAL steps every 0.9 s ("Scanning COM registrations..." / "Locating
+CorelDRAW executables..." / "Checking free memory..." - the requested "Scanning COM Ports" / "Authenticating PID" describe things the
+check does not do); body text "Connecting to CorelDRAW / Establishing local COM bridge pipeline..." (user copy). ok - "lock-in": six
+emerald nodes converge from the orbit (0.5 s), the core springs in (framer-motion spring), a checkmark draws itself (`pathLength`), an
+emerald aura settles and two ripple rings keep expanding. error/offline - a red core with a short shake + the status pill. Reduced motion
+(`useReducedMotion`): no loops or particles, final frames only. Verified in Edge on the user's dev server: scan frames over 2 s with the
+ticker advancing, the success sequence (convergence -> spring + partial check -> full check with aura/ripples), the offline error.
+
+**Update: industrial vector-engine loader.** Checking now shows a slowly rotating CAD precision ring (SVG, 60 ticks, every 5th longer),
+two counter-rotating rings with METALLIC conic-gradient borders (silver/slate with a red and an amber glint) on a plane tilted 58 deg in 3D
+with a red drop-shadow glow, a faint sweep, the three satellite pings, and the chip core over a breathing red glow. Success is an emerald
+SHIELD (SVG) that flips in on a spring (`rotateY` 90 -> 0) after the node convergence; its outline, then a checkmark, draw themselves.
+Chips (`describeHealth().badges`, now also `.version`): "CorelDRAW v27.0 Active", "COM Registered", "Fallback v21.2", "Memory Nominal".
+Copy: "Initializing Corel Engine Bridge / Scanning local COM registrations & CorelDRAW installs...", "Engine Handshake Failed" (error text
+in mono), "Continue without CorelDRAW Engine". Not used as requested, because untrue: "COM Bridge: Online" (the check verifies the COM
+registration, no bridge is running), "Scanning local COM ports & active sessions", "Dual-Master Active".
+
+**Editor loader v2: real-time stages + 3D build narrative.** Section 1 of the request (dashboard cleanup, dual master cards, Enter Manually, full-card dropzones, splash poles/text) was
+already done in earlier rounds - verified, not redone. `EditorPage` now tracks REAL load progress (`utils/loadStages.js`, unit-tested): **BUILD 0-35** = the scene request (server
+CorelDRAW build progress, "rendering objects 110/138"); **TRANSFORM 35-75** = applying saved edits and preloading EVERY object image for real (per-image progress, failures count, 20 s cap);
+**PAINT 75-100** = the workspace mounts underneath the loader and, two animation frames later (first paint), reports 100. Deviation: there is no shader compile or texture upload in the editor
+(its canvas is SVG), so the status text says what really happens ("Painting the first frame...") instead of "Compiling shaders". `EditorLoader` takes `progress`/`statusText`; the displayed
+bar eases toward the real value at <= 45 %/s so the three scenes are always watchable, and the loader stays mounted in one tree slot from the first request until the workspace is painted, then
+fades (250 ms) and calls `onDone`. The 3D narrative follows the DISPLAYED value: **hammer 0-39** (chrome frame of four bars; a hammer swings down onto the top-right corner every 0.95 s, frame recoils,
+burst of red additive sparks with gravity), **panel 40-79** (white flat face fades in with a red grid shader whose brightness ripples outward), **paint 80-100** (nozzle sweeps left to right with vertical
+scanning, spraying red mist, revealing the Adinn logo behind it via a scaled plane + cropped texture). Bugs found and fixed while testing: the grid was invisible because a fresh `uniforms` literal
+each render reset the values `useFrame` wrote (now memoised); sparks were square (now a soft round sprite). Verified in Edge with a simulated slow build (scene route answering 202 with
+15/45/80 %): BUILD tracked "objects 20/138" then "110/138", TRANSFORM, PAINT, 100 %, editor appeared; frames of all three scenes viewed; red-pixel counts near the corner spike once per hammer cycle
+(sparks). 6 new frontend tests (155 total).
+
+**Editor loader v5: designer at a workstation (current; supersedes v4's CAD hub below - its visual only, the telemetry is kept).**
+The loader's centrepiece is `components/DesignerWorkstation.jsx`, an SVG illustration on its own requestAnimationFrame clock: an
+isometric desk with a glowing red mat, keyboard, mouse and a monitor (ambient red/cyan glow behind it) running a CorelDRAW-like window
+("CorelDRAW · master.cdr" title bar, toolbox, dot-grid canvas, status bar), a designer seated at the right with a hand on the mouse. On
+the canvas a small signboard in a dashed cyan selection box with 8 scale handles loops through sizes (wide -> larger -> portrait -> back,
+5.2 s, eased with a short hold, always centred with centre guides while dragging); its layout re-flows to each size (logo + text side by
+side when wide, stacked when tall); the cursor drags the highlighted corner and the physical mouse follows; floating "W: ... mm" /
+"H: ... mm" markers and the status bar read the live size; an action pill cycles "Stretching to target size..." / "Scaling vector
+nodes..." / "Auto-aligning layout...". Reduced motion: one still frame. Unchanged: the tag, the status line (EditorPage's real status,
+fallbacks now "Initializing the editor workspace..." / "Loading master template artwork..." / "Loading vector object layers..." /
+"Finalizing signage layout for the editor..."), the bar, the BUILD/TRANSFORM/PAINT footer (right label now "Auto-resize loop"), the
+easing/fade/onDone plumbing. Not used as requested: "CorelDRAW 2026" (no such version), "COREL ENGINE V27" (this screen does not know
+the version), "Designer initializing CorelDRAW COM engine" / "Executing vector node transformation" as progress text (untrue for a
+cached board; the real status line is shown instead). Verified in Edge on the user's dev server with the scene request delayed: frames
+at 0.6/1.8/3.0/4.2 s show the stretch/scale/portrait re-flow and the markers updating; desktop and 390 px without h-scroll; no errors.
+**Update: no hand - aligned workstation + a mouse synced to the cursor (supersedes the hand-on-mouse version, removed on request).**
+`DesignerWorkstation.jsx` draws only the workstation: desk, glowing mat and a dark keyboard laid out symmetrically on the monitor
+stand's centre line (x = 190), the keyboard directly in front of the stand, and a glow-accented optical mouse on the right of the mat
+(red scroll wheel with a glow, seam line, cyan side accent, a blurred red under-glow that brightens while the artwork is changing, and a
+cable to the back of the desk). The mouse position is a LINEAR map of the on-screen cursor's travel over the loop (`MOUSE_HOME`,
+`MOUSE_RANGE`, `CURSOR_SPAN` from the `KEYS` sizes; the cursor drags the bottom-right handle, so it spans CX + w/2, CY + h/2) - verified
+by sampling both positions 12 times across the loop in the browser: correlation 1.0000 in x and y, mouse travel 26 units across its
+area of the mat. The rAF clock clamp and `frameAt` normalisation (the negative-first-frame crash fix) are unchanged.
+
+**Editor loader v4: CAD workspace hub (current; supersedes v3's signboard build/hoist/paint loop below).** `EditorLoader.jsx`
+is now a CSS/SVG "vector workspace" hub: an outer coordinate ring (SVG, 72 ticks, degree labels at the quarters, 30 s rotation) with a
+laser scan beam (masked conic sweep), a red-arc ring and a counter-rotating amber-arc ring, three stacked isometric grid planes
+(`perspective rotateX(60deg) rotateZ(-45deg)`, breathing apart in Z, vector paths drawing on the top plane) and a metallic red chip
+emblem with a pulsing glow; an "ADINN AUTOMATION EDITOR" tag at the top; a glowing red/amber progress bar with a shine, the percentage,
+and the REAL load stage (BUILD / TRANSFORM / PAINT, done/active colours). The status line is EditorPage's own (`statusText`:
+"Contacting the server...", "CorelDRAW is rendering objects n/m", "Loading object images n/m", "Painting the first frame...") and falls
+back to `stageMessage(pct)` ("Initializing workspace pipeline..." / "Loading master scene data..." / "Loading vector object layers..." /
+"Finalizing Workspace Canvas..."); it is keyed by stage so per-image updates do not restart its fade-in. Not used as requested, because
+untrue for a cached board (no CorelDRAW involved): "Initializing COM Engine Pipeline", "Parsing Dual-Master Vector Layers", "COM PIPE
+ACTIVE", "GPU ACCELERATED" (the footer says "SVG canvas"). Progress plumbing unchanged (MIN_RATE/CATCH_UP easing, finish at 97, 250 ms
+fade, `onDone`). Verified in Edge on the user's dev server with the scene request delayed 3 s (in-page trace: "Contacting the server..."
+2 % for 3 s -> images 17/117 -> 69/117 -> painting -> fade at 3.7 s -> editor at 3.97 s) and at 390 px. The previous loader's source was
+kept only as a scratch copy (it was untracked).
+
+**Editor loader v3: 2D SVG build narrative (supersedes the 3D scenes above).** `components/EditorLoader.jsx` no longer uses three.js.
+With no card or viewport box (everything floats on the #0D0D0D background under a 600 px red radial glow; the ground line fades out at both ends), the title ("ADINN AUTOMATION EDITOR" + pulsing dot) sits above an inline-SVG scene (viewBox 320x180) whose geometry is computed from the
+eased displayed progress: **BUILD 0-35** the steel frame is drawn along its perimeter (`strokeDashoffset`) with a spark burst at the welding
+head, then two struts, then the #2D2D35 face; **HOIST 35-75** (the TRANSFORM load stage) two poles rise and the board is lifted from the ground
+onto them on dashed crane cables (running dash + tension jitter), corner bolts turn red when locked; **PAINT 75-100** a nozzle sweeps left to right
+and a `clipPath` reveals a white panel with the real Adinn logo (`src/assets/logo.jpeg`, the same file as the repo-root `assets/logo.jpeg`, drawn as an SVG `<image>` cropped by a nested `viewBox` to its measured content box 173,418-1457,920 px) above a red base stripe, with a glowing red wet-paint edge at the nozzle. Below: a pulsing stage headline, the server's real detail
+line, a gradient bar and the percentage. Real-progress plumbing (`loadStages.js`, MAX_RATE easing, min show time, fade, `onDone`) unchanged.
+Plain CSS `el-*` classes (no Tailwind, no Framer Motion); reduced motion stops the loops. Loader chunk 5.8 KB. Checked by screenshots of the
+real component (esbuild harness) at 8/20/42/58/84/99 % and at 360 px wide; not re-driven through a live editor load.
+**Update: the scene is decoupled from progress.** It loops Build -> Hoist -> Paint on its own clock (`animAt(elapsed)`: 2.8 s per stage,
+each stage's motion completes in 2.3 s then holds, the scene fades out/in over 0.35 s at the cycle boundary; the same rAF that eases the bar
+drives it, so the motion is continuous, not stepped by a setInterval) for as long as the loader is up. Only the bar, the percentage and the
+single status line (server `statusText`, else "Loading master CDR vector assets..." / "Applying shop dimensions & layout rules..." /
+"Initializing vector canvas engine..." by the REAL load stage) follow progress. Reduced motion shows the finished board, no loop. Verified with
+progress pinned at 40 %: the scene went build (1.2 s) -> hoist (4.0 s) -> paint (6.6 s) -> fade (8.3 s) -> build again (9.6 s), bar stayed 40 %,
+no console errors.
+
 ## Batch import (`backend/app/batch_import.py`)
 
 `parse_shop_lines(text)` turns pasted designer-filename-style lines —
@@ -2378,7 +3477,7 @@ it doesn't read as an arbitrary rule.
   to get every board through. The *process* no longer hangs (the actual
   goal of that work), but a job can still fail and needs a retry; this
   looks like host-level resource exhaustion rather than a code bug -
-  restarting the machine before a long batch is the practical mitigation.
+  restarting the machine before a long batch is the practical mitigation. **Update:** the reuse failures ("Object is not connected to server") had a code cause, not memory: see "Performance: the ~15 s per CorelDRAW job was a bug".
 - **Fonts missing on the host machine** render as tofu boxes in the PNG
   export/real CorelDRAW output — seen with the original (untouched) Tamil
   text in a real dalmia master during testing. Not a `CorelEngine` bug;
@@ -2485,7 +3584,7 @@ succeeded as "job 1" of its own process. This is a workaround, not a fix to
 `corel_util.py`'s pooling code (out of scope here); if batch validation runs
 start failing this badly again, falling back to one-file-per-invocation is
 the practical mitigation alongside the already-documented "restart the
-machine."
+machine." **Root cause found later** (not memory pressure): `CorelEngine.process` CoUninitialize()d the pooled proxy after every job and the orphan cleanup killed the in-use pooled instance - see "Performance: the ~15 s per CorelDRAW job was a bug".
 
 `validate_all.py`'s markdown table gained a Content column
 (`OK`/`FAIL (field,...)`/`NOT_CHECKED`); the HTML report

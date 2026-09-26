@@ -520,6 +520,53 @@ def test_export_raster_transparency_and_antialiasing():
 
 
 
+def test_export_raster_passes_an_explicit_page_area_so_off_page_content_cannot_change_the_render():
+    calls, rects = [], []
+
+    class Flt:
+        def Finish(self):
+            pass
+
+    class App:
+        def CreateRect(self, x, y, w, h):
+            rects.append((x, y, w, h))
+            return ("rect", x, y, w, h)
+
+    class Page:
+        LeftX, BottomY, SizeWidth, SizeHeight = 0.0, 0.0, 3048.0, 762.0
+
+    class Doc:
+        Application = App()
+        ActivePage = Page()
+
+        def ExportBitmap(self, *a):
+            calls.append(a)
+            return Flt()
+
+    size = {"dpi": 96.0, "w_px": 10, "h_px": 5}
+    er.export_raster(Doc(), er.Path("a.jpg"), "jpeg", size, {"png_background": "white", "antialias": True})
+    assert rects == [(0.0, 0.0, 3048.0, 762.0)]                       # the PAGE, in the document's units
+    assert calls[0][15] == ("rect", 0.0, 0.0, 3048.0, 762.0)           # passed as ExportArea (the 16th argument)
+    assert calls[0][14] is None                                       # PaletteOptions stays None (VT_DISPATCH)
+
+
+def test_export_raster_falls_back_to_no_export_area_when_the_document_cannot_give_a_page_rect():
+    calls = []
+
+    class Flt:
+        def Finish(self):
+            pass
+
+    class Doc:                                                         # no ActivePage / Application at all
+        def ExportBitmap(self, *a):
+            calls.append(a)
+            return Flt()
+
+    er.export_raster(Doc(), er.Path("a.png"), "png", {"dpi": 96.0, "w_px": 10, "h_px": 5},
+                     {"png_background": "white", "antialias": True})
+    assert calls[0][15] is None
+
+
 # ---- PowerClip child text (scene_ops.py's one narrow exception to PowerClip
 # contents being read-only; see corel_util.ensure_tamil_font_renders) ----
 

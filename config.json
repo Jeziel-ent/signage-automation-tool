@@ -1,0 +1,91 @@
+{
+  "canvas": {
+    "width_in": 30.0,
+    "height_in": 40.0
+  },
+  "output_dir": "output",
+  "defaults": {
+    "placeholder": {
+      "outline_rgb": [255, 0, 0],
+      "outline_width_in": 0.01,
+      "fill_rgb": [200, 230, 255]
+    },
+    "text": {
+      "color_rgb": [0, 0, 0],
+      "alignment": "center"
+    }
+  },
+  "elements": [
+    {
+      "id": "footer_banner_bg",
+      "type": "rectangle",
+      "box": [0.00, 0.82, 1.00, 0.18],
+      "layer": "01_Background"
+    },
+    {
+      "id": "hero_product_box",
+      "type": "image",
+      "box": [0.35, 0.33, 0.30, 0.47],
+      "asset_path": "assets/test_hero.png",
+      "layer": "02_Graphics"
+    },
+    {
+      "id": "sub_product_box",
+      "type": "image",
+      "box": [0.05, 0.33, 0.28, 0.47],
+      "asset_path": null,
+      "layer": "02_Graphics"
+    },
+    {
+      "id": "agarbathi_sticks",
+      "type": "image",
+      "box": [0.67, 0.33, 0.28, 0.47],
+      "asset_path": null,
+      "layer": "02_Graphics"
+    },
+    {
+      "id": "logo_left",
+      "type": "image",
+      "box": [0.05, 0.04, 0.20, 0.11],
+      "asset_path": null,
+      "layer": "03_Logos"
+    },
+    {
+      "id": "logo_right",
+      "type": "image",
+      "box": [0.75, 0.04, 0.20, 0.11],
+      "asset_path": null,
+      "layer": "03_Logos"
+    },
+    {
+      "id": "center_branding",
+      "type": "rectangle",
+      "box": [0.20, 0.21, 0.60, 0.10],
+      "layer": "04_Typography"
+    },
+    {
+      "id": "footer_text_en",
+      "type": "text",
+      "box": [0.05, 0.84, 0.90, 0.06],
+      "text": "Premium Handmade Agarbathi — Fragrance That Elevates Your Home",
+      "font": "Arial",
+      "size_pt": 18,
+      "alignment": "center",
+      "color_rgb": [0, 0, 0],
+      "language": "en",
+      "layer": "04_Typography"
+    },
+    {
+      "id": "footer_text_ta",
+      "type": "text",
+      "box": [0.05, 0.91, 0.90, 0.06],
+      "text": "உயர்தர கைவினை அகர்பத்தி — உங்கள் இல்லத்திற்கு நறுமணம்",
+      "font": "Nirmala UI",
+      "size_pt": 18,
+      "alignment": "center",
+      "color_rgb": [0, 0, 0],
+      "language": "ta",
+      "layer": "04_Typography"
+    }
+  ]
+}

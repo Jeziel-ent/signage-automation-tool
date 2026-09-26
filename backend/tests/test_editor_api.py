@@ -5,6 +5,7 @@ test_scene_export.py (fakes) and was verified live - see CLAUDE.md.
 from __future__ import annotations
 
 import importlib
+import re
 import time
 
 import pytest
@@ -65,7 +66,7 @@ def test_scene_builds_then_is_served_from_cache(client):
         assert body["status"] == "building" and 0 <= body["progress_pct"] <= 100
     scene = _scene(client, job, shop)
     assert scene["page"] == {"width": 3048.0, "height": 1219.2}  # 120in x 4ft, mixed units, in mm
-    assert scene["ops"] == [] and scene["asset_base"] == f"/api/editor/{job}/{shop}/asset/"
+    assert scene["ops"] == [] and re.fullmatch(rf"/api/editor/{job}/{shop}/asset/v/\d+/", scene["asset_base"])
     assert scene["layers"][0]["children"]
     again = client.get(f"/api/editor/{job}/{shop}/scene")
     assert again.status_code == 200 and again.json()["layers"] == scene["layers"]
@@ -80,6 +81,10 @@ def test_assets_are_served_and_guarded(client):
     assert client.get(f"/api/editor/{job}/{shop}/asset/nope.svg").status_code == 404
     assert client.get(f"/api/editor/{job}/{shop}/asset/..%2Fscene.json").status_code == 404
     assert client.get(f"/api/editor/{job}/{shop}/asset/..%2F..%2F..%2Fmaster.cdr").status_code == 404
+    # the build-versioned URL the editor actually uses: same file, cacheable forever, same guard
+    v = client.get(scene["asset_base"] + leaf["image"]["file"])
+    assert v.status_code == 200 and v.content == r.content and "immutable" in v.headers["cache-control"]
+    assert client.get(scene["asset_base"] + "..%2Fscene.json").status_code == 404
 
 
 def test_ops_save_load_and_server_side_replay(client):
@@ -323,3 +328,32 @@ def test_product_asset_upload_requires_a_converted_shop(client):
     r = client.post(f"/api/editor/{job}/{shop}/product-assets",
                     files={"file": ("a.png", _tiny_png_bytes(), "image/png")})
     assert r.status_code == 409
+
+
+def test_export_zip_bundles_every_file_under_the_shop_name(client):
+    import io
+    import zipfile
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    started = _export(client, job, shop, ["png", "cdr", "pdf", "jpeg"], {"raster": {"mode": "max_px", "max_px": 800}})
+    final = _wait_export(client, job, shop, started["export_id"])
+    r = client.get(f"/api/editor/{job}/{shop}/exports/{started['export_id']}/zip")
+    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    assert r.headers["content-disposition"].endswith('_Signage_Export.zip"') or "_Signage_Export.zip" in r.headers["content-disposition"]
+    z = zipfile.ZipFile(io.BytesIO(r.content))
+    assert sorted(z.namelist()) == sorted(final["files"].values())
+    png = next(n for n in z.namelist() if n.endswith(".png"))
+    assert z.read(png)[:4] == b"\x89PNG"
+
+
+def test_export_zip_name_is_filename_safe_and_keeps_other_scripts():
+    from app.main import _zip_name
+    assert _zip_name("Sri Kumar / Sons: #1") == "Sri_Kumar_Sons_1_Signage_Export.zip"
+    assert _zip_name("\u0bb8\u0bcd\u0bb0\u0bc0 \u0b95\u0bbe\u0bb0\u0bcd") .endswith("_Signage_Export.zip")
+    assert _zip_name("  ") == "Shop_Signage_Export.zip"
+
+
+def test_export_zip_refuses_an_unfinished_export(client):
+    job, shop = _converted_shop(client)
+    _scene(client, job, shop)
+    assert client.get(f"/api/editor/{job}/{shop}/exports/nope/zip").status_code == 404

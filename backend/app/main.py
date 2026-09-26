@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
+import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -10,10 +13,13 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+import logging
+
+from fastapi import Body, FastAPI, File, Form, HTTPException, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
 from .batch_import import parse_shop_lines
@@ -34,6 +40,8 @@ CONVERT_RUNS = DATA / "convert_runs"  # ephemeral corel_supervisor results/heart
 JOBS_V2.mkdir(parents=True, exist_ok=True)
 CONVERT_RUNS.mkdir(parents=True, exist_ok=True)
 db.init_db()
+
+logger = logging.getLogger("signage.convert")
 
 app = FastAPI(title="signage-automation-tool")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -221,9 +229,12 @@ def _extract_cdr_preview(master_path: Path) -> tuple[Path | None, str | None]:
 
 
 @app.post("/api/v2/upload")
-async def v2_upload(master: UploadFile = File(...), brand: str = Form(...)):
+async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form("landscape")):
     if not (master.filename or "").lower().endswith(".cdr"):
         raise HTTPException(400, "Master file must be a .cdr")
+    orientation = orientation.strip().lower()
+    if orientation not in ("landscape", "portrait"):
+        raise HTTPException(400, "orientation must be 'landscape' or 'portrait'")
     if not brand.strip():
         raise HTTPException(400, "brand required")
 
@@ -237,12 +248,13 @@ async def v2_upload(master: UploadFile = File(...), brand: str = Form(...)):
     with open(master_path, "wb") as f:
         shutil.copyfileobj(master.file, f)
 
-    db.create_job(job_id, brand.strip(), master.filename, str(master_path))
+    db.create_job(job_id, brand.strip(), master.filename, str(master_path), orientation)
     preview_path, preview_error = _extract_cdr_preview(master_path)
     db.set_job_preview(job_id, str(preview_path) if preview_path else None, preview_error)
 
     return {
         "id": job_id,
+        "orientation": orientation,
         "preview_url": f"/api/v2/jobs/{job_id}/preview" if preview_path else None,
         "preview_error": preview_error,
     }
@@ -266,41 +278,150 @@ def v2_job_preview(job_id: str):
     return FileResponse(job["preview_path"])
 
 
+def _validated_master_ids(payload: dict, job: dict) -> dict:
+    """`landscape_master_id` / `portrait_master_id` from a request body: each must exist (404), belong to the job's
+    brand and have been uploaded as the orientation of its slot (400). Missing/blank -> None."""
+    out = {}
+    for key, want in (("landscape_master_id", "landscape"), ("portrait_master_id", "portrait")):
+        mid = (payload.get(key) or "").strip() or None
+        if mid:
+            mrow = db.get_job(mid)
+            if not mrow:
+                raise HTTPException(404, f"{key} not found")
+            if mrow["brand"] != job["brand"]:
+                raise HTTPException(400, f"{key} belongs to brand {mrow['brand']!r}, not {job['brand']!r}")
+            if (mrow.get("orientation") or "landscape") != want:
+                raise HTTPException(400, f"{key} was uploaded as a {mrow.get('orientation')} master")
+        out[key] = mid
+    return out
+
+
+def _parse_shop_payload(payload: dict) -> dict:
+    """Validate one shop body (single add and every row of a batch share this). Raises ValueError with a
+    readable reason. Optional contact fields go through `.strip() or None`: compute_layout treats None as
+    "leave the master's own text alone" but "" as "replace with blank", so a blank must never reach the engine
+    as an empty string (see CLAUDE.md "Per-shop content replacement")."""
+    try:
+        name = str(payload["name"]).strip()
+        width = float(payload["width"])
+        height = float(payload["height"])
+    except (KeyError, TypeError, ValueError):
+        raise ValueError("need name, width>0, height>0")
+    # `unit` (the Shops table's one shared unit) sets both dimensions; explicit width_unit/height_unit still win.
+    shared = payload.get("unit") or "in"
+    width_unit = payload.get("width_unit", shared)
+    height_unit = payload.get("height_unit", shared)
+    if not name or not (width > 0) or not (height > 0):
+        raise ValueError("need name, width>0, height>0")
+    if width_unit not in ("mm", "cm", "in", "ft") or height_unit not in ("mm", "cm", "in", "ft"):
+        raise ValueError("unit must be one of mm/cm/in/ft")
+
+    def opt(key):
+        return (str(payload.get(key) or "")).strip() or None
+
+    return {"name": name, "width": width, "width_unit": width_unit, "height": height, "height_unit": height_unit,
+            "reference": opt("reference"),
+            # No upload UI for this yet (see CLAUDE.md "New UI") - accepted so the data model needs no migration later.
+            "reference_file_path": opt("reference_file_path"),
+            "phone": opt("phone"), "gst": opt("gst"), "address": opt("address")}
+
+
+def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
+    shop_id = uuid.uuid4().hex[:12]
+    seq_no = len(db.list_shops(job_id)) + 1
+    db.create_shop(shop_id, job_id, seq_no, fields["name"], fields["width"], fields["width_unit"], fields["height"],
+                   fields["height_unit"], fields["reference"], fields["reference_file_path"], fields["phone"],
+                   fields["gst"], fields["address"], master_ids["landscape_master_id"], master_ids["portrait_master_id"])
+    return db.get_shop(shop_id)
+
+
 @app.post("/api/v2/jobs/{job_id}/shops")
 def v2_add_shop(job_id: str, payload: dict):
     job = db.get_job(job_id)
     if not job:
         raise HTTPException(404, "job not found")
     try:
-        name = payload["name"].strip()
-        width = float(payload["width"])
-        height = float(payload["height"])
-        width_unit = payload.get("width_unit", "in")
-        height_unit = payload.get("height_unit", "in")
-        reference = (payload.get("reference") or "").strip() or None
-        # No upload UI for this yet (see CLAUDE.md "New UI") - accepted now so the
-        # data model doesn't need another migration once one exists.
-        reference_file_path = (payload.get("reference_file_path") or "").strip() or None
-        # Optional per-shop contact fields (see CLAUDE.md "Per-shop content
-        # replacement", already supported by the old /api/jobs flow - this wires
-        # the same engine capability into the new v2 UI/API). `.strip() or None`
-        # matters here: compute_layout treats None as "leave the master's own
-        # text alone" but "" as "replace with blank" - the frontend must never
-        # send an empty string for a field the user left untouched, so this
-        # normalizes that at the API boundary regardless of what the client sends.
-        phone = (payload.get("phone") or "").strip() or None
-        gst = (payload.get("gst") or "").strip() or None
-        address = (payload.get("address") or "").strip() or None
-        assert name and width > 0 and height > 0
-        assert width_unit in ("mm", "cm", "in", "ft") and height_unit in ("mm", "cm", "in", "ft")
-    except Exception:
+        fields = _parse_shop_payload(payload)
+    except ValueError:
         raise HTTPException(400, "invalid shop: need name, width>0, height>0, unit in mm/cm/in/ft")
+    # Dual-master templates (optional): the ids of two uploaded masters (each an /api/v2/upload job). They must
+    # exist, belong to this job's brand and have been uploaded as the orientation they are used for.
+    return _insert_shop(job_id, fields, _validated_master_ids(payload, job))
 
-    shop_id = uuid.uuid4().hex[:12]
-    seq_no = len(db.list_shops(job_id)) + 1
-    db.create_shop(shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
-                    reference, reference_file_path, phone, gst, address)
+
+EDITABLE_SHOP_KEYS = ("name", "width", "width_unit", "height", "height_unit", "unit", "phone", "gst", "address")
+
+
+def _apply_shop_edits(shop_row: dict, payload: dict) -> None:
+    """Merge the editable fields present in `payload` over the stored shop, validate the result exactly like an
+    add, and save it. Only the keys the payload names change; a blank phone/gst/address clears that field."""
+    merged = {k: shop_row.get(k) for k in EDITABLE_SHOP_KEYS if k != "unit"}
+    merged.update({k: payload[k] for k in EDITABLE_SHOP_KEYS if k in payload})
+    if "unit" in payload and "width_unit" not in payload and "height_unit" not in payload:
+        merged["width_unit"] = merged["height_unit"] = payload["unit"] or "in"   # one shared unit
+    try:
+        fields = _parse_shop_payload(merged)
+    except ValueError as e:
+        raise HTTPException(400, f"invalid shop: {e}")
+    db.update_shop_fields(shop_row["id"], fields)
+
+
+@app.patch("/api/v2/shops/{shop_id}")
+def v2_edit_shop(shop_id: str, payload: dict):
+    """Inline edit from the Shops table (name, width/height + units, phone, GST, address). Refused while the shop
+    is queued/converting - its output would no longer match the row."""
+    row = db.get_shop(shop_id)
+    if not row:
+        raise HTTPException(404, "shop not found")
+    if row["status"] in ("queued", "converting"):
+        raise HTTPException(409, "shop is converting")
+    _apply_shop_edits(row, payload)
     return db.get_shop(shop_id)
+
+
+@app.delete("/api/v2/shops/{shop_id}")
+def v2_delete_shop(shop_id: str):
+    row = db.get_shop(shop_id)
+    if not row:
+        raise HTTPException(404, "shop not found")
+    if row["status"] in ("queued", "converting"):
+        raise HTTPException(409, "shop is converting")
+    db.delete_shop(shop_id)
+    return {"deleted": shop_id}
+
+
+BATCH_MAX_SHOPS = 500
+
+
+@app.post("/api/v2/jobs/{job_id}/shops/batch")
+def v2_add_shops_batch(job_id: str, payload: dict):
+    """Add many shops at once (the Excel/CSV import). Body: `{shops: [<shop body>, ...], landscape_master_id?,
+    portrait_master_id?}` - each row is a normal add-shop body (row-level master ids override the batch-level ones).
+    Rows are validated independently: valid rows are inserted in order, invalid ones are reported and skipped, so
+    one bad row never loses the rest. Returns `{added: [shop rows], errors: [{index, reason}]}` (index is the
+    0-based position in the request). A bad batch-level master id fails the whole request (4xx) - nothing is added."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    rows = payload.get("shops")
+    if not isinstance(rows, list) or not rows:
+        raise HTTPException(400, "shops must be a non-empty array")
+    if len(rows) > BATCH_MAX_SHOPS:
+        raise HTTPException(413, f"at most {BATCH_MAX_SHOPS} shops per batch")
+    batch_ids = _validated_master_ids(payload, job)
+    added, errors = [], []
+    for i, row in enumerate(rows):
+        try:
+            if not isinstance(row, dict):
+                raise ValueError("row must be an object")
+            fields = _parse_shop_payload(row)
+            ids = {**batch_ids, **{k: v for k, v in _validated_master_ids(row, job).items() if v}}
+            added.append(_insert_shop(job_id, fields, ids))
+        except ValueError as e:
+            errors.append({"index": i, "reason": str(e)})
+        except HTTPException as e:
+            errors.append({"index": i, "reason": str(e.detail)})
+    return {"added": added, "errors": errors}
 
 
 @app.get("/api/v2/recent")
@@ -349,11 +470,40 @@ def v2_list_shops(job_id: str):
 _STEP_PERCENT = {"launch": 10, "open": 25, "tile_resize": 55, "saveas": 75, "pdf": 88, "png": 97}
 
 
-def _v2_convert_worker(shop_id: str, job_id: str) -> None:
-    db.set_shop_status(shop_id, "converting", step="starting")
+def _select_shop_master(shop_row: dict, job_row: dict, target_w_mm: float, target_h_mm: float) -> tuple[Path, dict]:
+    """The master file a shop converts from, plus a small record of the choice for the report.
+
+    A shop with `landscape_master_id` / `portrait_master_id` uses the master matching the TARGET's orientation
+    (`orientation_adapter.select_master`: only width > height is landscape; square and portrait use portrait) so the layout engine only ever scales
+    and pads within one orientation; a shop with neither keeps using its job's own master, as before."""
+    l_id, p_id = shop_row.get("landscape_master_id"), shop_row.get("portrait_master_id")
+    if not (l_id or p_id):
+        return Path(job_row["master_path"]), {"job_id": job_row["id"], "orientation": job_row.get("orientation") or "landscape",
+                                              "reason": "job master (no dual masters set)"}
+    orientation, mid, fallback = orientation_adapter.select_master(target_w_mm, target_h_mm, l_id, p_id)
+    mrow = db.get_job(mid)
+    if not mrow:
+        raise RuntimeError(f"{orientation} master {mid} no longer exists")
+    reason = f"target is {orientation}" + (" (no matching master uploaded - used the other orientation)" if fallback else "")
+    return Path(mrow["master_path"]), {"job_id": mid, "orientation": orientation, "reason": reason, "fallback": fallback}
+
+
+# Consecutive queued shops are converted in ONE corel_worker session that reuses a single CorelDRAW instance (launched once,
+# recycled every SIGNAGE_COREL_RECYCLE_N=5 jobs by the worker) instead of a fresh worker + CorelDRAW per shop: measured live,
+# 10.1 s per shop on its own vs ~5 s for each further shop in a batch. Still strictly one CorelDRAW job at a time - a batch is
+# one task on the same single-worker _pool. Capped so a long Convert All cannot hold the pool (and so an editor's scene build
+# or an export waiting behind it) for more than a few batches' worth of time.
+CONVERT_BATCH_MAX = 5
+_convert_queue: list[str] = []            # shop ids in the order Convert was pressed (only shops still "queued" count)
+_convert_queue_lock = threading.Lock()
+_batch_slots: dict[str, tuple[Path, int]] = {}  # shop id -> (its batch's heartbeat file, its index in that batch)
+
+
+def _convert_job(shop_id: str) -> tuple[dict, dict]:
+    """(corel_worker job, master_used record) for one shop, from its current database row."""
     shop_row = db.get_shop(shop_id)
-    job_row = db.get_job(job_id)
-    out_dir = JOBS_V2 / job_id / "out" / shop_id
+    job_row = db.get_job(shop_row["job_id"])
+    out_dir = JOBS_V2 / shop_row["job_id"] / "out" / shop_id
     shop_dict = {
         "name": shop_row["name"],
         "width": to_mm(shop_row["width"], shop_row["width_unit"]),
@@ -377,37 +527,137 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         address_lines = [line.strip() for line in shop_row["address"].splitlines() if line.strip()]
         if address_lines:
             shop_dict["address_lines"] = address_lines
-    master_path = Path(job_row["master_path"])
+    master_path, master_used = _select_shop_master(shop_row, job_row, shop_dict["width"], shop_dict["height"])
+    logger.info("Shop %s (%sx%s mm, %s target): Selected master file path -> %s (%s)", shop_id,
+                round(shop_dict["width"], 1), round(shop_dict["height"], 1), master_used.get("orientation"),
+                master_path, master_used.get("reason"))
+    return {"master_path": str(master_path), "shop": shop_dict, "out_dir": str(out_dir)}, master_used
+
+
+def _store_convert_result(shop_id: str, entry: dict, master_used: dict) -> None:
+    if entry.get("status") == "done":
+        out = entry["result"]
+        out["report"]["master_used"] = master_used
+        db.set_shop_result(shop_id, out["files"], out["report"])
+    else:
+        db.set_shop_status(shop_id, "failed", error=entry.get("error", "unknown error"))
+
+
+def _take_queued_batch(first: str) -> list[str]:
+    """`first` plus up to CONVERT_BATCH_MAX-1 more shops still queued behind it, in Convert order; they leave the queue."""
+    with _convert_queue_lock:
+        batch = [first]
+        for sid in list(_convert_queue):
+            if len(batch) >= CONVERT_BATCH_MAX:
+                break
+            row = db.get_shop(sid)
+            if sid != first and row and row["status"] == "queued":
+                batch.append(sid)
+        for sid in batch:
+            while sid in _convert_queue:
+                _convert_queue.remove(sid)
+    return batch
+
+
+def _v2_convert_worker(shop_id: str, job_id: str) -> None:
+    row = db.get_shop(shop_id)
+    if not row or row["status"] != "queued":
+        return  # already converted as part of an earlier batch (or removed)
     engine = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto"))
+    if engine.name != "corel":
+        with _convert_queue_lock:
+            while shop_id in _convert_queue:
+                _convert_queue.remove(shop_id)
+        db.set_shop_status(shop_id, "converting", step="starting")
+        try:
+            job, master_used = _convert_job(shop_id)
+            out = engine.process(Path(job["master_path"]), job["shop"], Path(job["out_dir"]))
+            out["report"]["master_used"] = master_used
+            db.set_shop_result(shop_id, out["files"], out["report"])
+        except Exception as e:
+            db.set_shop_status(shop_id, "failed", error=str(e))
+        return
+
+    ids = _take_queued_batch(shop_id)
+    prepared: list[tuple[str, dict, dict]] = []
+    for sid in ids:
+        try:
+            job, master_used = _convert_job(sid)
+            prepared.append((sid, job, master_used))
+        except Exception as e:
+            db.set_shop_status(sid, "failed", error=str(e))
+    if not prepared:
+        return
+    results_path = CONVERT_RUNS / f"{prepared[0][0]}.json"
+    heartbeat = results_path.with_suffix(".heartbeat")
+    for i, (sid, _, _) in enumerate(prepared):
+        _batch_slots[sid] = (heartbeat, i)
+    db.set_shop_status(prepared[0][0], "converting", step="starting")
+
+    def on_progress(i, entry):
+        sid, _, master_used = prepared[i]
+        if entry.get("status") == "done" or i == 0:
+            _store_convert_result(sid, entry, master_used)
+        # a later shop that failed is retried on its own below (it may have failed only because the reused instance did)
+        if i + 1 < len(prepared):
+            db.set_shop_status(prepared[i + 1][0], "converting", step="starting")
 
     try:
-        if engine.name == "corel":
-            results_path = CONVERT_RUNS / f"{shop_id}.json"
-            jobs = [{"master_path": str(master_path), "shop": shop_dict, "out_dir": str(out_dir)}]
-            results = corel_supervisor.run_batch(jobs, results_path)
-            entry = results[0]
-            if entry.get("status") == "done":
-                out = entry["result"]
-                db.set_shop_result(shop_id, out["files"], out["report"])
-            else:
-                db.set_shop_status(shop_id, "failed", error=entry.get("error", "unknown error"))
-            for p in (results_path, results_path.with_suffix(".heartbeat"), results_path.with_suffix(".done")):
+        results = corel_supervisor.run_batch([j for _, j, _ in prepared], results_path, on_progress=on_progress)
+    except Exception as e:  # e.g. RefusedToStart (not enough free RAM): every shop in the batch fails with the reason
+        results = [{"status": "error", "error": str(e)} for _ in prepared]
+    finally:
+        for sid, _, _ in prepared:
+            _batch_slots.pop(sid, None)
+        for p in (results_path, heartbeat, results_path.with_suffix(".done")):
+            p.unlink(missing_ok=True)
+
+    for i, ((sid, job, master_used), entry) in enumerate(zip(prepared, results)):
+        if entry.get("status") == "done":
+            if db.get_shop(sid)["status"] != "done":  # normally already stored by on_progress
+                _store_convert_result(sid, entry, master_used)
+            continue
+        if i == 0:  # the first shop ran on a fresh instance, exactly as a single conversion does: its failure is real
+            _store_convert_result(sid, entry, master_used)
+            continue
+        # Retry once in a fresh worker + fresh CorelDRAW: exactly the path a single shop always took.
+        logger.warning("shop %s failed in a batch (%s); retrying it on its own", sid, entry.get("error"))
+        db.set_shop_status(sid, "converting", step="starting")
+        single = CONVERT_RUNS / f"{sid}.json"
+        _batch_slots[sid] = (single.with_suffix(".heartbeat"), 0)
+        try:
+            retry = corel_supervisor.run_batch([job], single)[0]
+        except Exception as e:
+            retry = {"status": "error", "error": str(e)}
+        finally:
+            _batch_slots.pop(sid, None)
+            for p in (single, single.with_suffix(".heartbeat"), single.with_suffix(".done")):
                 p.unlink(missing_ok=True)
-        else:
-            out = engine.process(master_path, shop_dict, out_dir)
-            db.set_shop_result(shop_id, out["files"], out["report"])
-    except Exception as e:
-        db.set_shop_status(shop_id, "failed", error=str(e))
+        _store_convert_result(sid, retry, master_used)
 
 
 @app.post("/api/v2/shops/{shop_id}/convert")
-def v2_convert_shop(shop_id: str):
+def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
+    """Queue a conversion. An optional body `{landscape_master_id, portrait_master_id}` (re)sets the shop's dual
+    masters first: a shop row keeps the ids it was created with, so a portrait master uploaded AFTER the shop was
+    added would otherwise never be used (the shop row would still say portrait_master_id = NULL and the landscape
+    master would win by fallback). A body that names neither id leaves the stored ids alone."""
     row = db.get_shop(shop_id)
     if not row:
         raise HTTPException(404, "shop not found")
     if row["status"] in ("queued", "converting"):
         raise HTTPException(409, "already converting")
+    # The current on-screen values: any editable field in the body is saved first, so what the user sees in the
+    # table (including edits made after an import) is exactly what gets converted - even if the blur-save PATCH
+    # had not landed yet.
+    if payload and any(k in payload for k in EDITABLE_SHOP_KEYS):
+        _apply_shop_edits(row, payload)
+    if payload and (payload.get("landscape_master_id") or payload.get("portrait_master_id")):
+        ids = _validated_master_ids(payload, db.get_job(row["job_id"]))
+        db.set_shop_masters(shop_id, ids["landscape_master_id"], ids["portrait_master_id"])
     db.set_shop_status(shop_id, "queued")
+    with _convert_queue_lock:
+        _convert_queue.append(shop_id)
     _pool.submit(_v2_convert_worker, shop_id, row["job_id"])
     return {"status": "queued"}
 
@@ -427,18 +677,34 @@ def v2_shop_status(shop_id: str):
     elif row["status"] == "converting":
         step = row["step"]
         pct = _STEP_PERCENT.get(step, 5)
-        heartbeat_path = CONVERT_RUNS / f"{shop_id}.heartbeat"
+        # In a batch the heartbeat file is the batch's, shared by its shops; only a beat for THIS shop's index is its progress.
+        heartbeat_path, index = _batch_slots.get(shop_id, (CONVERT_RUNS / f"{shop_id}.heartbeat", 0))
         if heartbeat_path.exists():
             try:
                 hb = json.loads(heartbeat_path.read_text(encoding="utf-8"))
-                step = hb.get("step", step)
-                pct = _STEP_PERCENT.get(step, pct)
+                if hb.get("job_index", 0) == index:
+                    step = hb.get("step", step)
+                    pct = _STEP_PERCENT.get(step, pct)
             except Exception:
                 pass
         row["step"], row["progress_pct"] = step, pct
     else:  # "new" or "queued"
         row["progress_pct"] = 0
     return row
+
+
+@app.get("/api/v2/shop-statuses")
+def v2_shop_statuses(ids: str = ""):
+    """Status of several shops in one request ({id: status row}; unknown ids are left out). The Automation page polls every
+    converting/queued shop with this one call instead of one request per shop every 800 ms - a 50-shop Convert All used to
+    make ~60 requests a second, mostly for shops that were only waiting."""
+    out = {}
+    for sid in [s for s in ids.split(",") if s][:500]:
+        try:
+            out[sid] = v2_shop_status(sid)
+        except HTTPException:
+            continue
+    return out
 
 
 @app.get("/api/v2/shops/{shop_id}/files/{filename}")
@@ -567,7 +833,9 @@ def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool =
                 _pool.submit(_scene_build_worker, job_id, shop_id)
                 return JSONResponse({"status": "building", "step": "queued", "progress_pct": 1}, status_code=202)
             scene["ops"] = db.get_editor_ops(shop_id)
-            scene["asset_base"] = f"/api/editor/{job_id}/{shop_id}/asset/"
+            # Versioned by the scene build (scene.json is written last), so the images can be cached as immutable: re-opening a
+            # board no longer re-validates its 100-350 object images one request at a time; a rebuilt scene gets new URLs.
+            scene["asset_base"] = f"/api/editor/{job_id}/{shop_id}/asset/v/{int(scene_path.stat().st_mtime)}/"
             return scene
         _scene_builds[shop_id] = {"status": "building"}
     _pool.submit(_scene_build_worker, job_id, shop_id)
@@ -575,6 +843,14 @@ def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool =
 
 
 _ASSET_TYPES = {".svg": "image/svg+xml", ".png": "image/png"}
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/asset/v/{version}/{filename}")
+def editor_asset_versioned(job_id: str, shop_id: str, version: str, filename: str):
+    """Same file as below under a build-versioned URL (see the scene endpoint's asset_base) - safe to cache forever."""
+    r = editor_asset(job_id, shop_id, filename)
+    r.headers["Cache-Control"] = "private, max-age=31536000, immutable"
+    return r
 
 
 @app.get("/api/editor/{job_id}/{shop_id}/asset/{filename}")
@@ -690,6 +966,7 @@ class ConvertOrientationRequest(BaseModel):
     scene: dict
     target_w: float
     target_h: float
+    same_orientation_fit: bool = False   # scene is a master of the target's orientation: uniform fit + padding
 
 
 @app.post("/api/scene/convert-orientation")
@@ -710,7 +987,8 @@ def convert_orientation(body: ConvertOrientationRequest, response: Response):
     checked."""
     response.headers["Cache-Control"] = "no-store"
     try:
-        ops = orientation_adapter.convert_orientation(body.scene, body.target_w, body.target_h)
+        ops = orientation_adapter.convert_orientation(body.scene, body.target_w, body.target_h,
+                                                        same_orientation_fit=body.same_orientation_fit)
         scene = scene_ops.apply_ops(body.scene, ops)
     except scene_ops.OpError as e:
         raise HTTPException(422, str(e))
@@ -719,10 +997,54 @@ def convert_orientation(body: ConvertOrientationRequest, response: Response):
     return {"scene": scene, "ops": ops}
 
 
+@app.get("/api/corel/health")
+def corel_health():
+    """Can this server run conversions? For the launch screen. Deliberately does NOT start CorelDRAW: there is no long-running
+    CorelDRAW to "connect" to - every job launches its own hidden instance - and a test launch would cost seconds and RAM and
+    race a running conversion. It reports what a job would use: the engine, the installed CorelDRAW versions (registry +
+    executable version, in the order a job tries them) and free RAM against the floor a batch needs."""
+    kind = os.environ.get("SIGNAGE_ENGINE", "auto")
+    engine = ("corel" if sys.platform == "win32" else "mock") if kind == "auto" else kind
+    installs = corel_util.corel_installs() if sys.platform == "win32" else []
+    try:
+        free = round(corel_util.check_memory(), 2)
+    except Exception:
+        free = None
+    floor = corel_supervisor.MIN_FREE_RAM_GB
+    low = free is not None and free < floor
+    if engine == "mock":
+        ok, message = True, "Mock engine: previews are simulated, CorelDRAW is not needed."
+    elif installs:
+        ok = True
+        message = f"CorelDRAW {installs[0]['version'] or ''} ready".strip() + (
+            f" - low memory ({free} GB free, conversions need {floor} GB)" if low else "")
+    else:
+        ok = False
+        message = ("No CorelDRAW installation found on the server. Install CorelDRAW (2019 or newer), or check "
+                   "SIGNAGE_COREL_PROGID if it is set." if sys.platform == "win32" else
+                   "CorelDRAW needs a Windows server; set SIGNAGE_ENGINE=mock to try the app without it.")
+    return {"ok": ok, "engine": engine, "corel_available": bool(installs), "installs": installs,
+            "selected": installs[0] if installs else None, "pinned": os.environ.get("SIGNAGE_COREL_PROGID") or None,
+            "free_ram_gb": free, "min_free_ram_gb": floor, "low_memory": low, "message": message}
+
+
 @app.get("/api/fonts")
 def api_fonts(refresh: bool = False):
     """Installed font families (the editor refuses to name a font CorelDRAW would silently ignore)."""
     return fonts.installed_fonts(refresh)
+
+
+_FONT_MEDIA = {".ttf": "font/ttf", ".otf": "font/otf", ".ttc": "font/collection"}
+
+
+@app.get("/api/fonts/file")
+def api_font_file(family: str):
+    """The installed font file for `family`, so the editor's live text renders in the board's real font on any browser."""
+    path = fonts.font_file(family)
+    if path is None:
+        raise HTTPException(404, f"font {family!r} is not installed on the server")
+    return FileResponse(path, media_type=_FONT_MEDIA.get(path.suffix.lower(), "application/octet-stream"),
+                        headers={"Cache-Control": "public, max-age=86400"})
 
 
 # ------------------------------------------------------ export (Phase D)
@@ -918,6 +1240,36 @@ def editor_export_list(job_id: str, shop_id: str):
              "files": json.loads(r["files_json"]) if r["files_json"] else None,
              "error": r["error"], "created_at": r["created_at"], "completed_at": r["completed_at"]}
             for r in db.list_exports(shop_id)]
+
+
+def _zip_name(shop_name: str) -> str:
+    """`{ShopName}_Signage_Export.zip` with the shop name reduced to filename-safe characters (letters of any script,
+    digits, dot, dash) - spaces and everything else become underscores."""
+    safe = re.sub(r"[^\w.\-]+", "_", (shop_name or "").strip(), flags=re.UNICODE).strip("._") or "Shop"
+    return f"{safe}_Signage_Export.zip"
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/zip")
+def editor_export_zip(job_id: str, shop_id: str, export_id: str):
+    """Every generated file of one export (cdr/pdf/png/jpeg) in a single `{ShopName}_Signage_Export.zip`. Built on
+    the server rather than in the browser: a CDR is often 100-300 MB and would have to sit in browser memory to be
+    zipped client-side. Members are STORED, not deflated - a CDR/PNG/JPEG/PDF is already compressed, so deflating
+    only costs time. The temp archive is deleted once it has been sent."""
+    shop = _editor_shop(job_id, shop_id)
+    row = _export_row(job_id, shop_id, export_id)
+    files = json.loads(row["files_json"]) if row["files_json"] else {}
+    base = _export_dir(job_id, shop_id, export_id).resolve()
+    members = [(base / name).resolve() for name in files.values()]
+    members = [m for m in members if base in m.parents and m.is_file()]
+    if row["status"] != "done" or not members:
+        raise HTTPException(409, "this export has no finished files to download")
+    tmp = tempfile.NamedTemporaryFile(prefix="export_", suffix=".zip", delete=False)
+    tmp.close()
+    with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as z:
+        for m in members:
+            z.write(m, arcname=m.name)
+    return FileResponse(tmp.name, media_type="application/zip", filename=_zip_name(shop["name"]),
+                        background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
 
 
 @app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/files/{filename}")

@@ -707,12 +707,28 @@ def export_pdf(doc, path: Path, opts: dict, warnings: list[str]) -> dict:
     return applied
 
 
+def _page_export_area(doc):
+    """A Rect covering exactly the active page, in the document's own units, or None if the document cannot
+    provide one. Needed because `ExportBitmap(cdrCurrentPage, ExportArea=None)` was verified live (DARSHAN converted
+    to 4:1) to render the whole DRAWING extent, not the page, whenever objects lie outside the page: the cover-fit
+    background of an orientation conversion deliberately overflows it (5.3x the page height in that case), and the
+    JPEG came out with every foreground shape squeezed to ~1/5 of its height around the centre while the .cdr and
+    CorelDRAW's own verification were both correct. An explicit page-sized area renders the page as designed."""
+    try:
+        page = doc.ActivePage
+        return doc.Application.CreateRect(float(page.LeftX), float(page.BottomY),
+                                          float(page.SizeWidth), float(page.SizeHeight))
+    except Exception:
+        return None
+
+
 def export_raster(doc, path: Path, fmt: str, size: dict, raster: dict) -> None:
     transparent = fmt == "png" and raster["png_background"] == "transparent"
     flt = doc.ExportBitmap(
         str(path), FILTER[fmt], scene_export.CDR_CURRENT_PAGE, scene_export.CDR_RGB_IMAGE,
         # explicit pixel size: CorelDRAW rounds a dpi to a whole number, which is up to 10% off at low resolutions
-        size["w_px"], size["h_px"], size["dpi"], size["dpi"], 1 if raster["antialias"] else 0, False, transparent, True, False, 0, None, None,
+        size["w_px"], size["h_px"], size["dpi"], size["dpi"], 1 if raster["antialias"] else 0, False, transparent, True, False, 0, None,
+        _page_export_area(doc),
     )
     flt.Finish()
 
@@ -799,8 +815,9 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
                                 f"{len(report['verification']['mismatches'])} place(s) - see verification.mismatches")
         if "cdr" in formats:
             p = out_dir / f"{base}.cdr"
-            timed("cdr", lambda: doc.SaveAs(str(p), None))
+            timed("cdr", lambda: corel_util.save_cdr(doc, p))
             files["cdr"] = p.name
+            report["cdr_format"] = corel_util.check_cdr_format(p, warnings)
         if "pdf" in formats:
             p = out_dir / f"{base}.pdf"
             report["pdf_settings"] = timed("pdf", lambda: export_pdf(doc, p, opts["pdf"], warnings))

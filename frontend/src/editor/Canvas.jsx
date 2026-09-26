@@ -1,8 +1,9 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { buildIndex, mapBox } from "./ops.js";
+import { buildIndex, iterNodes, mapBox } from "./ops.js";
 import { clipChildAt, contentLeaves, dragTargets, flattenLeaves, hitTest, insidePowerclip, livePowerclip, marqueeSelect, planNodes, renderItems, resolveTarget, snapMove, snapResize, snapTargets, unionBox } from "./model.js";
 import { toScene, zoomAt } from "./view.js";
 import TextEditor from "./TextEditor.jsx";
+import LiveText from "./LiveText.jsx";
 
 const HANDLES = [
   ["nw", 0, 0], ["n", 0.5, 0], ["ne", 1, 0], ["e", 1, 0.5],
@@ -41,11 +42,14 @@ export function resizeBox(handle, start, dx, dy, free) {
 // touch the (potentially several hundred) images. A live PowerClip (model.js livePowerclip) is
 // drawn as its own contents inside `<clipPath id="powerclip-<id>">` matching the frame, so the
 // contents can be moved/resized with real pixels; its clip rectangle is registered as
-// imgRefs["clip:<id>"] so a drag can resize the frame too. `hideId` (the node currently under a
-// live text/font preview - see Canvas's own textPreview rendering below) is skipped entirely
-// rather than just covered, so the live SVG <text> preview is the only thing visible for that
-// shape, not CorelDRAW's stale render peeking out from underneath.
-const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs, hideId }) {
+// imgRefs["clip:<id>"] so a drag can resize the frame too. `hideKey` lists (comma-joined, so memo
+// compares a string) the text nodes drawn as LiveText instead - edited text and the text being
+// typed - which are skipped entirely rather than covered, so CorelDRAW's stale render never peeks out.
+const LINE_BREAK = /\r\n|\r|\n/;
+const lineCount = (s) => String(s ?? "").split(LINE_BREAK).length;
+
+const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs, hideKey }) {
+  const hidden = new Set(hideKey ? hideKey.split(",") : []);
   const draw = (list) =>
     list.map((it) => {
       if (it.clip) {
@@ -70,7 +74,7 @@ const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs
         );
       }
       const n = it.leaf;
-      return n.image && n.id !== hideId ? (
+      return n.image && !hidden.has(n.id) ? (
         <image
           key={n.id}
           ref={(el) => {
@@ -97,7 +101,7 @@ function ancestryOf(idx, id) {
   return out;
 }
 
-export default function Canvas({ scene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, textPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
+export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, textPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
   const imgRefs = useRef(new Map());
@@ -110,6 +114,30 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
   const pageW = scene.page.width;
   const pageH = scene.page.height;
   const idx = useMemo(() => buildIndex(scene), [scene]);
+  // Text drawn live instead of CorelDRAW's render: every text object an op has changed (stale), plus the one being typed in a field
+  // right now (textPreview - uncommitted, never an op). Line counts come from the pristine scene: the box belongs to the original text.
+  const baseLines = useMemo(() => {
+    const m = new Map();
+    if (baseScene) for (const n of iterNodes(baseScene)) if (n.text) m.set(n.id, lineCount(n.text.content));
+    return m;
+  }, [baseScene]);
+  const liveTexts = useMemo(() => {
+    const out = [];
+    for (const n of iterNodes(scene)) {
+      if (!n.text || n.visible === false || !n.image) continue;
+      const typing = textPreview && textPreview.id === n.id;
+      if (!typing && !n.stale) continue;
+      out.push({
+        node: n,
+        content: typing && textPreview.content != null ? textPreview.content : n.text.content,
+        font: typing && textPreview.font ? textPreview.font : n.text.font,
+        typing,
+        origLines: baseLines.get(n.id) || lineCount(n.text.content),
+      });
+    }
+    return out;
+  }, [scene, textPreview, baseLines]);
+  const hideKey = liveTexts.map((l) => l.node.id).join(",");
   const leaves = useMemo(() => flattenLeaves(scene), [scene]);
   const plan = useMemo(() => renderItems(scene), [scene]);
   const planImgNodes = useMemo(() => planNodes(plan), [plan]);
@@ -416,7 +444,10 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
           <rect x={4 / view.zoom} y={4 / view.zoom} width={pageW} height={pageH} fill="rgba(0,0,0,0.28)" />
           <rect x="0" y="0" width={pageW} height={pageH} fill="#ffffff" />
           <g style={{ visibility: showRender && scene.page_image ? "hidden" : "visible" }}>
-            <SceneImages items={plan} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideId={textPreview && textPreview.id} />
+            <SceneImages items={plan} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideKey={hideKey} />
+            {liveTexts.map((l) => (
+              <LiveText key={l.node.id} node={l.node} content={l.content} font={l.font} origLines={l.origLines} outline={l.typing} pageH={pageH} assetBase={assetBase} imgRefs={imgRefs} />
+            ))}
           </g>
           {showRender && scene.page_image && (
             <image href={assetBase + scene.page_image.file} x="0" y="0" width={pageW} height={pageH} preserveAspectRatio="none" style={{ pointerEvents: "none" }} />
@@ -447,39 +478,6 @@ export default function Canvas({ scene, assetBase, sel, ctx, view, setView, show
         {[...selNodes, ...selNodes.flatMap((n) => ancestryOf(idx, n.id))].filter((n, i, a) => n.stale && !livePowerclip(n) && a.indexOf(n) === i).map((n) => {
           const b = sbox(n);
           return <rect key={"stale" + n.id} pointerEvents="none" x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-warn)" strokeDasharray="5 3" />;
-        })}
-
-        {textPreview && selNodes.filter((n) => n.id === textPreview.id && n.text).map((n) => {
-          // Live, uncommitted text/font preview: the canvas can't re-typeset CorelDRAW's
-          // own render, so while either field is being edited, this replaces the shape's
-          // (now hidden - see SceneImages' hideId) image with a real SVG <text> showing the
-          // in-progress content in the in-progress font-family. Removed the instant either
-          // field blurs (committed or not), never itself an operation. The fallback stack
-          // covers every Tamil-capable font this project has ever relied on or measured:
-          // Nirmala UI/Nirmala Text ship with Windows and are what the backend engine itself
-          // uses (see CLAUDE.md "Shop name replacement"); Noto Sans Tamil is fetched as a web
-          // font (editor.css) specifically so this BROWSER preview isn't limited to whatever
-          // happens to be installed locally, unlike the backend's real CorelDRAW output;
-          // Latha/InaiMathi/Lohit Tamil cover whichever of them a given browser/OS does have.
-          // xml:lang="ta" tells the renderer this may be Tamil script, for engines that pick
-          // shaping/rendering behavior by declared language rather than font alone.
-          const b = sbox(n);
-          const previewFont = textPreview.font || n.text.font || "";
-          const fontFamily = `"${previewFont}", "Nirmala UI", "Nirmala Text", "Noto Sans Tamil", "Latha", "InaiMathi", "Lohit Tamil", sans-serif`;
-          const fontSizePx = Math.max(8, (n.text.size_pt || 24) * view.zoom * (96 / 72) * 0.5);
-          const lines = String(textPreview.content ?? "").split(/\r\n|\r|\n/);
-          const lineHeight = fontSizePx * 1.2;
-          const startY = b.y + b.h / 2 - (lineHeight * (lines.length - 1)) / 2;
-          return (
-            <g key={"textpreview" + n.id} pointerEvents="none">
-              <rect x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-red)" strokeDasharray="3 3" opacity="0.6" />
-              <text x={b.x + b.w / 2} textAnchor="middle" xmlLang="ta" style={{ fontFamily, fontSize: fontSizePx }}>
-                {lines.map((line, i) => (
-                  <tspan key={i} x={b.x + b.w / 2} y={startY + i * lineHeight}>{line || " "}</tspan>
-                ))}
-              </text>
-            </g>
-          );
         })}
 
         {lb && selNodes.length > 0 && !(overlay && overlay.marquee) && (

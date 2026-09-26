@@ -57,6 +57,9 @@ export default function PageResizeDialog({ current, next, unit, shop, jobId, onP
         height: +toUnit(next.h, unit).toFixed(4),
         height_unit: unit,
         reference: shop.reference || null,
+        // a re-convert keeps the shop's dual-master choice (the server picks by the NEW size's orientation)
+        landscape_master_id: shop.landscape_master_id || null,
+        portrait_master_id: shop.portrait_master_id || null,
       };
       const r = await fetch(`/api/v2/jobs/${jobId}/shops`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!r.ok) throw new Error((await r.json()).detail || `HTTP ${r.status}`);

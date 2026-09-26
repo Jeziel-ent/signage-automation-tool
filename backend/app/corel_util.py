@@ -34,18 +34,23 @@ Env vars:
 from __future__ import annotations
 
 import atexit
+import gc
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 300.0  # for a COM call that does real work: OpenDocument, SaveAs, ...
 QUIT_TIMEOUT_S = 15.0  # for Quit() actually exiting - this is routine async cleanup, not a hang
+QUIT_GRACE_S = 3.0  # pool quits: covers the normal ~1.3 s exit, so the next launch never overlaps an exiting instance
+QUIT_CALLER_GRACE_S = 0.5  # quit_corel: its caller still holds a reference, so the exit cannot happen yet - do not block it
 
 _DATA_DIR = Path(os.environ.get("SIGNAGE_DATA", Path(__file__).resolve().parents[1] / "data"))
 PID_FILE = _DATA_DIR / "corel_launched_pids.json"
@@ -151,10 +156,11 @@ def cleanup_orphaned_instances() -> None:
     CorelDRAW. Safe to call even if nothing is tracked or running.
     """
     running = corel_pids()
-    if not running:
-        return
     tracked = _load_tracked_pids()
-    orphaned = tracked & running
+    # The pooled instance is tracked and running because it is ours and IN USE, not orphaned: killing it here (as this used to)
+    # made every reuse of the pool fail with "Object is not connected to server".
+    in_use = {_Pool.pid} if _Pool.app is not None and _Pool.pid else set()
+    orphaned = (tracked & running) - in_use
     untracked = running - tracked
     if untracked:
         logger.info("CorelDRAW processes running that we did not launch (left alone): %s", sorted(untracked))
@@ -162,8 +168,11 @@ def cleanup_orphaned_instances() -> None:
         logger.warning("found orphaned CorelDRAW instance(s) from a previous run: %s - killing", sorted(orphaned))
         for pid in orphaned:
             force_kill(pid)
-    # drop anything no longer running (exited normally without reaching _untrack) too
-    _save_tracked_pids(tracked - running)
+    # Keep only the instance in use. Orphans were just killed, and a pid that is no longer running must be dropped too: Windows
+    # reuses pid numbers, so a stale entry could later match a designer's own CorelDRAW and get it killed. (This used to save
+    # `tracked - running` - i.e. keep exactly the dead pids and drop the live ones, the opposite of the intent.)
+    if tracked != (tracked & in_use):
+        _save_tracked_pids(tracked & in_use)
 
 
 def _suppress_prompts(app) -> None:
@@ -179,6 +188,11 @@ def _suppress_prompts(app) -> None:
         applied.append("Optimization=True")
     except Exception as e:
         logger.debug("could not set Optimization: %s", e)
+    try:
+        app.EventsEnabled = False  # no document/GMS macro event handlers firing (and possibly prompting) during automation
+        applied.append("EventsEnabled=False")
+    except Exception as e:
+        logger.debug("could not set EventsEnabled: %s", e)
     try:
         app.PanoseMatching = 1  # cdrPanoseTemporary: substitute missing fonts silently
         applied.append("PanoseMatching=Temporary")
@@ -198,7 +212,127 @@ def _suppress_prompts(app) -> None:
 DISPATCH_TIMEOUT_S = 45.0  # win32com.client.Dispatch() itself has no PID to kill by upfront
 
 
-def _dispatch_with_timeout(timeout_s: float = DISPATCH_TIMEOUT_S):
+# ------------------------------------------------------------- which CorelDRAW (version discovery)
+#
+# The generic ProgID "CorelDRAW.Application" already resolves (HKCR\CorelDRAW.Application\CurVer) to the newest registered
+# install - on this dev machine CorelDRAW.Application.27 (2025), next to .21 (2019). What it cannot survive is a stale
+# registration, e.g. CurVer still naming a version that was uninstalled. So the candidates are read from the registry - every
+# CorelDRAW.Application[.N] whose LocalServer32 executable actually exists on disk - rather than from a hardcoded version list
+# (a list goes stale with the next release: the one proposed for this stopped at .25 and would have missed this machine's .27).
+# Each candidate is only ever Dispatch()ed when the previous one failed with a "no such server" error, never probed in a loop:
+# every successful Dispatch launches a hidden CorelDRAW. SIGNAGE_COREL_PROGID pins one ProgID (e.g. to use the 2019 install).
+
+GENERIC_PROGID = "CorelDRAW.Application"
+_PROGID_RE = re.compile(r"^CorelDRAW\.Application(?:\.(\d+))?$", re.IGNORECASE)
+# "this server can't be used at all" - try the next candidate at once instead of the 6 s retry meant for a busy instance
+_NO_SERVER_HRESULTS = {
+    -2147221164,  # REGDB_E_CLASSNOTREG  class not registered
+    -2147221005,  # CO_E_CLASSSTRING     invalid class string (ProgID gone)
+    -2147221003,  # CO_E_APPNOTFOUND     the server executable was not found
+    -2146959355,  # CO_E_SERVER_EXEC_FAILURE
+}
+connected: dict = {}  # {"progid", "version"} of the last instance this process launched - for logs and job reports
+
+
+def _server_exe(local_server32: str | None) -> str | None:
+    """The executable path from a LocalServer32 value such as '"c:/.../CorelDRW.exe" /Automation' (quoted or not)."""
+    if not local_server32:
+        return None
+    s = local_server32.strip()
+    if s.startswith('"'):
+        return s[1:].split('"', 1)[0]
+    return s.split(" /", 1)[0].strip()
+
+
+def rank_progids(entries: list[dict], exists=os.path.isfile) -> list[str]:
+    """Order registry `entries` [{progid, clsid, server}] into Dispatch candidates: the generic ProgID first, then numbered
+    ones newest first; any whose server executable is missing is dropped, and a numbered ProgID that is the SAME server as the
+    generic one is skipped (trying it again after the generic one failed would fail the same way)."""
+    usable = []
+    for e in entries:
+        m = _PROGID_RE.match(e.get("progid") or "")
+        exe = _server_exe(e.get("server"))
+        if m and exe and exists(exe):
+            usable.append((int(m.group(1)) if m.group(1) else None, e))
+    generic = [e for v, e in usable if v is None]
+    generic_clsid = generic[0].get("clsid") if generic else None
+    numbered = sorted(((v, e) for v, e in usable if v is not None), key=lambda x: -x[0])
+    out = [e["progid"] for e in generic]
+    out += [e["progid"] for v, e in numbered if not (generic_clsid and e.get("clsid") == generic_clsid)]
+    return out
+
+
+def _registry_corel_entries() -> list[dict]:
+    import winreg
+
+    entries = []
+    with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, "") as root:
+        i = 0
+        while True:
+            try:
+                name = winreg.EnumKey(root, i)
+            except OSError:
+                break
+            i += 1
+            if not _PROGID_RE.match(name):
+                continue
+            try:
+                clsid = winreg.QueryValue(winreg.HKEY_CLASSES_ROOT, name + r"\CLSID")
+                server = winreg.QueryValue(winreg.HKEY_CLASSES_ROOT, rf"CLSID\{clsid}\LocalServer32")
+            except OSError:
+                continue
+            entries.append({"progid": name, "clsid": clsid, "server": server})
+    return entries
+
+
+def progid_candidates() -> list[str]:
+    """ProgIDs to Dispatch, in order: SIGNAGE_COREL_PROGID alone if set, else what the registry says is installed, else the
+    generic ProgID (the old behaviour) if the registry cannot be read."""
+    pinned = os.environ.get("SIGNAGE_COREL_PROGID", "").strip()
+    if pinned:
+        return [pinned]
+    try:
+        found = rank_progids(_registry_corel_entries())
+    except Exception as e:
+        logger.warning("could not read CorelDRAW registrations from the registry (%s); using %s", e, GENERIC_PROGID)
+        found = []
+    return found or [GENERIC_PROGID]
+
+
+def _exe_version(exe: str) -> str | None:
+    """'27.0.0.121' from the executable's version resource (no CorelDRAW launch), or None."""
+    try:
+        import win32api
+
+        info = win32api.GetFileVersionInfo(exe, "\\")
+        ms, ls = info["FileVersionMS"], info["FileVersionLS"]
+        return f"{ms >> 16}.{ms & 0xFFFF}.{ls >> 16}.{ls & 0xFFFF}"
+    except Exception:
+        return None
+
+
+def corel_installs() -> list[dict]:
+    """The CorelDRAW installs a job could launch, in the order dispatch_corel tries them: [{progid, exe, version}]. Read from the
+    registry and the executables' version resources only - it never starts CorelDRAW, so it is cheap and safe to call while a
+    conversion is running (used by GET /api/corel/health)."""
+    try:
+        entries = {e["progid"]: e for e in _registry_corel_entries()}
+    except Exception:
+        return []
+    out = []
+    for progid in progid_candidates():
+        e = entries.get(progid)
+        exe = _server_exe(e["server"]) if e else None
+        if exe and os.path.isfile(exe):
+            out.append({"progid": progid, "exe": exe, "version": _exe_version(exe)})
+    return out
+
+
+def _no_server(e: Exception) -> bool:
+    return bool(getattr(e, "args", None)) and e.args[0] in _NO_SERVER_HRESULTS
+
+
+def _dispatch_with_timeout(timeout_s: float = DISPATCH_TIMEOUT_S, progid: str = GENERIC_PROGID):
     """`win32com.client.Dispatch("CorelDRAW.Application")` has no PID to
     force-kill by until it returns - unlike every other COM call here, which
     already has a launched PID. Observed live: this call itself hung, with
@@ -226,7 +360,7 @@ def _dispatch_with_timeout(timeout_s: float = DISPATCH_TIMEOUT_S):
     timer.daemon = True
     timer.start()
     try:
-        app = win32com.client.Dispatch("CorelDRAW.Application")
+        app = win32com.client.Dispatch(progid)
     except Exception:
         if timed_out.is_set():
             raise CorelTimeout(f"Dispatch() did not respond within {timeout_s:.0f}s; instance force-killed") from None
@@ -244,16 +378,35 @@ def dispatch_corel() -> tuple[object, bool, int | None]:
 
     if os.environ.get("SIGNAGE_REUSE_COREL") == "1":
         try:
-            return win32com.client.GetActiveObject("CorelDRAW.Application"), False, None
+            return win32com.client.GetActiveObject(progid_candidates()[0]), False, None
         except Exception:
             pass
 
     visible = os.environ.get("SIGNAGE_COREL_VISIBLE") == "1"
+    candidates = progid_candidates()
+    unusable: set[str] = set()  # ProgIDs whose server cannot start at all - not retried
     last_err = None
     for attempt in range(10):
+        live = [p for p in candidates if p not in unusable]
+        if not live:
+            raise RuntimeError(f"no usable CorelDRAW installation: tried {', '.join(candidates)} ({last_err})")
+        progid = live[0]
         before = corel_pids()
         try:
-            app = _dispatch_with_timeout()
+            try:
+                app = _dispatch_with_timeout(progid=progid)
+            except Exception as e:
+                if _no_server(e):
+                    unusable.add(progid)
+                    last_err = e
+                    logger.warning("CorelDRAW ProgID %s cannot be started (%s); trying the next installed version", progid, e)
+                    continue  # straight to the next candidate - the 6 s wait below is for a busy instance, not a missing one
+                raise
+            try:
+                connected.update(progid=progid, version=str(app.Version))
+            except Exception:
+                connected.update(progid=progid, version=None)
+            logger.info("launched CorelDRAW %s via %s", connected.get("version"), progid)
             # Right after a previous instance quits, a fresh Dispatch can take a
             # few seconds to become interactive; setting .Visible too early raises
             # "Property ... can not be set." Retry briefly rather than failing.
@@ -289,17 +442,84 @@ def quit_corel(app, we_launched_it: bool, pid: int | None, timeout: float | None
         app.Quit()
     except Exception:
         pass
+    # Verified live: CorelDRAW does NOT exit after Quit() while this process still holds a COM reference to it - it sat there until
+    # the old 15 s timeout force-killed it, adding ~15 s to EVERY conversion / scene build / export (a 9 s conversion took 25 s).
+    # With the reference released it exits ~1.3 s after Quit(). Drop ours now; a caller that still holds one (its own local
+    # variable) releases it when its frame ends, so only wait briefly here and let a background reaper finish the job.
+    del app
+    _finish_quit(pid, timeout, QUIT_CALLER_GRACE_S)
+
+
+def _finish_quit(pid: int | None, timeout: float | None, grace: float) -> None:
+    """Second half of a quit, after dropping our reference: wait up to `grace`, then leave the rest of the wait to a reaper."""
+    gc.collect()
     if pid is None:
         return
-    deadline = time.time() + (timeout if timeout is not None else QUIT_TIMEOUT_S)
+    if _wait_exit(pid, grace):
+        _untrack(pid)
+        return
+    t = threading.Thread(target=_reap, args=(pid, timeout if timeout is not None else QUIT_TIMEOUT_S), daemon=True)
+    _reapers.append(t)
+    t.start()
+
+
+_reapers: list[threading.Thread] = []
+
+
+def _wait_exit(pid: int, seconds: float) -> bool:
+    deadline = time.time() + seconds
     while time.time() < deadline:
         if pid not in corel_pids():
-            _untrack(pid)
-            return
-        time.sleep(0.5)
-    logger.warning("CorelDRAW (pid %s) did not exit after Quit(); force-killing", pid)
-    force_kill(pid)
+            return True
+        time.sleep(0.2)
+    return pid not in corel_pids()
+
+
+def _reap(pid: int, timeout: float) -> None:
+    """Background end of quit_corel: wait for the process to exit (it does once the last COM reference is gone), else force-kill."""
+    if not _wait_exit(pid, timeout):
+        logger.warning("CorelDRAW (pid %s) did not exit after Quit(); force-killing", pid)
+        force_kill(pid)
     _untrack(pid)
+
+
+def wait_for_pending_quits(timeout: float | None = None) -> None:
+    """Block until every background reaper has finished (CorelDRAW exited or was killed, and its pid untracked). The worker calls
+    this before exiting - daemon threads die with the process, which would leave a pid tracked that could later be reused."""
+    deadline = time.time() + (timeout if timeout is not None else QUIT_TIMEOUT_S + 5)
+    while _reapers:
+        t = _reapers.pop()
+        t.join(max(0.0, deadline - time.time()))
+
+
+def _quit_pooled() -> None:
+    """Quit the pooled instance, releasing the pool's own reference first (see quit_corel for why that matters)."""
+    app, pid = _Pool.app, _Pool.pid
+    _Pool.app = _Pool.pid = None
+    _Pool.jobs_run = 0
+    if app is None:
+        return
+    try:
+        app.Quit()
+    except Exception:
+        pass
+    del app  # the pool's reference is already cleared, so this was the last one we hold
+    _finish_quit(pid, None, QUIT_GRACE_S)
+
+
+_com_thread = threading.local()
+
+
+def ensure_com() -> None:
+    """Initialise COM on the calling thread once, and leave it initialised for the thread's lifetime. The instance pool's proxy is
+    bound to this thread's apartment and must outlive any single job (so it can be reused, and Quit() at the end still reaches
+    CorelDRAW); the apartment is released when the thread or process ends."""
+    if getattr(_com_thread, "ready", False):
+        return
+    import pythoncom
+
+    pythoncom.CoInitialize()
+    _com_thread.ready = True
 
 
 class _Pool:
@@ -328,7 +548,7 @@ def acquire_instance() -> tuple[object, bool, int | None]:
         return _Pool.app, True, _Pool.pid
 
     if _Pool.app is not None:
-        quit_corel(_Pool.app, True, _Pool.pid)
+        _quit_pooled()
     app, launched, pid = dispatch_corel()
     _Pool.app, _Pool.pid, _Pool.jobs_run = app, pid, 1
     return app, launched, pid
@@ -343,15 +563,18 @@ def release_instance(pid: int | None, success: bool) -> None:
         return
     if not success and _Pool.pid == pid:
         logger.warning("job failed on pooled instance (pid %s); discarding it instead of reusing", pid)
-        quit_corel(_Pool.app, True, _Pool.pid)
-        _Pool.app = _Pool.pid = None
-        _Pool.jobs_run = 0
+        _quit_pooled()
+    elif _Pool.pid == pid and _Pool.jobs_run >= recycle_n():
+        # used up: quit now rather than leaving an idle hidden CorelDRAW holding RAM until the next job (with the default
+        # SIGNAGE_COREL_RECYCLE_N=1 that is after every job - "always fresh", as documented)
+        _quit_pooled()
 
 
 def _quit_pool_at_exit() -> None:
     if _Pool.app is not None:
         logger.info("process exiting; quitting pooled CorelDRAW instance (pid %s)", _Pool.pid)
-        quit_corel(_Pool.app, True, _Pool.pid)
+        _quit_pooled()
+    wait_for_pending_quits()  # daemon reapers die with the process - finish them so no pid stays tracked
 
 
 atexit.register(_quit_pool_at_exit)
@@ -363,6 +586,81 @@ class CorelTimeout(Exception):
     dialog (missing font, colour profile mismatch, unsaved-changes prompt on
     a corrupt file, ...). Rerun with SIGNAGE_COREL_VISIBLE=1 to see it.
     """
+
+
+# ---------------------------------------------------------------- saving .cdr files in an older format
+# The designers' CorelDRAW is 2019 (v21); this server's is newer (27 = CorelDRAW 2025). A plain `doc.SaveAs(path)` writes
+# the NEWEST format, which CorelDRAW 2019 refuses to open. So every .cdr we write is saved through a
+# StructSaveAsOptions with `Version` = the enum `cdrFileVersion` value 21 (`cdrVersion21`).
+# Verified live against CorelDRAW 27.0.121 (see CLAUDE.md "CDR file version"): the file's `content/root.dat` RIFF form type
+# changes CDRU -> CDRM and `META-INF/metadata.xml` `Version` 2700 -> 2100, exactly the markers the designers' own
+# 2019-compatible files carry. Note the COM factory is `Application.CreateStructSaveAsOptions()` - `CreateSaveOptions`
+# does not exist.
+DEFAULT_CDR_VERSION = 21
+
+
+def cdr_target_version() -> int:
+    """The .cdr format version to save (env SIGNAGE_CDR_VERSION; default 21 = CorelDRAW 2019; 0 = whatever the running
+    CorelDRAW writes, i.e. no down-save)."""
+    try:
+        return int(os.environ.get("SIGNAGE_CDR_VERSION", DEFAULT_CDR_VERSION))
+    except ValueError:
+        return DEFAULT_CDR_VERSION
+
+
+def save_cdr(doc, path) -> int:
+    """Save `doc` to `path` as a .cdr in the target format (see above). Returns the `Version` requested (0 = current).
+
+    A CorelDRAW older than the target cannot write the newer format anyway, so it saves as itself (Version 0). A failure to
+    build the options object is NOT swallowed into a plain SaveAs: that would silently write the newest format again, which
+    is the exact bug this exists to prevent."""
+    target = cdr_target_version()
+    app = doc.Application
+    if target:
+        try:
+            if int(app.VersionMajor) < target:
+                target = 0
+        except Exception:
+            pass                      # cannot read the version: still ask for `target`
+    opts = app.CreateStructSaveAsOptions()
+    opts.Version = target
+    opts.Overwrite = True             # the default for a bare SaveAs(path, None); a fresh options object defaults to True too
+    doc.SaveAs(str(path), opts)
+    return target
+
+
+def cdr_file_format(path) -> dict:
+    """What a saved .cdr says about its own format, read from the file (a zip for X4+ files): `form` is the RIFF form type
+    of `content/root.dat` (b'CDRM' for a 2019-compatible file, b'CDRU' for the newest format), `version` the
+    `cdr:CoreVersion` in `META-INF/metadata.xml` (2100 = CorelDRAW 2019). Missing pieces are None; never raises."""
+    out = {"form": None, "version": None}
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = set(z.namelist())
+            if "content/root.dat" in names:
+                head = z.open("content/root.dat").read(12)
+                out["form"] = head[8:12].decode("ascii", "replace") if head[:4] == b"RIFF" else None
+            if "META-INF/metadata.xml" in names:
+                meta = z.read("META-INF/metadata.xml")
+                # `cdr:CoreVersion` is what real files carry (2100 = 2019); a bare `Version` tag is accepted too. Never
+                # `AppVersion` - that is the CorelDRAW that wrote the file (2700 for 2025) and is not the format.
+                m = re.search(rb"CoreVersion>(\d+)<", meta) or re.search(rb"(?<![A-Za-z])Version>(\d+)<", meta)
+                out["version"] = int(m.group(1)) if m else None
+    except Exception:
+        pass
+    return out
+
+
+def check_cdr_format(path, warnings: list[str]) -> dict:
+    """Read the saved file back (the same verify-don't-trust pattern as fonts) and warn if it is not the requested format."""
+    fmt = cdr_file_format(path)
+    want = cdr_target_version()
+    if want and fmt["version"] is not None and fmt["version"] != want * 100:
+        warnings.append(f"The saved .cdr says it is format version {fmt['version']} but {want * 100} (CorelDRAW 2019) was "
+                        "requested - it may not open in CorelDRAW 2019")
+    elif want and fmt["version"] is None:
+        warnings.append("Could not read the saved .cdr's format version back, so CorelDRAW 2019 compatibility is unverified")
+    return {**fmt, "requested": want}
 
 
 def run_with_timeout(fn, pid: int | None, op_name: str, timeout: float | None = None):
