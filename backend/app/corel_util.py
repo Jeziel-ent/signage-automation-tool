@@ -608,13 +608,14 @@ def cdr_target_version() -> int:
         return DEFAULT_CDR_VERSION
 
 
-def save_cdr(doc, path) -> int:
-    """Save `doc` to `path` as a .cdr in the target format (see above). Returns the `Version` requested (0 = current).
+def save_cdr(doc, path, version: int | None = None) -> int:
+    """Save `doc` to `path` as a .cdr in the target format (see above; `version` overrides it for this one save, e.g. the
+    export dialog's "v27 native" = 0 or "X7" = 17). Returns the `Version` requested (0 = current).
 
     A CorelDRAW older than the target cannot write the newer format anyway, so it saves as itself (Version 0). A failure to
     build the options object is NOT swallowed into a plain SaveAs: that would silently write the newest format again, which
     is the exact bug this exists to prevent."""
-    target = cdr_target_version()
+    target = cdr_target_version() if version is None else version
     app = doc.Application
     if target:
         try:
@@ -651,15 +652,20 @@ def cdr_file_format(path) -> dict:
     return out
 
 
-def check_cdr_format(path, warnings: list[str]) -> dict:
-    """Read the saved file back (the same verify-don't-trust pattern as fonts) and warn if it is not the requested format."""
+_CDR_VERSION_NAMES = {21: "CorelDRAW 2019", 17: "CorelDRAW X7"}
+
+
+def check_cdr_format(path, warnings: list[str], version: int | None = None) -> dict:
+    """Read the saved file back (the same verify-don't-trust pattern as fonts) and warn if it is not the requested format.
+    `version` is what this save asked for (None = the configured default)."""
     fmt = cdr_file_format(path)
-    want = cdr_target_version()
+    want = cdr_target_version() if version is None else version
+    name = _CDR_VERSION_NAMES.get(want, f"CorelDRAW v{want}")
     if want and fmt["version"] is not None and fmt["version"] != want * 100:
-        warnings.append(f"The saved .cdr says it is format version {fmt['version']} but {want * 100} (CorelDRAW 2019) was "
-                        "requested - it may not open in CorelDRAW 2019")
+        warnings.append(f"The saved .cdr says it is format version {fmt['version']} but {want * 100} ({name}) was "
+                        f"requested - it may not open in {name}")
     elif want and fmt["version"] is None:
-        warnings.append("Could not read the saved .cdr's format version back, so CorelDRAW 2019 compatibility is unverified")
+        warnings.append(f"Could not read the saved .cdr's format version back, so {name} compatibility is unverified")
     return {**fmt, "requested": want}
 
 

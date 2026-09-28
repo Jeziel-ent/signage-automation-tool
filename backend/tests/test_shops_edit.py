@@ -64,7 +64,7 @@ def test_convert_uses_the_values_sent_with_it_even_if_no_patch_landed(client):
     assert r.status_code == 200
     st = _wait(client, shop["id"])
     assert st["status"] == "done" and st["width"] == 12
-    rep = json.loads(st["report_json"])
+    rep = st["report"]
     assert abs(rep["page"]["width"] - 12 * 25.4) < 0.01 if "page" in rep else True      # mock report carries the page size
     assert st["phone"] is None                                                             # blank stays "leave the master's text"
 

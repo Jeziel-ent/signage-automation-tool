@@ -111,3 +111,19 @@ def test_check_warns_when_the_file_is_not_the_requested_format(tmp_path, monkeyp
     monkeypatch.setenv("SIGNAGE_CDR_VERSION", "0")        # no down-save requested: nothing to warn about
     corel_util.check_cdr_format(_cdr(tmp_path / "cur.cdr", form=b"CDRU", version=2700), w)
     assert w == []
+
+
+def test_a_per_save_version_overrides_the_configured_default(tmp_path, monkeypatch):
+    """The export dialog's CDR version choice: v27 native (0) and X7 (17) for one save, without touching the env default."""
+    monkeypatch.delenv("SIGNAGE_CDR_VERSION", raising=False)
+    doc = FakeDoc(FakeApp(major=27))
+    assert corel_util.save_cdr(doc, "x7.cdr", 17) == 17 and doc.saved[1].Version == 17
+    assert corel_util.save_cdr(doc, "native.cdr", 0) == 0 and doc.saved[1].Version == 0
+    assert corel_util.save_cdr(doc, "default.cdr", None) == 21
+    w: list[str] = []
+    assert corel_util.check_cdr_format(_cdr(tmp_path / "x7.cdr", version=1700), w, 17)["requested"] == 17 and w == []
+    corel_util.check_cdr_format(_cdr(tmp_path / "bad.cdr", version=2100), w, 17)
+    assert len(w) == 1 and "X7" in w[0]
+    w.clear()
+    corel_util.check_cdr_format(_cdr(tmp_path / "cur.cdr", form=b"CDRU", version=2700), w, 0)
+    assert w == []

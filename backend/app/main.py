@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import re
 import shutil
 import sys
@@ -11,11 +12,13 @@ import time
 import uuid
 import zipfile
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 import logging
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import Body, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
@@ -43,8 +46,33 @@ db.init_db()
 
 logger = logging.getLogger("signage.convert")
 
-app = FastAPI(title="signage-automation-tool")
+INTERRUPTED_ERROR = "Interrupted: the server was restarted while this was queued or running - convert it again."
+
+
+def _recover_interrupted_work() -> None:
+    """Queued/converting shops and queued/running exports left over from the previous server process can never finish
+    (their worker queue died with it): fail them with a clear reason so the page stops polling them, and drop that
+    process's leftover supervisor files (a stale heartbeat would otherwise be read as the progress of a new run)."""
+    shops, exports = db.fail_interrupted_work(INTERRUPTED_ERROR)
+    for p in CONVERT_RUNS.glob("*"):
+        try:
+            p.unlink()
+        except OSError:
+            pass
+    if shops or exports:
+        logger.warning("startup: marked %d shop(s) and %d export(s) interrupted by the previous server run as failed",
+                       shops, exports)
+
+
+@asynccontextmanager
+async def _lifespan(_app):
+    _recover_interrupted_work()
+    yield
+
+
+app = FastAPI(title="signage-automation-tool", lifespan=_lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
 
 # CorelDRAW is a single-instance desktop app: process one job at a time.
 _pool = ThreadPoolExecutor(max_workers=1)
@@ -266,7 +294,9 @@ def v2_get_job(job_id: str):
     if not job:
         raise HTTPException(404, "job not found")
     job["preview_url"] = f"/api/v2/jobs/{job_id}/preview" if job.get("preview_path") else None
-    job["shops"] = db.list_shops(job_id)
+    # without each shop's report_json (every placed object's geometry): 1000 shops made this 9 MB. Reports stay
+    # available per shop from /api/v2/shops/{id}/status.
+    job["shops"] = [{k: v for k, v in s.items() if k != "report_json"} for s in db.list_shops(job_id)]
     return job
 
 
@@ -468,6 +498,8 @@ def v2_list_shops(job_id: str):
 # a rough completion percentage - the best "real" progress signal available,
 # since COM gives step transitions, not byte-level progress within a step.
 _STEP_PERCENT = {"launch": 10, "open": 25, "tile_resize": 55, "saveas": 75, "pdf": 88, "png": 97}
+_progress_peak: dict[str, int] = {}  # shop id -> highest progress_pct reported during its current conversion
+_progress_lock = threading.Lock()
 
 
 def _select_shop_master(shop_row: dict, job_row: dict, target_w_mm: float, target_h_mm: float) -> tuple[Path, dict]:
@@ -559,6 +591,17 @@ def _take_queued_batch(first: str) -> list[str]:
     return batch
 
 
+def _convert_limits() -> dict:
+    """Time limits for a conversion worker: SIGNAGE_SHOP_TIMEOUT_S per shop (default 45 s, from its first step after
+    launching CorelDRAW), and a 2-minute no-progress limit instead of the general 10 minutes - a conversion beats
+    every few seconds, so two silent minutes means a hang (e.g. inside a launch that got past the Dispatch timeout).
+    A killed batch member and the shops after it are retried alone in a fresh worker + CorelDRAW (below)."""
+    limit = corel_supervisor.shop_timeout_s()
+    if limit <= 0:
+        return {}
+    return {"job_timeout_s": limit, "overall_timeout_s": max(120.0, 2 * limit)}
+
+
 def _v2_convert_worker(shop_id: str, job_id: str) -> None:
     row = db.get_shop(shop_id)
     if not row or row["status"] != "queued":
@@ -603,7 +646,8 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
             db.set_shop_status(prepared[i + 1][0], "converting", step="starting")
 
     try:
-        results = corel_supervisor.run_batch([j for _, j, _ in prepared], results_path, on_progress=on_progress)
+        results = corel_supervisor.run_batch([j for _, j, _ in prepared], results_path, on_progress=on_progress,
+                                             **_convert_limits())
     except Exception as e:  # e.g. RefusedToStart (not enough free RAM): every shop in the batch fails with the reason
         results = [{"status": "error", "error": str(e)} for _ in prepared]
     finally:
@@ -626,7 +670,7 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         single = CONVERT_RUNS / f"{sid}.json"
         _batch_slots[sid] = (single.with_suffix(".heartbeat"), 0)
         try:
-            retry = corel_supervisor.run_batch([job], single)[0]
+            retry = corel_supervisor.run_batch([job], single, **_convert_limits())[0]
         except Exception as e:
             retry = {"status": "error", "error": str(e)}
         finally:
@@ -685,11 +729,24 @@ def v2_shop_status(shop_id: str):
                 if hb.get("job_index", 0) == index:
                     step = hb.get("step", step)
                     pct = _STEP_PERCENT.get(step, pct)
+                elif hb.get("job_index", 0) > index:
+                    # the worker has moved on to a later shop: this one's CorelDRAW work is finished and its result is
+                    # being stored - it used to fall back to "starting" (5 %) here for a moment, after showing 97 %
+                    step, pct = "saving", 99
             except Exception:
                 pass
+        # never report less than already reported for this conversion (a failed batch member retried on its own starts
+        # its steps again); _progress_peak is cleared when the shop is queued again or leaves "converting"
+        with _progress_lock:
+            pct = max(pct, _progress_peak.get(shop_id, 0))
+            _progress_peak[shop_id] = pct
         row["step"], row["progress_pct"] = step, pct
     else:  # "new" or "queued"
         row["progress_pct"] = 0
+    if row["status"] != "converting":
+        with _progress_lock:
+            _progress_peak.pop(shop_id, None)
+    row.pop("report_json", None)  # the parsed `report` above carries the same data; sending both doubled the payload
     return row
 
 
@@ -701,9 +758,11 @@ def v2_shop_statuses(ids: str = ""):
     out = {}
     for sid in [s for s in ids.split(",") if s][:500]:
         try:
-            out[sid] = v2_shop_status(sid)
+            row = v2_shop_status(sid)
         except HTTPException:
             continue
+        row.pop("report", None)   # the page never reads it; with it, 50 done shops made one poll ~750 KB
+        out[sid] = row
     return out
 
 
@@ -717,6 +776,474 @@ def v2_shop_file(shop_id: str, filename: str):
     if out_dir not in p.parents or not p.is_file():
         raise HTTPException(404)
     return FileResponse(p)
+
+
+# ------------------------------------------------------ print details sheet
+#
+# "Create Print File" on the Automation page: a one-page (or, for many shops, multi-page) "Print Details" summary of
+# the selected converted shops - title, date, project no, location, board type, QTY / Sq.feet and a thumbnail + caption
+# per shop - rendered by print_sheet.py with Pillow (no CorelDRAW, so it does not wait behind conversions on _pool).
+
+class PrintSheetRequest(BaseModel):
+    title: str = ""
+    project_no: str = ""
+    date: str = ""                         # YYYY-MM-DD from the date picker (shown DD.MM.YYYY), or any typed text
+    location: str = ""
+    board_type: str = ""
+    shop_ids: list[str]
+    numbers: dict[str, int] | None = None  # the S.no each shop has in the queue, for the captions (default: seq_no)
+    format: str = "pdf"                    # pdf | jpeg
+
+
+def _shop_thumbnail(row: dict) -> Path | None:
+    """The newest look of a board: its latest finished editor export's PNG/JPEG (it includes the designer's edits),
+    else the conversion's preview. SVG previews (MockEngine) are not raster images, so no thumbnail."""
+    out_dir = JOBS_V2 / row["job_id"] / "out" / row["id"]
+    for ex in db.list_exports(row["id"]):
+        if ex["status"] != "done" or not ex["files_json"]:
+            continue
+        files = json.loads(ex["files_json"])
+        for kind in ("png", "jpeg"):
+            if files.get(kind):
+                p = out_dir / "exports" / ex["id"] / files[kind]
+                if p.is_file():
+                    return p
+    files = json.loads(row["files_json"]) if row.get("files_json") else {}
+    name = files.get("preview") or ""
+    p = out_dir / name
+    if name and p.suffix.lower() in (".png", ".jpg", ".jpeg") and p.is_file():
+        return p
+    return None
+
+
+def _safe_file_part(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_.")
+
+
+@app.post("/api/print-sheet/generate")
+def print_sheet_generate(body: PrintSheetRequest):
+    # Imported here, not at module level: print_sheet needs Pillow, and a server started from a Python without it must
+    # still start (every other Pillow use in the app is imported lazily too) - this route then says what is missing.
+    try:
+        from . import print_sheet
+    except ImportError as e:
+        raise HTTPException(503, f"The print sheet needs Pillow, which is not installed for the Python running this server "
+                                 f"({sys.executable}): {e}. Install it with `\"{sys.executable}\" -m pip install Pillow` "
+                                 "and restart the server.")
+    if body.format not in ("pdf", "jpeg"):
+        raise HTTPException(422, "format must be 'pdf' or 'jpeg'")
+    ids = list(dict.fromkeys(body.shop_ids))             # de-duplicated, order kept
+    if not ids:
+        raise HTTPException(422, "select at least one shop")
+    if len(ids) > 200:
+        raise HTTPException(422, "at most 200 shops per print file")
+    numbers = body.numbers or {}
+    shops = []
+    for sid in ids:
+        row = db.get_shop(sid)
+        if not row:
+            raise HTTPException(404, f"shop {sid} not found")
+        if row["status"] != "done":
+            raise HTTPException(409, f"shop \"{row['name']}\" has not been converted yet")
+        # which source files exist - the same choice as the ZIP (an export of the current edits, else the conversion's)
+        from . import asset_zip
+        exports = [asset_zip.export_record(db.get_export(e["id"])) for e in db.list_exports(sid, limit=20)]
+        src = asset_zip.pick_sources(JOBS_V2 / row["job_id"] / "out" / sid,
+                                     json.loads(row["files_json"]) if row.get("files_json") else {}, exports, db.get_editor_ops(sid))
+        shops.append(print_sheet.SheetShop(
+            no=int(numbers.get(sid) or row["seq_no"]), name=row["name"],
+            width=row["width"], width_unit=row["width_unit"], height=row["height"], height_unit=row["height_unit"],
+            image=_shop_thumbnail(row), has_cdr=src["cdr"] is not None, has_pdf=src["pdf"] is not None))
+    meta = print_sheet.SheetMeta(title=body.title.strip(), project_no=body.project_no.strip(),
+                                 date=print_sheet.format_date(body.date), location=body.location.strip(),
+                                 board_type=body.board_type.strip())
+    tmp = Path(tempfile.mkdtemp(prefix="print_sheet_"))
+    path, media = print_sheet.write_sheet(meta, shops, body.format, tmp / "sheet")
+    name = "_".join(p for p in ("Print_Details", _safe_file_part(meta.project_no), _safe_file_part(meta.date)) if p)
+    return FileResponse(path, media_type=media, filename=f"{name}{path.suffix}",
+                        background=BackgroundTask(lambda: shutil.rmtree(tmp, ignore_errors=True)))
+
+
+class AssetZipRequest(BaseModel):
+    shop_ids: list[str]
+    numbers: dict[str, int] | None = None  # the S.no each shop has in the queue, for the file names (default: seq_no)
+
+
+@dataclass
+class _BuiltZip:
+    dir: Path              # temp dir holding the archive
+    at: float              # built at (for the TTL sweep)
+    busy: int = 0          # WeTransfer uploads reading it right now
+    discard: bool = False  # DELETE arrived while busy: remove once the upload ends
+
+
+_asset_zips: dict[str, _BuiltZip] = {}  # token -> a built Signage_Assets_Export.zip
+_asset_zips_lock = threading.Lock()
+ASSET_ZIP_TTL_S = 3600
+
+
+def _drop_zip_dir(d: Path) -> None:
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def _sweep_asset_zips() -> None:
+    """Remove archives older than the TTL that no upload is using (a closed tab, a modal left open)."""
+    now = time.time()
+    with _asset_zips_lock:
+        old = [t for t, z in _asset_zips.items() if now - z.at > ASSET_ZIP_TTL_S and not z.busy]
+        dirs = [_asset_zips.pop(t).dir for t in old]
+    for d in dirs:
+        _drop_zip_dir(d)
+
+
+def _zip_path(token: str) -> Path:
+    from . import asset_zip
+
+    with _asset_zips_lock:
+        z = _asset_zips.get(token)
+    if z is None or z.discard or not (z.dir / asset_zip.ZIP_NAME).is_file():
+        raise HTTPException(404, "this ZIP has expired - press Generate ZIP again")
+    return z.dir / asset_zip.ZIP_NAME
+
+
+@app.post("/api/export-zip")
+def export_zip(body: AssetZipRequest):
+    """"Generate ZIP": builds Signage_Assets_Export.zip - `<NN>_<SHOP>.jpg` at the root, `CDR&PDF/cdr/` and `CDR&PDF/pdf/`
+    (see asset_zip.py for which file stands for each shop) - and answers {token, download, summary}. The archive stays on
+    the server so the modal can both download it (`download`, a GET the browser streams to disk - CDRs are 9-300 MB, too
+    big to hold in page memory) and upload it to WeTransfer (POST /api/export-wetransfer with the token). It is removed
+    by DELETE /api/export-zip/{token} (the modal closing) or after an hour. `summary` lists what could not be included
+    and shops whose editor edits were never exported."""
+    from . import asset_zip
+
+    _sweep_asset_zips()
+    ids = list(dict.fromkeys(body.shop_ids))
+    if not ids:
+        raise HTTPException(422, "select at least one shop")
+    if len(ids) > 500:
+        raise HTTPException(422, "at most 500 shops per ZIP")
+    numbers = body.numbers or {}
+    shops = []
+    for sid in ids:
+        row = db.get_shop(sid)
+        if not row:
+            raise HTTPException(404, f"shop {sid} not found")
+        if row["status"] != "done":
+            raise HTTPException(409, f"shop \"{row['name']}\" has not been converted yet")
+        out_dir = JOBS_V2 / row["job_id"] / "out" / sid
+        exports = [asset_zip.export_record(db.get_export(e["id"])) for e in db.list_exports(sid, limit=20)]
+        src = asset_zip.pick_sources(out_dir, json.loads(row["files_json"]) if row.get("files_json") else {},
+                                     exports, db.get_editor_ops(sid))
+        shops.append(asset_zip.ShopAssets(no=int(numbers.get(sid) or row["seq_no"]), name=row["name"],
+                                           cdr=src["cdr"], pdf=src["pdf"], image=src["image"], notes=src["notes"]))
+    tmp = Path(tempfile.mkdtemp(prefix="asset_zip_"))
+    try:
+        summary = asset_zip.write_zip(shops, tmp / asset_zip.ZIP_NAME)
+    except Exception:
+        _drop_zip_dir(tmp)
+        raise
+    token = uuid.uuid4().hex
+    with _asset_zips_lock:
+        _asset_zips[token] = _BuiltZip(tmp, time.time())
+    summary["bytes"] = (tmp / asset_zip.ZIP_NAME).stat().st_size
+    return {"token": token, "download": f"/api/export-zip/{token}", "summary": summary}
+
+
+@app.get("/api/export-zip/{token}")
+def export_zip_download(token: str):
+    """The archive built by POST /api/export-zip (any number of downloads until it is deleted or expires)."""
+    from . import asset_zip
+
+    return FileResponse(_zip_path(token), media_type="application/zip", filename=asset_zip.ZIP_NAME)
+
+
+@app.delete("/api/export-zip/{token}")
+def export_zip_delete(token: str):
+    """The Generate ZIP modal closed: remove the archive now - or, if a WeTransfer upload is still reading it, as soon as
+    that upload ends."""
+    with _asset_zips_lock:
+        z = _asset_zips.get(token)
+        if z is None:
+            return {"deleted": False}
+        if z.busy:
+            z.discard = True
+            return {"deleted": False, "pending_upload": True}
+        _asset_zips.pop(token)
+    _drop_zip_dir(z.dir)
+    return {"deleted": True}
+
+
+# --------------------------------------------------------------- WeTransfer link
+# "Generate WeTransfer Link" in the Generate ZIP modal: the built archive is uploaded through wetransfer.com's own web page,
+# driven by a headless browser (wetransfer_uploader.py - WeTransfer's Public API was retired in 2020 and issues no keys).
+# Uploads run one at a time on their own thread, never on _pool, so they do not hold up CorelDRAW conversions; the page
+# polls GET /api/export-wetransfer/{job_id}.
+# When WeTransfer cannot be used, the job still succeeds with a link served by this server (`fallback_used`).
+
+class WeTransferRequest(BaseModel):
+    token: str | None = None               # a ZIP already built by POST /api/export-zip (the modal's)
+    shop_ids: list[str] | None = None      # or build one now from these shops
+    numbers: dict[str, int] | None = None
+    sender_email: str | None = None        # WeTransfer requires the sender's address for a link transfer
+    project_id: str | None = None          # accepted for the caller's convenience; not sent to WeTransfer
+
+
+class VerifyOtpRequest(BaseModel):
+    session_id: str                        # the upload's job_id
+    otp_code: str
+
+
+_wt_codes: dict[str, "queue.Queue[str]"] = {}  # job_id -> the code the person types, handed to the waiting upload thread
+
+
+def _otp_wait_s() -> float:
+    """How long an upload waits, browser open, for the person to type WeTransfer's e-mailed code."""
+    try:
+        return float(os.environ.get("SIGNAGE_WETRANSFER_OTP_WAIT_S", 300))
+    except ValueError:
+        return 300.0
+
+
+_wt_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="wetransfer")
+_wt_jobs: dict[str, dict] = {}
+_wt_lock = threading.Lock()
+
+# The fallback when WeTransfer cannot be used: a copy of the archive kept for SHARE_DAYS (WeTransfer's own default is 3
+# days) under an unguessable id and served by this server. The modal's archive cannot be used for this - it is deleted
+# when the modal closes.
+SHARED_ZIPS = DATA / "shared_zips"
+SHARE_ID_RE = re.compile(r"[A-Za-z0-9_-]{20,64}")
+
+
+def _share_days() -> float:
+    try:
+        return float(os.environ.get("SIGNAGE_SHARE_DAYS", 3))
+    except ValueError:
+        return 3.0
+
+
+def _sweep_shared_zips() -> None:
+    now = time.time()
+    if not SHARED_ZIPS.is_dir():
+        return
+    for d in SHARED_ZIPS.iterdir():
+        try:
+            meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+            if now > meta["expires_at"]:
+                shutil.rmtree(d, ignore_errors=True)
+        except (OSError, ValueError, KeyError):
+            if now - d.stat().st_mtime > 86400:              # half-written or unreadable: gone after a day
+                shutil.rmtree(d, ignore_errors=True)
+
+
+def _share_zip(path: Path) -> dict:
+    """Copy `path` into the share store; returns {id, expires_at}."""
+    import secrets
+
+    from . import asset_zip
+
+    _sweep_shared_zips()
+    share_id = secrets.token_urlsafe(18)
+    d = SHARED_ZIPS / share_id
+    d.mkdir(parents=True)
+    shutil.copyfile(path, d / asset_zip.ZIP_NAME)
+    expires_at = time.time() + _share_days() * 86400
+    (d / "meta.json").write_text(json.dumps({"expires_at": expires_at, "created_at": time.time()}), encoding="utf-8")
+    return {"id": share_id, "expires_at": expires_at}
+
+
+def _lan_ip() -> str | None:
+    """This machine's address on its local network: the source address the OS would use for an outside route. A UDP
+    `connect` only picks a route - no packet is sent."""
+    import socket
+
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))                       # TEST-NET-1: never contacted
+            return s.getsockname()[0]
+    except OSError:
+        return None
+
+
+def _share_base(server: tuple | None) -> dict:
+    """Where a shared link must point, and whether anyone but this computer can open it. `server` is the (host, port)
+    this server listens on (request.scope["server"]). SIGNAGE_PUBLIC_BASE_URL overrides everything (e.g. a DNS name)."""
+    env = os.environ.get("SIGNAGE_PUBLIC_BASE_URL", "").strip()
+    if env:
+        return {"base": env.rstrip("/"), "local_only": False}
+    host, port = (server or ("127.0.0.1", 8000))[:2]
+    if host in ("127.0.0.1", "localhost", "::1"):
+        # started without --host: the server cannot be reached from another computer at all
+        return {"base": f"http://127.0.0.1:{port}", "local_only": True}
+    if host in ("0.0.0.0", "::", ""):
+        ip = _lan_ip()
+        return {"base": f"http://{ip or '127.0.0.1'}:{port}", "local_only": ip is None}
+    return {"base": f"http://{host}:{port}", "local_only": False}
+
+
+def _wt_worker(job_id: str, token: str, share: dict, skip_reason: str | None = None,
+               sender_email: str | None = None) -> None:
+    """Upload to WeTransfer; on ANY failure (or `skip_reason` - no Playwright, too big) make a server link instead, so
+    the page always gets a link. The WeTransfer error is kept in `wetransfer_error` and logged."""
+    from . import asset_zip
+
+    def update(**kw) -> None:
+        with _wt_lock:
+            _wt_jobs[job_id].update(kw)
+
+    def step(name: str, progress: float | None = None) -> None:
+        update(step=name, **({"progress": progress} if progress is not None else {}))
+
+    codes: queue.Queue[str] = queue.Queue()
+    with _wt_lock:
+        _wt_codes[job_id] = codes
+
+    def ask_code(error: str | None) -> str | None:
+        """WeTransfer asks for the code it e-mailed: tell the page (status requires_otp) and wait - browser open - for
+        the person to POST it to /api/export-wetransfer/verify-otp. None when nobody answers in time."""
+        while not codes.empty():                       # a stale code from an earlier prompt is not this one's answer
+            codes.get_nowait()
+        update(status="requires_otp", step="requires_otp", session_id=job_id, otp_error=error,
+               otp_deadline=time.time() + _otp_wait_s())
+        try:
+            code = codes.get(timeout=_otp_wait_s())
+        except queue.Empty:
+            update(status="running", otp_error=None)
+            return None
+        update(status="running", step="verifying", otp_error=None)
+        return code
+
+    reason = skip_reason
+    try:
+        update(status="running")
+        if reason is None:
+            try:
+                from . import wetransfer_uploader as wt
+                url = wt.upload_zip_to_wetransfer(str(_zip_path(token)), sender_email=sender_email, on_step=step,
+                                                  debug_dir=DATA / "wetransfer_debug", ask_code=ask_code)
+                update(status="success", wetransfer_url=url, fallback_used=False, progress=100, step="done")
+                return
+            except Exception as e:  # noqa: BLE001 - whatever broke, the fallback below still gives a link
+                reason = e.detail if isinstance(e, HTTPException) else str(e)
+                logger.warning("WeTransfer upload failed, falling back to a server link: %s", reason)
+        step("server_link", 95)
+        try:
+            shared = _share_zip(_zip_path(token))
+        except Exception as e:  # noqa: BLE001
+            update(status="failed", error=f"WeTransfer failed ({reason}) and the server link could not be made either: "
+                                          f"{e.detail if isinstance(e, HTTPException) else e}")
+            return
+        where = ("It opens only on this computer: the backend listens on 127.0.0.1. To share it on the office network, "
+                 "start the backend with --host 0.0.0.0 (and allow the port through the firewall)." if share["local_only"]
+                 else "It works for anyone who can reach this server (the office network or VPN), not the open internet.")
+        days = _share_days()
+        update(status="success", fallback_used=True, progress=100, step="done", wetransfer_error=reason,
+               wetransfer_url=f"{share['base']}/api/shared/{shared['id']}/{asset_zip.ZIP_NAME}",
+               local_only=share["local_only"], expires_at=shared["expires_at"],
+               message=f"WeTransfer automated link creation failed, so this is a download link served by this server "
+                       f"instead (kept {days:g} day{'' if days == 1 else 's'}). {where}")
+    finally:
+        with _wt_lock:
+            _wt_codes.pop(job_id, None)
+        with _asset_zips_lock:
+            z = _asset_zips.get(token)
+            drop = False
+            if z is not None:
+                z.busy -= 1
+                drop = z.discard and not z.busy
+                if drop:
+                    _asset_zips.pop(token)
+        if drop:
+            _drop_zip_dir(z.dir)
+
+
+@app.post("/api/export-wetransfer")
+def export_wetransfer(body: WeTransferRequest, request: Request):
+    """Get a share link for a ZIP; answers {job_id}. Poll GET /api/export-wetransfer/{job_id} for {status:
+    queued|running|success|failed, step, progress, wetransfer_url, fallback_used, message, local_only, expires_at, error}.
+    WeTransfer is tried first; when it cannot be used - Playwright missing, the ZIP over the size limit, or any failure
+    on the site - `wetransfer_url` is a server link and `fallback_used` is true (see _wt_worker)."""
+    token = body.token
+    if not token:
+        if not body.shop_ids:
+            raise HTTPException(422, "send the token of a generated ZIP, or shop_ids")
+        token = export_zip(AssetZipRequest(shop_ids=body.shop_ids, numbers=body.numbers))["token"]
+    email = (body.sender_email or "").strip() or None
+    try:
+        from . import wetransfer_uploader as wt_check
+        if email is not None and not wt_check.valid_email(email):
+            raise HTTPException(422, "that sender e-mail address does not look valid")
+    except ImportError:
+        pass
+    path = _zip_path(token)
+    size = path.stat().st_size
+    skip = None if email else "no sender e-mail was given - WeTransfer requires one for a link transfer"
+    try:
+        from . import wetransfer_uploader as wt
+        wt.check_available()
+        if skip is None and size > wt.max_bytes():
+            skip = (f"the ZIP is {size / 1e9:.2f} GB, over the {wt.max_bytes() / 1e9:g} GB WeTransfer free-transfer limit "
+                    "set on this server (SIGNAGE_WETRANSFER_MAX_GB)")
+    except ImportError as e:
+        skip = skip or f"Playwright is not installed for the server's Python ({e}); `\"{sys.executable}\" -m pip install playwright`"
+    with _asset_zips_lock:
+        _asset_zips[token].busy += 1
+        _asset_zips[token].at = time.time()          # not swept while the link is being made
+    job_id = uuid.uuid4().hex[:12]
+    with _wt_lock:
+        _wt_jobs[job_id] = {"job_id": job_id, "status": "queued", "step": "queued", "progress": 0,
+                            "wetransfer_url": None, "fallback_used": False, "error": None, "bytes": size}
+    _wt_pool.submit(_wt_worker, job_id, token, _share_base(request.scope.get("server")), skip, email)
+    return {"job_id": job_id, "token": token}
+
+
+@app.post("/api/export-wetransfer/verify-otp")
+def export_wetransfer_verify_otp(body: VerifyOtpRequest):
+    """The code WeTransfer e-mailed to the sender, typed by the person: handed to the upload waiting for it (status
+    requires_otp). The result arrives through the usual status polling - success, another requires_otp with `otp_error`
+    (rejected, tries left), or the server-link fallback."""
+    code = re.sub(r"[\s-]+", "", body.otp_code or "").upper()     # WeTransfer's codes mix letters and digits, e.g. 953GYV
+    if not re.fullmatch(r"[A-Z0-9]{4,10}", code):
+        raise HTTPException(422, "enter the code from the WeTransfer e-mail (letters and numbers, e.g. 953GYV)")
+    with _wt_lock:
+        job = _wt_jobs.get(body.session_id)
+        codes = _wt_codes.get(body.session_id)
+        if job is None:
+            raise HTTPException(404, "unknown upload")
+        if job["status"] != "requires_otp" or codes is None:
+            raise HTTPException(409, "this upload is not waiting for a code (it may have finished or timed out)")
+        job.update(status="running", step="verifying", otp_error=None)
+    codes.put(code)
+    return {"status": "verifying", "session_id": body.session_id}
+
+
+@app.get("/api/export-wetransfer/{job_id}")
+def export_wetransfer_status(job_id: str):
+    with _wt_lock:
+        job = _wt_jobs.get(job_id)
+        if job is None:
+            raise HTTPException(404, "unknown upload")
+        return dict(job)
+
+
+@app.get("/api/shared/{share_id}/{filename}")
+def shared_zip(share_id: str, filename: str):
+    """A fallback share link (see _share_zip). Unknown, malformed or expired ids are 404 / 410."""
+    from . import asset_zip
+
+    if not SHARE_ID_RE.fullmatch(share_id) or filename != asset_zip.ZIP_NAME:
+        raise HTTPException(404, "not found")
+    d = SHARED_ZIPS / share_id
+    try:
+        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(404, "this link does not exist")
+    if time.time() > meta.get("expires_at", 0):
+        shutil.rmtree(d, ignore_errors=True)
+        raise HTTPException(410, "this link has expired")
+    if not (d / filename).is_file():
+        raise HTTPException(404, "this link does not exist")
+    return FileResponse(d / filename, media_type="application/zip", filename=filename)
 
 
 # ------------------------------------------------------ editor (Phase C)
@@ -1028,6 +1555,63 @@ def corel_health():
             "free_ram_gb": free, "min_free_ram_gb": floor, "low_memory": low, "message": message}
 
 
+class FontSubstituteRequest(BaseModel):
+    shop_id: str
+    original_font: str
+    substitute_font: str
+    is_permanent: bool = True
+    project_id: str | None = None          # accepted; substitutions are kept per shop
+
+
+def _installed_font_name(name: str) -> str | None:
+    """The installed family matching `name` (case-insensitive), None if it is not installed; `name` itself when the
+    installed-font list is unavailable (not Windows) - the check is skipped there, as in the editor."""
+    info = fonts.installed_fonts()
+    if not info.get("available"):
+        return name
+    by_lower = {f.lower(): f for f in info.get("fonts", [])}
+    return by_lower.get(name.strip().lower())
+
+
+@app.get("/api/fonts/substitutions")
+def font_substitutions(shop_id: str):
+    """The permanent substitutions saved for a shop: {original font: substitute font}."""
+    if not db.get_shop(shop_id):
+        raise HTTPException(404, "shop not found")
+    return {"shop_id": shop_id, "substitutions": db.get_font_substitutions(shop_id)}
+
+
+@app.post("/api/fonts/substitute")
+def font_substitute(body: FontSubstituteRequest):
+    """Save (is_permanent) a replacement for a font missing on this server: every export of this shop's board sets text
+    in `original_font` to `substitute_font` in CorelDRAW (export_replay.apply_font_substitutions). A temporary choice
+    lives only in the editor tab and is not stored - this answers {saved: false} for it. The substitute must be installed
+    on the server, because CorelDRAW writes the files and silently ignores a font it does not have."""
+    if not db.get_shop(body.shop_id):
+        raise HTTPException(404, "shop not found")
+    original, wanted = body.original_font.strip(), body.substitute_font.strip()
+    if not original or not wanted:
+        raise HTTPException(422, "name both the missing font and its replacement")
+    if original.lower() == wanted.lower():
+        raise HTTPException(422, "the replacement must be a different font")
+    installed = _installed_font_name(wanted)
+    if installed is None:
+        raise HTTPException(422, f"{wanted!r} is not installed on this server - CorelDRAW would ignore it; pick an installed font")
+    if body.is_permanent:
+        db.set_font_substitution(body.shop_id, original, installed)
+    return {"saved": body.is_permanent, "original_font": original, "substitute_font": installed,
+            "substitutions": db.get_font_substitutions(body.shop_id)}
+
+
+@app.delete("/api/fonts/substitute")
+def font_substitute_delete(shop_id: str, original_font: str):
+    """Forget a permanent substitution: exports go back to CorelDRAW's own handling of the missing font."""
+    if not db.get_shop(shop_id):
+        raise HTTPException(404, "shop not found")
+    return {"deleted": db.delete_font_substitution(shop_id, original_font.strip()),
+            "substitutions": db.get_font_substitutions(shop_id)}
+
+
 @app.get("/api/fonts")
 def api_fonts(refresh: bool = False):
     """Installed font families (the editor refuses to name a font CorelDRAW would silently ignore)."""
@@ -1074,9 +1658,7 @@ def _mock_export(expected: dict, formats: list[str], opts: dict, out_dir: Path, 
     out_dir.mkdir(parents=True, exist_ok=True)
     files: dict[str, str] = {}
     timings: dict[str, float] = {}
-    size = export_replay.resolve_raster(expected["page"]["width"], expected["page"]["height"], opts["raster"])
-    scale = min(1.0, 1200 / max(size["w_px"], size["h_px"]))
-    w, h = max(1, round(size["w_px"] * scale)), max(1, round(size["h_px"] * scale))
+    sizes = export_replay.raster_sizes(expected["page"]["width"], expected["page"]["height"], opts, ["png", "jpeg"])
 
     def beat(step: str) -> None:
         heartbeat.write_text(json.dumps({"step": step}), encoding="utf-8")
@@ -1084,17 +1666,18 @@ def _mock_export(expected: dict, formats: list[str], opts: dict, out_dir: Path, 
 
     for step in ["launch", "open"]:
         beat(step)
-    for fmt in export_replay.ALL_FORMATS:
-        if fmt not in formats:
-            continue
+    for fmt in export_replay.export_order(formats, opts):
         beat(fmt)
+        size = sizes["png" if fmt in ("cdr", "pdf") else fmt]
+        scale = min(1.0, 1200 / max(size["w_px"], size["h_px"]))
+        w, h = max(1, round(size["w_px"] * scale)), max(1, round(size["h_px"] * scale))
         p = out_dir / f"{base}.{export_replay.EXTENSION[fmt]}"
         if fmt == "cdr":
             with zipfile.ZipFile(p, "w") as z:
                 z.writestr("mimetype", "application/x-cdr")
         else:
-            im = Image.new("RGB" if fmt != "png" or opts["raster"]["png_background"] == "white" else "RGBA", (w, h),
-                           (255, 255, 255) if fmt != "png" or opts["raster"]["png_background"] == "white" else (255, 255, 255, 0))
+            transparent = fmt == "png" and opts["png"]["png_background"] == "transparent"
+            im = Image.new("RGBA" if transparent else "RGB", (w, h), (255, 255, 255, 0) if transparent else (255, 255, 255))
             d = ImageDraw.Draw(im)
             for layer in expected["layers"]:
                 for n in layer["children"]:
@@ -1102,6 +1685,8 @@ def _mock_export(expected: dict, formats: list[str], opts: dict, out_dir: Path, 
                     d.rectangle([x0, y0, x0 + n["w"] / expected["page"]["width"] * w, y0 + n["h"] / expected["page"]["height"] * h],
                                 outline=(224, 24, 47))
             d.text((10, 10), f"MOCK EXPORT - not from CorelDRAW ({base})", fill=(0, 0, 0))
+            if fmt == "jpeg" and opts["jpeg"]["color"] == "cmyk":
+                im = im.convert("CMYK")
             im.save(p, "PDF" if fmt == "pdf" else "PNG" if fmt == "png" else "JPEG")
         files[fmt] = p.name
         timings[fmt] = 0.25
@@ -1129,6 +1714,7 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
                 "ops": ops, "formats": formats, "options": options,
                 "out_dir": str(out_dir), "base_name": shop_row["name"],
                 "assets_dir": str(_product_assets_dir(job_id, shop_id)),
+                "font_subs": db.get_font_substitutions(shop_id),     # permanent "Missing Font" choices
             }
             entry = corel_supervisor.run_batch([{"export_replay": spec}], results_path)[0]
             if entry.get("status") != "done":
@@ -1138,6 +1724,9 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
             scene = _load_scene(job_id, shop_id)
             report = _mock_export(scene_ops.apply_ops(scene, ops), formats, options, out_dir,
                                   export_replay.safe_name(shop_row["name"]), results_path.with_suffix(".heartbeat"))
+            subs = db.get_font_substitutions(shop_id)
+            if subs:   # recorded only - the mock engine renders no text
+                report["font_substitutions"] = {k: {"to": v, "changed": None, "mock": True} for k, v in subs.items()}
         db.set_export_result(export_id, report["files"], report)
     except corel_supervisor.RefusedToStart as e:
         db.set_export_status(export_id, "failed", str(e))
@@ -1172,8 +1761,8 @@ def editor_export(job_id: str, shop_id: str, body: ExportRequest):
     formats = [f for f in export_replay.ALL_FORMATS if f in body.formats]
     try:
         opts = export_replay.normalize_options(formats, body.options)
-        size = (export_replay.resolve_raster(expected["page"]["width"], expected["page"]["height"], opts["raster"])
-                if ("png" in formats or "jpeg" in formats) else None)
+        sizes = export_replay.raster_sizes(expected["page"]["width"], expected["page"]["height"], opts, formats)
+        size = max(sizes.values(), key=lambda z: z["megapixels"]) if sizes else None
     except (export_replay.ExportOptionError, ValueError, TypeError) as e:
         raise HTTPException(422, str(e))
     if os.environ.get("SIGNAGE_ENGINE", "auto") != "mock" and get_engine(os.environ.get("SIGNAGE_ENGINE", "auto")).name == "corel":
@@ -1182,11 +1771,11 @@ def editor_export(job_id: str, shop_id: str, body: ExportRequest):
         if free < need:
             raise HTTPException(503, f"not enough free RAM for this export: {free:.2f} GB free, about {need:.2f} GB needed"
                                      + (f" ({size['w_px']} x {size['h_px']} px images)" if size else "") + ". Close other programs or lower the image size.")
-    plan = export_replay.plan_steps(formats, len(ops), db.get_export_step_estimates())
+    plan = export_replay.plan_steps(formats, len(ops), db.get_export_step_estimates(), opts)
     export_id = uuid.uuid4().hex[:12]
     db.create_export(export_id, shop_id, formats, opts, ops, plan)
     _pool.submit(_export_worker, job_id, shop_id, export_id)
-    return {"export_id": export_id, "plan": plan, "raster": size, "ops": len(ops)}
+    return {"export_id": export_id, "plan": plan, "raster": size, "sizes": sizes, "ops": len(ops)}
 
 
 def _export_row(job_id: str, shop_id: str, export_id: str) -> dict:
@@ -1244,8 +1833,10 @@ def editor_export_list(job_id: str, shop_id: str):
 
 def _zip_name(shop_name: str) -> str:
     """`{ShopName}_Signage_Export.zip` with the shop name reduced to filename-safe characters (letters of any script,
-    digits, dot, dash) - spaces and everything else become underscores."""
-    safe = re.sub(r"[^\w.\-]+", "_", (shop_name or "").strip(), flags=re.UNICODE).strip("._") or "Shop"
+    digits, dot, dash) - spaces and everything else become underscores. Combining marks are letters here: `\\w` alone
+    drops Tamil vowel signs and the virama, mangling the name."""
+    safe = re.sub(r"[^\w.\-\u0300-\u036f\u0900-\u0dff]+", "_", (shop_name or "").strip(),
+                  flags=re.UNICODE).strip("._") or "Shop"
     return f"{safe}_Signage_Export.zip"
 
 

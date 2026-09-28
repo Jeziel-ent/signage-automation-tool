@@ -43,6 +43,10 @@ MAX_MEGAPIXELS = 200.0
 MIN_DPI, MAX_DPI = 1, 1200
 PDF_COLOR = {"native": 3, "rgb": 0, "cmyk": 1}     # pdfColorMode
 PDF_DPI_CHOICES = (72, 100, 150, 200, 300, 600)
+RASTER_FORMATS = ("png", "jpeg")
+IMAGE_TYPE = {"rgb": scene_export.CDR_RGB_IMAGE, "cmyk": 5}   # cdrImageType: cdrRGBColorImage / cdrCMYKColorImage
+CDR_VERSION_CHOICES = (21, 0, 17)       # cdrFileVersion: 2019 (the designers' version), current (native), X7
+MAX_PADDING_MM = 500.0
 POS_TOL_MM = 0.5
 TEXT_TOL_MM = 5.0        # position tolerance for text whose content was edited
 
@@ -57,7 +61,49 @@ class ReplayError(Exception):
 
 # ------------------------------------------------------------------ options
 
+def _raster_options(base: dict, fmt: str, override: dict) -> dict:
+    """One raster format's settings: the shared `raster` block with that format's own block laid over it."""
+    merged = {**base, **{k: v for k, v in override.items() if v is not None}}
+    mode = merged.get("mode", "max_px")
+    if mode not in ("dpi", "max_px"):
+        raise ExportOptionError("raster size mode must be 'dpi' or 'max_px'")
+    background = merged.get("png_background", "transparent")
+    if background not in ("transparent", "white"):
+        raise ExportOptionError("PNG background must be 'transparent' or 'white'")
+    out = {
+        "mode": mode,
+        "dpi": float(merged.get("dpi", 96)),
+        "max_px": int(merged.get("max_px", 4000)),
+        "png_background": background,
+        "antialias": bool(merged.get("antialias", True)),
+    }
+    if fmt == "png":
+        pad = float(merged.get("padding_mm", 0) or 0)
+        if not 0 <= pad <= MAX_PADDING_MM:
+            raise ExportOptionError(f"PNG padding must be between 0 and {MAX_PADDING_MM:g} mm")
+        out["padding_mm"] = pad
+    if fmt == "jpeg":
+        color = merged.get("color", "rgb")
+        if color not in IMAGE_TYPE:
+            raise ExportOptionError("JPEG colour mode must be 'rgb' or 'cmyk'")
+        out["color"] = color
+    return out
+
+
+def raster_sizes(page_w_mm: float, page_h_mm: float, opts: dict, formats: list[str]) -> dict:
+    """Pixel size per requested raster format (a PNG's padding widens the exported area on every side)."""
+    out = {}
+    for f in RASTER_FORMATS:
+        if f in formats:
+            pad = 2 * opts[f].get("padding_mm", 0)
+            out[f] = resolve_raster(page_w_mm + pad, page_h_mm + pad, opts[f])
+    return out
+
+
 def normalize_options(formats: list[str], options: dict | None) -> dict:
+    """Validated export options. `raster` is the block shared by PNG and JPEG (the editor's original popup sent only
+    that); `png` / `jpeg` override it per format (the row-level export modal sends those), and the result carries a
+    fully resolved dict for each of the two formats."""
     options = options or {}
     if not formats:
         raise ExportOptionError("choose at least one format")
@@ -74,22 +120,22 @@ def normalize_options(formats: list[str], options: dict | None) -> dict:
         raise ExportOptionError("PDF text must be 'embed' or 'curves'")
     if dpi not in PDF_DPI_CHOICES:
         raise ExportOptionError(f"PDF image resolution must be one of {PDF_DPI_CHOICES}")
+    cdr = options.get("cdr") or {}
+    version = cdr.get("version")
+    if version is not None:
+        version = int(version)
+        if version not in CDR_VERSION_CHOICES:
+            raise ExportOptionError(f"CDR version must be one of {CDR_VERSION_CHOICES}")
+    cdr_text = cdr.get("text", "editable")
+    if cdr_text not in ("editable", "curves"):
+        raise ExportOptionError("CDR text must be 'editable' or 'curves'")
     raster = options.get("raster") or {}
-    mode = raster.get("mode", "max_px")
-    if mode not in ("dpi", "max_px"):
-        raise ExportOptionError("raster size mode must be 'dpi' or 'max_px'")
-    background = raster.get("png_background", "transparent")
-    if background not in ("transparent", "white"):
-        raise ExportOptionError("PNG background must be 'transparent' or 'white'")
     return {
-        "pdf": {"color_mode": color, "text": text, "bitmap_dpi": dpi},
-        "raster": {
-            "mode": mode,
-            "dpi": float(raster.get("dpi", 96)),
-            "max_px": int(raster.get("max_px", 4000)),
-            "png_background": background,
-            "antialias": bool(raster.get("antialias", True)),
-        },
+        "pdf": {"color_mode": color, "text": text, "bitmap_dpi": dpi,
+                "crop_marks": bool(pdf.get("crop_marks", False)), "bleed": bool(pdf.get("bleed", False))},
+        "cdr": {"version": version, "text": cdr_text},
+        "raster": _raster_options(raster, "raster", {}),
+        **{f: _raster_options(raster, f, options.get(f) or {}) for f in RASTER_FORMATS},
     }
 
 
@@ -117,13 +163,23 @@ def resolve_raster(page_w_mm: float, page_h_mm: float, raster: dict) -> dict:
 DEFAULT_SECONDS = {"launch": 8, "open": 6, "replay": 3, "verify": 3, "cdr": 4, "pdf": 8, "png": 10, "jpeg": 8}
 
 
-def plan_steps(formats: list[str], n_ops: int, estimates: dict | None = None) -> list[dict]:
+def export_order(formats: list[str], opts: dict | None = None) -> list[str]:
+    """The order formats are written in. A CDR with text converted to curves is written LAST: converting changes the
+    open document, and the PDF/PNG/JPEG must still be made from the editable text."""
+    order = [f for f in ALL_FORMATS if f in formats]
+    if "cdr" in order and opts and (opts.get("cdr") or {}).get("text") == "curves":
+        order.remove("cdr")
+        order.append("cdr")
+    return order
+
+
+def plan_steps(formats: list[str], n_ops: int, estimates: dict | None = None, opts: dict | None = None) -> list[dict]:
     """Ordered steps with the cumulative percent reached when each is confirmed complete.
     Widths follow measured average durations of earlier exports when there are any."""
     keys = ["launch", "open"]
     if n_ops:
         keys += ["replay", "verify"]
-    keys += [f for f in ALL_FORMATS if f in formats]
+    keys += export_order(formats, opts)
     est = estimates or {}
     secs = [float(est.get(k) or DEFAULT_SECONDS[k]) for k in keys]
     total = sum(secs)
@@ -695,6 +751,10 @@ def export_pdf(doc, path: Path, opts: dict, warnings: list[str]) -> dict:
         "DownsampleColor": True,
         "ColorResolution": opts["bitmap_dpi"],
         "GrayResolution": opts["bitmap_dpi"],
+        # printer's marks - PDFSettings properties in the v27 typelib. The bleed LIMIT (`Bleed`) stays at CorelDRAW's
+        # own default and is read back into the report below.
+        "CropMarks": bool(opts.get("crop_marks", False)),
+        "IncludeBleed": bool(opts.get("bleed", False)),
     }
     applied = {}
     for k, v in wanted.items():
@@ -703,11 +763,18 @@ def export_pdf(doc, path: Path, opts: dict, warnings: list[str]) -> dict:
             applied[k] = getattr(s, k)
         except Exception as e:
             warnings.append(f"PDF setting {k} could not be applied: {e}")
+            continue
+        if isinstance(v, bool) and bool(applied[k]) != v:
+            warnings.append(f"PDF setting {k} was set to {v} but CorelDRAW reports {applied[k]!r}")
+    if opts.get("bleed"):
+        limit = _safe(lambda: s.Bleed)
+        if limit is not None:
+            applied["Bleed"] = limit
     doc.PublishToPDF(str(path))
     return applied
 
 
-def _page_export_area(doc):
+def _page_export_area(doc, pad_mm: float = 0.0):
     """A Rect covering exactly the active page, in the document's own units, or None if the document cannot
     provide one. Needed because `ExportBitmap(cdrCurrentPage, ExportArea=None)` was verified live (DARSHAN converted
     to 4:1) to render the whole DRAWING extent, not the page, whenever objects lie outside the page: the cover-fit
@@ -716,21 +783,91 @@ def _page_export_area(doc):
     CorelDRAW's own verification were both correct. An explicit page-sized area renders the page as designed."""
     try:
         page = doc.ActivePage
-        return doc.Application.CreateRect(float(page.LeftX), float(page.BottomY),
-                                          float(page.SizeWidth), float(page.SizeHeight))
+        # `pad_mm` widens the area on every side (PNG background padding); the document unit is mm during an export
+        return doc.Application.CreateRect(float(page.LeftX) - pad_mm, float(page.BottomY) - pad_mm,
+                                          float(page.SizeWidth) + 2 * pad_mm, float(page.SizeHeight) + 2 * pad_mm)
     except Exception:
         return None
 
 
 def export_raster(doc, path: Path, fmt: str, size: dict, raster: dict) -> None:
     transparent = fmt == "png" and raster["png_background"] == "transparent"
+    image_type = IMAGE_TYPE["cmyk"] if fmt == "jpeg" and raster.get("color") == "cmyk" else scene_export.CDR_RGB_IMAGE
     flt = doc.ExportBitmap(
-        str(path), FILTER[fmt], scene_export.CDR_CURRENT_PAGE, scene_export.CDR_RGB_IMAGE,
+        str(path), FILTER[fmt], scene_export.CDR_CURRENT_PAGE, image_type,
         # explicit pixel size: CorelDRAW rounds a dpi to a whole number, which is up to 10% off at low resolutions
         size["w_px"], size["h_px"], size["dpi"], size["dpi"], 1 if raster["antialias"] else 0, False, transparent, True, False, 0, None,
-        _page_export_area(doc),
+        _page_export_area(doc, raster.get("padding_mm", 0.0)),
     )
     flt.Finish()
+
+
+def apply_font_substitutions(page, subs: dict[str, str] | None, warnings: list[str]) -> dict:
+    """Permanent substitutions saved for the shop ({missing font: installed font}, matched case-insensitively): every
+    text object on the page (inside groups and PowerClips too) whose font is a missing one gets the substitute, read back
+    like every other font write here - CorelDRAW ignores a font it does not have without saying so. Returns
+    {original: {"to", "changed", "not_applied"}}. A text object mixing fonts inside one run reports no single font and is
+    left alone (counted in "mixed")."""
+    subs = {k.strip().lower(): (k, v) for k, v in (subs or {}).items() if k and v}
+    if not subs:
+        return {}
+    out = {orig: {"to": to, "changed": 0, "not_applied": 0} for orig, to in subs.values()}
+    mixed = 0
+    shapes, _ = index_doc(page)
+    for sh in shapes.values():
+        if _safe(lambda sh=sh: int(sh.Type)) != 6:
+            continue
+        story = _safe(lambda sh=sh: sh.Text.Story)
+        font = _safe(lambda: story.Font) if story is not None else None
+        if not font:
+            mixed += 1
+            continue
+        hit = subs.get(str(font).strip().lower())
+        if hit is None:
+            continue
+        orig, to = hit
+        try:
+            story.Font = to
+        except Exception:
+            pass
+        if str(_safe(lambda: story.Font) or "").lower() == to.lower():
+            out[orig]["changed"] += 1
+        else:
+            out[orig]["not_applied"] += 1
+    for orig, r in out.items():
+        if r["not_applied"]:
+            warnings.append(f"font substitution {orig!r} -> {r['to']!r} did not stick on {r['not_applied']} text object(s) - "
+                            f"is {r['to']!r} installed on this server?")
+    if mixed:
+        out["_mixed_font_texts_skipped"] = mixed
+    return out
+
+
+def image_mode(path: Path) -> str | None:
+    try:
+        from PIL import Image
+        Image.MAX_IMAGE_PIXELS = None
+        with Image.open(path) as im:
+            return im.mode
+    except Exception:
+        return None
+
+
+def text_to_curves(page) -> tuple[int, int]:
+    """Convert every text object on the page (inside groups and PowerClips too) to curves. Returns (converted, left);
+    `left` is how many objects are still text afterwards, read back rather than assumed."""
+    shapes, _ = index_doc(page)
+    done = 0
+    for sh in shapes.values():
+        if _safe(lambda sh=sh: int(sh.Type)) == 6:
+            try:
+                sh.ConvertToCurves()
+                done += 1
+            except Exception:
+                pass
+    shapes, _ = index_doc(page)
+    left = sum(1 for sh in shapes.values() if _safe(lambda sh=sh: int(sh.Type)) == 6)
+    return done, left
 
 
 def image_size(path: Path) -> tuple[int, int] | None:
@@ -745,7 +882,7 @@ def image_size(path: Path) -> tuple[int, int] | None:
 
 def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats: list[str], options: dict,
                      out_dir: Path, base_name: str, on_step: Callable[[str], None] | None = None,
-                     assets_dir: Path | str | None = None) -> dict:
+                     assets_dir: Path | str | None = None, font_subs: dict[str, str] | None = None) -> dict:
     """Opens the converted .cdr in a fresh CorelDRAW, replays `ops`, verifies, exports, closes WITHOUT saving
     over the original. Returns the job report (files, timings, replay + verification results, warnings).
     `assets_dir` is where a `swap_image`/`update_product_slot` op's asset `path` resolves against - see
@@ -762,8 +899,7 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
     scene = json.loads(Path(scene_path).read_text(encoding="utf-8"))
     opts = normalize_options(formats, options)
     expected = scene_ops.apply_ops(scene, ops) if ops else scene            # also re-validates the list
-    size = resolve_raster(expected["page"]["width"], expected["page"]["height"], opts["raster"]) \
-        if ("png" in formats or "jpeg" in formats) else None
+    sizes = raster_sizes(expected["page"]["width"], expected["page"]["height"], opts, formats)
 
     warnings: list[str] = []
     timings: dict[str, float] = {}
@@ -813,22 +949,38 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
             if not report["verification"]["ok"]:
                 warnings.append("The exported document differs from the editor in "
                                 f"{len(report['verification']['mismatches'])} place(s) - see verification.mismatches")
-        if "cdr" in formats:
-            p = out_dir / f"{base}.cdr"
-            timed("cdr", lambda: corel_util.save_cdr(doc, p))
-            files["cdr"] = p.name
-            report["cdr_format"] = corel_util.check_cdr_format(p, warnings)
-        if "pdf" in formats:
-            p = out_dir / f"{base}.pdf"
-            report["pdf_settings"] = timed("pdf", lambda: export_pdf(doc, p, opts["pdf"], warnings))
-            files["pdf"] = p.name
-        for fmt in ("png", "jpeg"):
-            if fmt in formats:
+        if font_subs:
+            # after the replay is verified against the shadow scene (which still has the original font names)
+            report["font_substitutions"] = corel_util.run_with_timeout(
+                lambda: apply_font_substitutions(doc.ActivePage, font_subs, warnings), pid, "fonts")
+        for fmt in export_order(formats, opts):
+            if fmt == "cdr":
+                p = out_dir / f"{base}.cdr"
+                if opts["cdr"]["text"] == "curves":
+                    # the step heartbeat stays "cdr" (it is part of writing the CDR); the timeout is its own
+                    step("cdr")
+                    done, left = corel_util.run_with_timeout(lambda: text_to_curves(doc.ActivePage), pid, "curves")
+                    report["cdr_text_to_curves"] = {"converted": done, "left": left}
+                    if left:
+                        warnings.append(f"{left} text object(s) could not be converted to curves and stay editable in the CDR")
+                timed("cdr", lambda p=p: corel_util.save_cdr(doc, p, opts["cdr"]["version"]))
+                files["cdr"] = p.name
+                report["cdr_format"] = corel_util.check_cdr_format(p, warnings, opts["cdr"]["version"])
+            elif fmt == "pdf":
+                p = out_dir / f"{base}.pdf"
+                report["pdf_settings"] = timed("pdf", lambda p=p: export_pdf(doc, p, opts["pdf"], warnings))
+                files["pdf"] = p.name
+            else:
                 p = out_dir / f"{base}.{EXTENSION[fmt]}"
-                timed(fmt, lambda p=p, fmt=fmt: export_raster(doc, p, fmt, size, opts["raster"]))
+                timed(fmt, lambda p=p, fmt=fmt: export_raster(doc, p, fmt, sizes[fmt], opts[fmt]))
                 files[fmt] = p.name
                 px = image_size(p)
                 report.setdefault("pixels", {})[fmt] = list(px) if px else None
+                if fmt == "jpeg" and opts["jpeg"]["color"] == "cmyk":
+                    mode = image_mode(p)
+                    report["jpeg_mode"] = mode
+                    if mode != "CMYK":
+                        warnings.append(f"A CMYK JPEG was requested but CorelDRAW wrote a {mode or 'unreadable'} image")
         report["files"] = files
         report["file_bytes"] = {k: (out_dir / v).stat().st_size for k, v in files.items() if (out_dir / v).exists()}
         missing = [k for k, v in files.items() if not (out_dir / v).exists()]

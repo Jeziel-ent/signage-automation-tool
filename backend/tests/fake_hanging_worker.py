@@ -6,6 +6,9 @@ job's `shop` dict may set:
     "_test_action": "done" (default) - complete normally, write a result
     "_test_action": "hang"           - never return (like a stuck Dispatch())
     "_test_seconds": N               - sleep N seconds before completing
+    "_test_launch_s": N              - first beat step "launch" for N seconds (not counted by a per-job limit)
+    "_test_action": "beat"           - never finish, but keep writing heartbeats (a job that keeps
+                                       reporting a step yet never completes)
 
 Writes results incrementally exactly like the real worker, so tests can
 verify the supervisor picks up partial progress before a later job hangs.
@@ -24,10 +27,19 @@ def main():
     results = []
     for i, job in enumerate(jobs):
         shop = job.get("shop", {})
+        if shop.get("_test_launch_s"):
+            heartbeat_path.write_text(json.dumps({"job_index": i, "step": "launch"}), encoding="utf-8")
+            time.sleep(shop["_test_launch_s"])
         heartbeat_path.write_text(json.dumps({"job_index": i, "shop_name": shop.get("name", "?"), "step": "fake_step"}), encoding="utf-8")
         action = shop.get("_test_action", "done")
         if action == "hang":
             time.sleep(10_000)
+        if action == "beat":
+            n = 0
+            while True:
+                n += 1
+                heartbeat_path.write_text(json.dumps({"job_index": i, "step": f"beat {n}"}), encoding="utf-8")
+                time.sleep(0.3)
         time.sleep(shop.get("_test_seconds", 0))
         results.append({
             "master_path": job["master_path"], "shop": shop, "out_dir": job["out_dir"],

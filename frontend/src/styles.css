@@ -667,13 +667,17 @@ a.btn { text-decoration: none; display: inline-block; }
 /* ======================================================================
    Launch screen (SplashScreen.jsx) - 3D billboard + enterprise control panel
    ====================================================================== */
-.sp3-root { position: fixed; inset: 0; z-index: 4000; overflow: hidden; display: flex; flex-direction: column; background: #0B1120; color: #e2e8f0; font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; transition: opacity 0.4s ease; }
-.sp3-root.leaving { opacity: 0; }
+.sp3-root { position: fixed; inset: 0; z-index: 4000; overflow: hidden; display: flex; flex-direction: column; background: #0A0A0C; color: #e2e8f0; font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; -webkit-font-smoothing: antialiased; transition: opacity 0.32s ease; }
+/* launching: the page and the modal step aside for the camera flight; the whole screen fades only on arrival at the billboard */
+.sp3-root.leaving .sp3-backdrop { opacity: 0; pointer-events: none; transition: opacity 0.35s ease; }
+/* the title block folds away so the 3D view grows to the full screen for the flight */
+.sp3-root.leaving .sp3-content { opacity: 0; max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; pointer-events: none; transition: opacity 0.25s ease, max-height 0.45s ease, padding 0.45s ease; }
+.sp3-root.arriving { opacity: 0; }
 .sp3-stage { position: relative; flex: 1 1 auto; min-height: 140px; }
 .sp3-canvas { position: absolute !important; inset: 0; }
 /* the poles run into this: the controls always sit on a calm, dark surface */
-.sp3-scrim { position: absolute; left: 0; right: 0; bottom: 0; height: 32%; pointer-events: none; background: linear-gradient(to top, #0B1120 0%, rgba(11, 17, 32, 0.85) 35%, rgba(11, 17, 32, 0) 100%); }
-.sp3-content { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 4px 16px max(24px, 5vh); text-align: center; }
+.sp3-scrim { position: absolute; left: 0; right: 0; bottom: 0; height: 14%; pointer-events: none; background: linear-gradient(to top, #0A0A0C 0%, rgba(10, 10, 12, 0) 100%); }
+.sp3-content { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 4px 16px max(24px, 5vh); text-align: center; max-height: 60vh; }
 .sp3-header { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .sp3-title { margin: 0; font-size: clamp(22px, 2.6vw, 32px); line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; color: #f8fafc; }
 .sp3-sub { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: #94a3b8; }
@@ -710,7 +714,40 @@ a.btn { text-decoration: none; display: inline-block; }
 .sp3-chip-v { padding: 0 8px; background: rgba(6, 78, 59, 0.55); color: #d1fae5; font-weight: 600; font-variant-numeric: tabular-nums; }
 .sp3-chip.warn .sp3-chip-v { background: rgba(120, 53, 15, 0.6); color: #fde68a; }
 /* splash: the single button on the page, and the connection modal that holds every state */
-.sp3-cta { width: 100%; max-width: 360px; }
+/* launch screen control: translucent HUD panel with a neon-edged dark red button (the city's palette) */
+.sp3-hud { position: relative; width: 100%; max-width: 448px; user-select: none; }
+.sp3-hud-glow { position: absolute; inset: -2px; border-radius: 16px; background: linear-gradient(90deg, rgba(220, 38, 38, 0.3), rgba(239, 68, 68, 0.1), rgba(220, 38, 38, 0.3)); filter: blur(12px); opacity: 0.75; transition: opacity 0.5s ease; pointer-events: none; }
+.sp3-hud:hover .sp3-hud-glow { opacity: 1; }
+.sp3-hud-frame { position: relative; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 16px; border-radius: 16px; background: rgba(2, 6, 23, 0.75); -webkit-backdrop-filter: blur(24px); backdrop-filter: blur(24px); border: 1px solid rgba(30, 41, 59, 0.9); box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), 0 0 25px rgba(227, 30, 36, 0.25); }
+.sp3-hud-corner { position: absolute; width: 10px; height: 10px; border-color: #ef4444; border-style: solid; border-width: 0; filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.9)); pointer-events: none; }
+.sp3-hud-corner.tl { top: 6px; left: 6px; border-top-width: 2px; border-left-width: 2px; border-top-left-radius: 6px; }
+.sp3-hud-corner.tr { top: 6px; right: 6px; border-top-width: 2px; border-right-width: 2px; border-top-right-radius: 6px; }
+.sp3-hud-corner.bl { bottom: 6px; left: 6px; border-bottom-width: 2px; border-left-width: 2px; border-bottom-left-radius: 6px; }
+.sp3-hud-corner.br { bottom: 6px; right: 6px; border-bottom-width: 2px; border-right-width: 2px; border-bottom-right-radius: 6px; }
+.sp3-hud-bar { box-sizing: border-box; width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 0 8px 8px; border-bottom: 1px solid rgba(30, 41, 59, 0.6); font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; color: #94a3b8; }
+.sp3-hud-node { display: inline-flex; align-items: center; gap: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: #cbd5e1; }
+.sp3-hud-host { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: #64748b; text-transform: uppercase; letter-spacing: 0.06em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sp3-hud-host svg { flex: none; color: #ef4444; }
+.sp3-ping { position: relative; display: inline-flex; width: 8px; height: 8px; }
+.sp3-ping > span { position: absolute; inset: 0; border-radius: 50%; background: #ef4444; }
+.sp3-ping > span:first-child { background: #f87171; opacity: 0.75; animation: sp3-ping 1s cubic-bezier(0, 0, 0.2, 1) infinite; }
+@keyframes sp3-ping { 75%, 100% { transform: scale(2); opacity: 0; } }
+.sp3-hud-btn { position: relative; overflow: hidden; box-sizing: border-box; width: 100%; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 12px 24px; border-radius: 12px; border: 1px solid rgba(239, 68, 68, 0.4); background: linear-gradient(90deg, rgba(69, 10, 10, 0.9), rgba(127, 29, 29, 0.7), rgba(69, 10, 10, 0.9)); color: #fff; font: 700 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; cursor: pointer; box-shadow: 0 0 15px rgba(227, 30, 36, 0.3); transition: transform 0.3s ease, box-shadow 0.3s ease, border-color 0.3s ease, background 0.3s ease; }
+.sp3-hud-btn:hover:not(:disabled) { background: linear-gradient(90deg, #dc2626, #ef4444, #dc2626); border-color: #f87171; box-shadow: 0 0 25px rgba(227, 30, 36, 0.8); transform: scale(1.02); }
+.sp3-hud-btn:active:not(:disabled) { transform: scale(0.98); }
+.sp3-hud-btn:disabled { cursor: default; opacity: 0.6; }
+.sp3-hud-btn:focus-visible { outline: 1px solid rgba(248, 113, 113, 0.45); outline-offset: 4px; }
+@media (max-width: 420px) { .sp3-hud-btn { gap: 8px; padding: 12px 12px; letter-spacing: 0.05em; } }
+.sp3-hud-shimmer { position: absolute; inset: 0; background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.12), transparent); transform: translateX(-100%); transition: transform 1s ease-in-out; pointer-events: none; }
+.sp3-hud-btn:hover:not(:disabled) .sp3-hud-shimmer { transform: translateX(100%); }
+.sp3-hud-label { position: relative; z-index: 1; text-shadow: 0 1px 3px rgba(0, 0, 0, 0.6); }
+.sp3-hud-power { flex: none; color: #f87171; animation: sp3-pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; transition: color 0.3s ease; }
+.sp3-hud-radio { flex: none; color: rgba(248, 113, 113, 0.8); transition: color 0.3s ease; }
+.sp3-hud-btn:hover:not(:disabled) .sp3-hud-power, .sp3-hud-btn:hover:not(:disabled) .sp3-hud-radio { color: #fff; }
+@keyframes sp3-pulse { 50% { opacity: 0.5; } }
+.sp3-hud-hint { margin: 0; font: 10px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; letter-spacing: 0.04em; text-transform: uppercase; color: #64748b; }
+.sp3-hud-hint kbd { padding: 2px 6px; border-radius: 4px; border: 1px solid #334155; background: #0f172a; color: #cbd5e1; font: inherit; }
+@media (prefers-reduced-motion: reduce) { .sp3-ping > span:first-child, .sp3-hud-power { animation: none; } .sp3-hud-btn, .sp3-hud-shimmer, .sp3-hud-glow { transition: none; } .sp3-hud-btn:hover:not(:disabled) { transform: none; } }
 .sp3-backdrop { position: absolute; inset: 0; z-index: 10; display: grid; place-items: center; padding: 16px; background: rgba(2, 6, 23, 0.6); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
 .sp3-modal { position: relative; width: 100%; max-width: 420px; max-height: calc(100vh - 32px); overflow-y: auto; box-sizing: border-box; display: flex; flex-direction: column; align-items: center; gap: 14px; padding: 26px 24px 22px; border-radius: 16px; text-align: center;
   background: linear-gradient(180deg, rgba(30, 41, 59, 0.92) 0%, rgba(15, 23, 42, 0.96) 100%); border: 1px solid rgba(148, 163, 184, 0.18);
@@ -798,3 +835,24 @@ a.btn { text-decoration: none; display: inline-block; }
 .el3-canvas-tag svg { color: #f87171; }
 @media (prefers-reduced-motion: reduce) { .dw-breathe, .dw-action-dot { animation: none; } }
 .dw-wheel { filter: drop-shadow(0 0 2px rgba(239, 68, 68, 0.95)); }
+
+/* Shops queue: "Completed" badge + the row-level export (download) button */
+.done-cell { display: inline-flex; align-items: center; gap: 6px; }
+.row-dl-btn { color: #0f172a; }
+.btn-outline-red {
+  display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 12px;
+  border: 1px solid #fca5a5; background: #fff; color: #dc2626; font-weight: 600; font-size: 14px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.btn-outline-red:hover:not(:disabled) { background: #fef2f2; border-color: #dc2626; transform: translateY(-1px); }
+.btn-outline-red:disabled { opacity: 0.45; cursor: not-allowed; }
+.ws-summary { margin-right: 0; }
+.ws-card-foot .btn-outline-dark { margin-right: auto; } /* Create Print File + Download ZIP on the left, Convert All on the right */
+.btn-outline-dark {
+  display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 12px;
+  border: 1px solid #cbd5e1; background: #fff; color: #0f172a; font-weight: 600; font-size: 14px; cursor: pointer;
+  transition: background 0.15s, border-color 0.15s, transform 0.15s;
+}
+.btn-outline-dark:hover:not(:disabled) { background: #f8fafc; border-color: #64748b; transform: translateY(-1px); }
+.btn-outline-dark:disabled { opacity: 0.45; cursor: not-allowed; }
+.btn-outline-dark[aria-busy="true"] { opacity: 0.8; cursor: progress; }

@@ -1,0 +1,95 @@
+<!doctype html>
+<!-- A LOCAL stand-in for wetransfer.com's send flow, for test_wetransfer.py only. It follows the uploader's expected steps
+     (cookie banner -> Terms gate -> file -> "..." options -> link choice -> "Get a link" -> progress -> link). It proves the
+     uploader's browser mechanics, NOT that WeTransfer's real page looks like this.
+     ?iconmenu=1  the options button is icon-only with NO accessible name (as on the live page, screenshot 2026-09-28), sits
+                  beside a "3 days" button above Transfer, and opens a role=menu of menuitemradio choices
+     ?nolink=1    (with iconmenu) the menu has no link choice - the uploader must fail at link_mode with diagnostics
+     ?blocked=1   a paid-plan screen instead of the link (something the uploader must give up on)
+     The "Your email" field (input[type=email], label "Your email") is required as on the live page: "Get a link" without it
+     shows WeTransfer's hint "We ask for your email to keep the community safe."
+     ?code=1      after submitting, a 6-box e-mailed-code screen; 953GYV (letters AND digits, as WeTransfer's codes are,
+                  upper case) is accepted, anything else is rejected -->
+<html lang="en">
+<head><meta charset="utf-8"><title>Stand-in transfer page</title>
+<style>#panel{width:280px;margin:120px 80px}#row{display:flex;gap:8px;margin-top:40px}#go{display:block;width:100%;margin-top:8px}
+[role=menu]{border:1px solid #ccc;padding:6px}</style></head>
+<body>
+  <div id="cookies"><p>We Care About Your Privacy</p><button onclick="this.parentNode.remove()">Reject All</button></div>
+  <div id="terms"><p>To continue, please agree to our Terms of Service.</p><button onclick="this.parentNode.remove(); show()">I agree</button></div>
+  <main id="panel" hidden>
+    <button id="addmore">Add more <svg width="10" height="10"><circle cx="5" cy="5" r="4"/></svg></button>
+    <input type="file" id="file" style="display:none">
+    <label for="me">Your email</label><input type="email" id="me">
+    <p id="hint"></p>
+    <div id="row">
+      <button id="expiry">3 days</button>
+      <button id="opts"><svg width="16" height="4"><circle cx="2" cy="2" r="2"/><circle cx="8" cy="2" r="2"/><circle cx="14" cy="2" r="2"/></svg></button>
+    </div>
+    <div id="modes" hidden></div>
+    <button id="go">Transfer</button>
+    <p id="progress"></p>
+    <input id="result" readonly>
+  </main>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const blocked = q.has("blocked"), iconmenu = q.has("iconmenu"), nolink = q.has("nolink"), needCode = q.has("code");
+    const opts = document.getElementById("opts"), modes = document.getElementById("modes"), go = document.getElementById("go");
+    function show() { document.getElementById("panel").hidden = false; }
+    if (!iconmenu) opts.setAttribute("aria-label", "More options");
+    function linkChosen() { go.textContent = "Get a link"; modes.hidden = iconmenu ? true : modes.hidden; }
+    opts.onclick = () => {
+      modes.hidden = false;
+      if (iconmenu) {
+        modes.setAttribute("role", "menu");
+        modes.innerHTML = '<div role="menuitemradio" aria-checked="true" tabindex="0">Send email transfer</div>'
+          + (nolink ? '<div role="menuitemradio" aria-checked="false" tabindex="0">Password protect</div>'
+                    : '<div role="menuitemradio" aria-checked="false" tabindex="0" id="lnk">Get transfer link</div>');
+        const l = document.getElementById("lnk");
+        if (l) l.onclick = () => { l.setAttribute("aria-checked", "true"); linkChosen(); };
+      } else {
+        modes.innerHTML = '<label><input type="radio" name="mode" value="email" checked> Send email transfer</label>'
+          + '<label><input type="radio" name="mode" value="link" id="lnk"> Get transfer link</label>';
+        document.getElementById("lnk").onchange = linkChosen;
+      }
+    };
+    go.onclick = () => {
+      const f = document.getElementById("file").files[0];
+      if (!f) { document.getElementById("progress").textContent = "Add a file first"; return; }
+      if (go.textContent !== "Get a link") { document.getElementById("progress").textContent = "email mode"; return; }
+      const me = document.getElementById("me").value.trim();
+      if (!me) { document.getElementById("hint").textContent = "We ask for your email to keep the community safe."; return; }
+      if (blocked) { document.body.innerHTML = "<h1>Limit reached</h1><p>Upgrade to send more.</p>"; return; }
+      if (needCode) { askCode(me, f); return; }
+      upload(f);
+    };
+    function askCode(me, f) {
+      const box = document.createElement("section");
+      box.innerHTML = `<h2>Verify your email</h2><p>Enter the code we sent to ${me}</p>`
+        + [0, 1, 2, 3, 4, 5].map((i) => `<input maxlength="1" autocapitalize="characters" aria-label="Character ${i + 1}">`).join("")
+        + '<button id="verify">Verify</button><p id="codeerr"></p>';
+      document.getElementById("panel").replaceWith(box);
+      const digits = [...box.querySelectorAll("input")];
+      digits.forEach((d, i) => d.addEventListener("input", () => { if (d.value && digits[i + 1]) digits[i + 1].focus(); }));
+      box.querySelector("#verify").onclick = () => {
+        if (digits.map((d) => d.value).join("") !== "953GYV") {
+          box.querySelector("#codeerr").textContent = "That code is incorrect.";
+          digits.forEach((d) => (d.value = ""));
+          return;
+        }
+        box.replaceWith(Object.assign(document.createElement("main"), { id: "panel2",
+          innerHTML: '<p id="progress"></p><input id="result" readonly>' }));
+        upload(f);
+      };
+    }
+    function upload(f) {
+      let pct = 0;
+      const t = setInterval(() => {
+        pct += 25;
+        document.getElementById("progress").textContent = `Uploading ${f.name} ${pct}%`;
+        if (pct >= 100) { clearInterval(t); document.getElementById("result").value = "https://we.tl/t-LOCALstandin" + f.size; }
+      }, 700);
+    }
+  </script>
+</body>
+</html>

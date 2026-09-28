@@ -308,16 +308,43 @@ def ids_of(scene):
 
 def test_normalize_options_defaults_and_validation():
     o = er.normalize_options(["pdf", "png"], None)
-    assert o["pdf"] == {"color_mode": "native", "text": "embed", "bitmap_dpi": 200}
+    assert o["pdf"] == {"color_mode": "native", "text": "embed", "bitmap_dpi": 200, "crop_marks": False, "bleed": False}
+    assert o["cdr"] == {"version": None, "text": "editable"}
     assert o["raster"]["mode"] == "max_px" and o["raster"]["png_background"] == "transparent"
+    assert o["png"]["padding_mm"] == 0 and o["jpeg"]["color"] == "rgb"
     for bad in ({"pdf": {"color_mode": "lab"}}, {"pdf": {"text": "x"}}, {"pdf": {"bitmap_dpi": 123}},
-                {"raster": {"mode": "zoom"}}, {"raster": {"png_background": "red"}}):
+                {"raster": {"mode": "zoom"}}, {"raster": {"png_background": "red"}},
+                {"cdr": {"version": 19}}, {"cdr": {"text": "outline"}}, {"jpeg": {"color": "lab"}},
+                {"png": {"padding_mm": -1}}, {"png": {"padding_mm": 9999}}):
         with pytest.raises(er.ExportOptionError):
             er.normalize_options(["pdf"], bad)
     with pytest.raises(er.ExportOptionError):
         er.normalize_options([], None)
     with pytest.raises(er.ExportOptionError):
         er.normalize_options(["gif"], None)
+
+
+def test_per_format_raster_options_override_the_shared_block():
+    o = er.normalize_options(["png", "jpeg"], {
+        "raster": {"mode": "max_px", "max_px": 4000, "antialias": False},
+        "png": {"mode": "dpi", "dpi": 72, "padding_mm": 25, "png_background": "white"},
+        "jpeg": {"mode": "dpi", "dpi": 150, "color": "cmyk"},
+    })
+    assert (o["png"]["mode"], o["png"]["dpi"], o["png"]["padding_mm"], o["png"]["png_background"]) == ("dpi", 72, 25, "white")
+    assert (o["jpeg"]["dpi"], o["jpeg"]["color"]) == (150, "cmyk")
+    assert o["png"]["antialias"] is False and o["jpeg"]["antialias"] is False      # inherited from `raster`
+    sizes = er.raster_sizes(1000, 500, o, ["png", "jpeg"])
+    # PNG padding widens the exported area by 25 mm on every side: (1000 + 50) mm at 72 dpi
+    assert sizes["png"]["w_px"] == round(1050 / 25.4 * 72) and sizes["png"]["h_px"] == round(550 / 25.4 * 72)
+    assert sizes["jpeg"]["w_px"] == round(1000 / 25.4 * 150)
+    assert er.raster_sizes(1000, 500, o, ["pdf"]) == {}
+
+
+def test_cdr_with_text_as_curves_is_written_last():
+    curves = er.normalize_options(["cdr", "pdf", "png"], {"cdr": {"text": "curves"}})
+    assert er.export_order(["cdr", "pdf", "png"], curves) == ["pdf", "png", "cdr"]
+    assert er.export_order(["cdr", "pdf", "png"], er.normalize_options(["cdr"], None)) == ["cdr", "pdf", "png"]
+    assert [s["key"] for s in er.plan_steps(["cdr", "pdf"], 0, None, curves)] == ["launch", "open", "pdf", "cdr"]
 
 
 def test_resolve_raster_caps_and_modes():
@@ -495,6 +522,96 @@ def test_export_pdf_sets_every_option_before_publishing():
     applied = er.export_pdf(Doc(), er.Path("x.pdf"), {"color_mode": "cmyk", "text": "curves", "bitmap_dpi": 300}, warnings)
     assert applied["ColorMode"] == 1 and applied["TextAsCurves"] is True and applied["EmbedFonts"] is False
     assert applied["ColorResolution"] == 300 and Doc.published[0].endswith("x.pdf") and warnings == []
+
+
+def test_export_pdf_sets_crop_marks_and_bleed_and_warns_when_corel_ignores_one():
+    class Settings:
+        Bleed = 1250
+
+        def __setattr__(self, k, v):
+            object.__setattr__(self, k, False if k == "IncludeBleed" else v)     # this CorelDRAW ignores IncludeBleed
+
+    class Doc:
+        PDFSettings = Settings()
+
+        def PublishToPDF(self, p):
+            pass
+
+    warnings = []
+    applied = er.export_pdf(Doc(), er.Path("x.pdf"), {"color_mode": "cmyk", "text": "embed", "bitmap_dpi": 300,
+                                                     "crop_marks": True, "bleed": True}, warnings)
+    assert applied["CropMarks"] is True and applied["Bleed"] == 1250
+    assert any("IncludeBleed" in w for w in warnings) and not any("CropMarks" in w for w in warnings)
+
+
+def test_export_raster_cmyk_jpeg_and_png_padding():
+    calls, rects = [], []
+
+    class Flt:
+        def Finish(self):
+            pass
+
+    class App:
+        def CreateRect(self, x, y, w, h):
+            rects.append((x, y, w, h))
+            return "rect"
+
+    class Page:
+        LeftX, BottomY, SizeWidth, SizeHeight = 0.0, 0.0, 100.0, 50.0
+
+    class Doc:
+        Application = App()
+        ActivePage = Page()
+
+        def ExportBitmap(self, *a):
+            calls.append(a)
+            return Flt()
+
+    size = {"dpi": 96.0, "w_px": 10, "h_px": 5}
+    er.export_raster(Doc(), er.Path("a.jpg"), "jpeg", size, {"png_background": "white", "antialias": True, "color": "cmyk"})
+    er.export_raster(Doc(), er.Path("a.png"), "png", size, {"png_background": "white", "antialias": True, "color": "cmyk",
+                                                            "padding_mm": 10.0})
+    assert calls[0][3] == 5 and calls[1][3] == 4          # cdrCMYKColorImage for the JPEG only; PNG stays RGB
+    assert rects == [(0.0, 0.0, 100.0, 50.0), (-10.0, -10.0, 120.0, 70.0)]
+
+
+def test_text_to_curves_converts_nested_text_and_reads_the_result_back():
+    class Shape:
+        def __init__(self, sid, typ, kids=(), stuck=False):
+            self.StaticID, self.Type, self.kids, self.stuck = sid, typ, list(kids), stuck
+            self.PowerClip = None
+
+        @property
+        def Shapes(self):
+            return Coll(self.kids)
+
+        def ConvertToCurves(self):
+            if self.stuck:
+                raise RuntimeError("E_FAIL")
+            self.Type = 3
+
+    class Coll:
+        def __init__(self, items):
+            self.items = items
+            self.Count = len(items)
+
+        def Item(self, i):
+            return self.items[i - 1]
+
+    class Layer:
+        IsSpecialLayer = False
+
+        def __init__(self, kids):
+            self.Shapes = Coll(kids)
+
+    class Page:
+        def __init__(self, layer):
+            self.Layers = Coll([layer])
+
+    top, nested, stuck = Shape(1, 6), Shape(3, 6), Shape(4, 6, stuck=True)
+    page = Page(Layer([top, Shape(2, 7, [nested, Shape(5, 3)]), stuck]))
+    assert er.text_to_curves(page) == (2, 1)
+    assert top.Type == 3 and nested.Type == 3 and stuck.Type == 6
 
 
 def test_export_raster_transparency_and_antialiasing():

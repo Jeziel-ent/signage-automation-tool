@@ -34,9 +34,24 @@ class RefusedToStart(Exception):
     """Raised instead of starting a batch when free RAM is too low."""
 
 
+SHOP_TIMEOUT_DEFAULT_S = 45.0
+# Steps that are not the shop's own work: the worker's "starting" beat and launching CorelDRAW (which has its own 45 s
+# Dispatch timeout, corel_util._dispatch_with_timeout). A job's clock starts at its first beat past these.
+_UNTIMED_STEPS = ("starting", "launch")
+
+
+def shop_timeout_s() -> float:
+    """Per-shop conversion time limit: SIGNAGE_SHOP_TIMEOUT_S, default 45 s; 0 or less turns it off."""
+    import os
+    try:
+        return float(os.environ.get("SIGNAGE_SHOP_TIMEOUT_S", SHOP_TIMEOUT_DEFAULT_S))
+    except ValueError:
+        return SHOP_TIMEOUT_DEFAULT_S
+
+
 def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | None = None,
               worker_module: str = "app.corel_worker", skip_memory_check: bool = False,
-              on_progress=None) -> list[dict]:
+              on_progress=None, job_timeout_s: float | None = None) -> list[dict]:
     """jobs: list of {"master_path", "shop", "out_dir"} (JSON-safe strings).
     Returns one result dict per job, in order - any job the worker never
     reached (because it was killed) gets a synthetic error result naming
@@ -48,6 +63,12 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     each job's result appears in the worker's results file, so a long batch
     can print live progress instead of only reporting everything at once
     when this function finally returns.
+
+    `job_timeout_s` (optional; shop conversions pass `shop_timeout_s()`) is a hard limit per JOB, on top of the
+    no-progress timeout: a job still unfinished that long after its first heartbeat past "starting"/"launch" gets the
+    worker's whole process tree (and so its CorelDRAW) killed, even if it keeps beating - a hidden modal dialog, a
+    file lock or a hung COM call inside one step otherwise holds the queue for the full per-step timeout. The jobs
+    the killed worker never reached come back as "not started"; the caller retries them in a fresh worker.
 
     `worker_module` and `skip_memory_check` exist for tests (a fake worker
     that just hangs, to exercise the timeout/kill path without needing real
@@ -79,7 +100,7 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
                 proc.pid, len(jobs), overall_timeout_s)
 
     last_progress_at = time.time()
-    progress_state = {"count": 0, "heartbeat_mtime": None}
+    progress_state = {"count": 0, "heartbeat_mtime": None, "job_index": None, "job_started_at": None}
 
     def _check_progress() -> bool:
         """Reads any new results/heartbeat activity, fires on_progress for
@@ -110,14 +131,34 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
             if mtime != progress_state["heartbeat_mtime"]:
                 progress_state["heartbeat_mtime"] = mtime
                 progressed = True
+                hb = _read_json(heartbeat_path) or {}
+                idx = hb.get("job_index")
+                if (isinstance(idx, int) and idx >= progress_state["count"] and hb.get("step") not in _UNTIMED_STEPS
+                        and idx != progress_state["job_index"]):
+                    progress_state["job_index"], progress_state["job_started_at"] = idx, time.time()
         return progressed
 
     killed_for = None
+    timed_out = None  # (job index, seconds) when the per-job limit killed the worker
     while True:
         if _check_progress():
             last_progress_at = time.time()
 
         if proc.poll() is not None:
+            break
+
+        idx, started = progress_state["job_index"], progress_state["job_started_at"]
+        if (job_timeout_s and job_timeout_s > 0 and started is not None and idx == progress_state["count"]
+                and time.time() - started > job_timeout_s):
+            killed_for = _read_json(heartbeat_path)
+            timed_out = (idx, job_timeout_s)
+            logger.warning("worker pid=%s: job %d exceeded its %.0fs limit (at step %s); killing the worker and its CorelDRAW",
+                           proc.pid, idx, job_timeout_s, (killed_for or {}).get("step"))
+            _kill_tree(proc.pid)
+            try:
+                proc.wait(timeout=15)
+            except Exception:
+                pass
             break
 
         if time.time() - last_progress_at > overall_timeout_s:
@@ -141,7 +182,11 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     if len(results) < len(jobs):
         stuck_index = len(results)
         for i in range(stuck_index, len(jobs)):
-            if i == stuck_index and killed_for:
+            if i == stuck_index and timed_out:
+                step = (killed_for or {}).get("step")
+                reason = (f"timed out after {timed_out[1]:.0f}s" + (f" at step '{step}'" if step else "")
+                          + " - CorelDRAW was stopped (a hidden dialog, a locked file or a hung COM call); convert again")
+            elif i == stuck_index and killed_for:
                 reason = (f"worker killed after {overall_timeout_s:.0f}s with no progress "
                           f"(stuck on step '{killed_for.get('step')}')")
             elif i == stuck_index:

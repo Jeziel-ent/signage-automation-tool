@@ -119,9 +119,35 @@ def test_status_reads_only_this_shops_beat_from_the_shared_batch_heartbeat(clien
     try:
         a, b = (client.get(f"/api/v2/shops/{s}/status").json() for s in ids)
         assert b["step"] == "pdf" and b["progress_pct"] == m._STEP_PERCENT["pdf"]
-        assert a["step"] == "starting"          # shop 0's own beat is not the one in the file
+        # the worker is past shop 0 (its result is being stored): nearly done - it used to fall back to "starting", 5 %
+        assert a["step"] == "saving" and a["progress_pct"] == 99
     finally:
         m._batch_slots.clear()
+        m._progress_peak.clear()
+
+
+def test_a_converting_shops_progress_never_goes_backwards(client, fake_corel, tmp_path):
+    """A batch member that failed is retried alone: its steps start again, but the % shown does not drop."""
+    m = _main()
+    job, ids = _setup(client, 1)
+    sid = ids[0]
+    batch_hb, retry_hb = tmp_path / "batch.heartbeat", tmp_path / "retry.heartbeat"
+    m.db.set_shop_status(sid, "converting", step="starting")
+    try:
+        m._batch_slots[sid] = (batch_hb, 0)
+        batch_hb.write_text(json.dumps({"job_index": 0, "step": "pdf"}), encoding="utf-8")
+        assert client.get(f"/api/v2/shops/{sid}/status").json()["progress_pct"] == 88
+        m._batch_slots[sid] = (retry_hb, 0)                                   # retried on its own: back at "launch"
+        retry_hb.write_text(json.dumps({"job_index": 0, "step": "launch"}), encoding="utf-8")
+        assert client.get(f"/api/v2/shops/{sid}/status").json()["progress_pct"] == 88
+        retry_hb.write_text(json.dumps({"job_index": 0, "step": "png"}), encoding="utf-8")
+        assert client.get(f"/api/v2/shops/{sid}/status").json()["progress_pct"] == 97
+        m.db.set_shop_status(sid, "queued")                                   # a new conversion starts from 0 again
+        assert client.get(f"/api/v2/shops/{sid}/status").json()["progress_pct"] == 0
+        assert sid not in m._progress_peak
+    finally:
+        m._batch_slots.clear()
+        m._progress_peak.clear()
 
 
 def test_mock_engine_still_converts_one_shop_per_task(client):  # noqa: F811
@@ -142,3 +168,66 @@ def test_shop_statuses_returns_many_shops_in_one_call_and_skips_unknown_ids(clie
     body = r.json()
     assert set(body) == set(ids) and all(body[s]["status"] == "queued" for s in ids)
     assert client.get("/api/v2/shop-statuses").json() == {}
+
+
+def test_conversions_run_with_the_per_shop_time_limit(client, fake_corel, monkeypatch):
+    m = _main()
+    seen = []
+    real = m.corel_supervisor.run_batch
+    monkeypatch.setattr(m.corel_supervisor, "run_batch", lambda jobs, path, **kw: (seen.append(kw), real(jobs, path, **kw))[1])
+    monkeypatch.delenv("SIGNAGE_SHOP_TIMEOUT_S", raising=False)
+    job, ids = _setup(client, 1)
+    m._v2_convert_worker(ids[0], job)
+    assert seen[0]["job_timeout_s"] == 45 and seen[0]["overall_timeout_s"] == 120
+    monkeypatch.setenv("SIGNAGE_SHOP_TIMEOUT_S", "0")              # 0 turns the limit off: the supervisor's defaults apply
+    assert m._convert_limits() == {}
+
+
+def test_a_timed_out_later_shop_and_the_ones_it_blocked_are_retried_in_fresh_workers(client, fake_corel):
+    """What the supervisor returns after killing a hung shop: that shop "timed out", the rest "not started"."""
+    calls, plan = fake_corel
+    plan[0] = ["done", "error", "error"]
+    job, ids = _setup(client, 3)
+    for sid in ids:
+        _main()._v2_convert_worker(sid, job)
+    assert calls == [["S0", "S1", "S2"], ["S1"], ["S2"]]
+    assert [_status(client, s) for s in ids] == ["done"] * 3
+
+
+def test_startup_fails_work_left_over_by_the_previous_server(client, fake_corel):
+    """Queued/converting rows of a server that was restarted can never finish - the page polled them forever."""
+    m = _main()
+    job, ids = _setup(client, 3)                                    # all queued
+    m.db.set_shop_status(ids[0], "converting", step="png")
+    m.db.set_shop_status(ids[2], "done")
+    (m.CONVERT_RUNS / "stale.heartbeat").write_text("{}", encoding="utf-8")
+    m._recover_interrupted_work()
+    rows = [client.get(f"/api/v2/shops/{s}/status").json() for s in ids]
+    assert [r["status"] for r in rows] == ["failed", "failed", "done"]
+    assert "restarted" in rows[0]["error"]
+    assert not (m.CONVERT_RUNS / "stale.heartbeat").exists()
+    m._convert_queue.clear()
+
+
+def test_status_payloads_stay_light(client, fake_corel):
+    """Profiled at 1000 shops: /shop-statuses sent every done shop's full report (755 KB per 50-shop poll), /status sent
+    it twice (raw + parsed), /jobs/{id} sent every report (9 MB). The page reads none of them."""
+    m = _main()
+    job, ids = _setup(client, 1)
+    m._v2_convert_worker(ids[0], job)
+    one = client.get(f"/api/v2/shops/{ids[0]}/status").json()
+    assert one["report"] is not None and "report_json" not in one
+    many = client.get(f"/api/v2/shop-statuses?ids={ids[0]}").json()[ids[0]]
+    assert many["status"] == "done" and "report" not in many and "report_json" not in many
+    assert all("report_json" not in s for s in client.get(f"/api/v2/jobs/{job}").json()["shops"])
+
+
+def test_step_estimates_average_timings_and_skip_malformed_reports(client, fake_corel):
+    m = _main()
+    job, ids = _setup(client, 3)
+    with m.db._conn() as conn:
+        conn.execute("UPDATE shops SET report_json = ? WHERE id = ?", (json.dumps({"timings_s": {"pdf": 1.0}}), ids[0]))
+        conn.execute("UPDATE shops SET report_json = ? WHERE id = ?", (json.dumps({"timings_s": {"pdf": 3.0, "png": 2}}), ids[1]))
+        conn.execute("UPDATE shops SET report_json = ? WHERE id = ?", ("{not json", ids[2]))
+    assert client.get("/api/v2/step-estimates").json() == {"pdf": 2.0, "png": 2.0}
+    m._convert_queue.clear()

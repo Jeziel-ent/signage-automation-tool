@@ -349,7 +349,8 @@ def test_export_zip_bundles_every_file_under_the_shop_name(client):
 def test_export_zip_name_is_filename_safe_and_keeps_other_scripts():
     from app.main import _zip_name
     assert _zip_name("Sri Kumar / Sons: #1") == "Sri_Kumar_Sons_1_Signage_Export.zip"
-    assert _zip_name("\u0bb8\u0bcd\u0bb0\u0bc0 \u0b95\u0bbe\u0bb0\u0bcd") .endswith("_Signage_Export.zip")
+    # every Tamil vowel sign and the virama survive (\w alone dropped them)
+    assert _zip_name("\u0bb8\u0bcd\u0bb0\u0bc0 \u0b95\u0bbe\u0bb0\u0bcd") == "\u0bb8\u0bcd\u0bb0\u0bc0_\u0b95\u0bbe\u0bb0\u0bcd_Signage_Export.zip"
     assert _zip_name("  ") == "Shop_Signage_Export.zip"
 
 

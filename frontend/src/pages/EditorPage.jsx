@@ -7,7 +7,8 @@ import LayersPanel from "../editor/LayersPanel.jsx";
 import ShopDetailsPanel from "../editor/ShopDetailsPanel.jsx";
 import PropertiesPanel from "../editor/PropertiesPanel.jsx";
 import PageResizeDialog from "../editor/PageResizeDialog.jsx";
-import ExportDialog from "../editor/ExportDialog.jsx";
+import FontSubstituteModal from "../editor/FontSubstituteModal.jsx";
+import { loadSession, nextMissingFont, saveSession } from "../editor/fontSubs.js";
 import OrientationControl from "../editor/OrientationControl.jsx";
 import { DIM, LeftDimension, LeftRuler, RULER, TopDimension, TopRuler } from "../editor/Rulers.jsx";
 import { Fit, Redo, Undo, ZoomIn, ZoomOut } from "../editor/icons.jsx";
@@ -16,7 +17,7 @@ import { cloneWithNewIds, shiftNode, unionBox } from "../editor/model.js";
 import { applyOps, buildIndex } from "../editor/ops.js";
 import { UNIT_NAMES, fmt, fromUnit, toUnit, UNITS } from "../editor/units.js";
 import { fitView, zoomAt } from "../editor/view.js";
-import { ensureFont, missingFonts, sceneFonts } from "../utils/fontLoader.js";
+import { ensureFont, fontSourceDetail, isWebOnly, missingFonts, sceneFonts } from "../utils/fontLoader.js";
 // Static, not lazy: it is small (plain SVG, no three.js since the 2D rewrite) and must paint at once - a lazy chunk added a
 // second network round trip before anything showed.
 import EditorLoader from "../components/EditorLoader.jsx";
@@ -25,8 +26,9 @@ const FONT_SOURCE = {
   loading: "loading…",
   local: "installed in this browser",
   server: "loaded from the server's installed copy",
-  google: "loaded from Google Fonts",
-  missing: "not available - edited text in this font is drawn in a fallback font (the export still uses CorelDRAW's fonts)",
+  google: "loaded from Google Fonts - for this preview only: the server does not have it, so exports substitute it",
+  fontsource: "downloaded from Fontsource (open-licensed web fonts) - for this preview only: the server does not have it, so exports substitute it",
+  missing: "not found anywhere (this browser, the server, Google Fonts, Fontsource) - drawn in a fallback font; exports use CorelDRAW's substitute",
 };
 
 const PX_PER_MM_100 = 96 / 25.4; // CorelDRAW's "100%" is 96 dpi
@@ -58,7 +60,7 @@ export default function EditorPage() {
   const [shop, setShop] = useState(null);
   const [pageChange, setPageChange] = useState(null); // {w, h} in mm while the page-size dialog is open
   const [pageKey, setPageKey] = useState(0);
-  const [showExport, setShowExport] = useState(false);
+  const [closing, setClosing] = useState(false); // "Save Changes" in flight
   const [editing, setEditing] = useState(null); // id of the text object being typed into
   const [converting, setConverting] = useState(false); // an orientation-conversion request is in flight
   const lastNudge = useRef({ at: 0 });
@@ -175,6 +177,94 @@ export default function EditorPage() {
   const fontEntries = Object.entries(fontStatus).filter(([f]) => fontKey.split("\n").includes(f));
   const fontsMissing = missingFonts(Object.fromEntries(fontEntries));
   const fontsLoading = fontEntries.some(([, s]) => s === "loading");
+  // found on the web (Google Fonts / Fontsource): the preview is right, but CorelDRAW on the server - which writes the exports -
+  // does not have it. Not a reason for the popup (the search found it), but said in the footer, which offers a replacement.
+  const fontsWebOnly = fontEntries.filter(([, st]) => isWebOnly(st)).map(([f]) => f);
+
+  // "Missing Font Detected": a substitute per missing font - permanent ones saved for this shop on the server (applied in
+  // CorelDRAW on every export), temporary ones only in this tab. Both make the canvas draw that text in the substitute.
+  const [permSubs, setPermSubs] = useState({}); // original -> substitute (server)
+  const [session, setSession] = useState(() => loadSession(shopId)); // { temp: {original: substitute}, dismissed: [...] }
+  const [fontDialog, setFontDialog] = useState(null); // a font the person reopened from the footer
+  useEffect(() => {
+    let alive = true;
+    fetch(`/api/fonts/substitutions?shop_id=${encodeURIComponent(shopId)}`)
+      .then((r) => (r.ok ? r.json() : { substitutions: {} }))
+      .then((b) => alive && setPermSubs(b.substitutions || {}))
+      .catch(() => {});
+    return () => { alive = false; };
+  }, [shopId]);
+  const fontSubs = useMemo(() => {
+    const out = {};
+    for (const [orig, font] of Object.entries(permSubs)) out[orig] = { font, permanent: true };
+    for (const [orig, font] of Object.entries(session.temp)) out[orig] = { font, permanent: false };
+    return out;
+  }, [permSubs, session.temp]);
+  const subFontsKey = Object.values(fontSubs).map((v) => v.font).join("\n");
+  useEffect(() => { // the browser must be able to draw the substitutes too (the server's copy, when not installed here)
+    for (const f of subFontsKey.split("\n").filter(Boolean)) ensureFont(f);
+  }, [subFontsKey]);
+  const updateSession = (next) => {
+    setSession(next);
+    saveSession(shopId, next.temp, next.dismissed);
+  };
+  // only once the loading screen has gone - otherwise the popup would open behind it
+  const pendingFont = !fontsLoading && load.phase === "ready" && loaderDone ? nextMissingFont(fontsMissing, fontSubs, session.dismissed) : null;
+  const dialogFont = fontDialog || pendingFont;
+  const dialogList = fontsMissing.length ? fontsMissing : dialogFont ? [dialogFont] : [];
+  const installedFonts = useMemo(() => [...new Set(fonts.fonts || [])].sort((a, b) => a.localeCompare(b)), [fonts]);
+  const sampleFor = (family) => {
+    if (!scene || !family) return "";
+    const stack = scene.layers.flatMap((l) => l.children);
+    while (stack.length) {
+      const n = stack.pop();
+      if (n.text && n.text.font && n.text.font.toLowerCase() === family.toLowerCase() && n.text.content) return n.text.content.split(/\r|\n/)[0];
+      if (n.children) stack.push(...n.children);
+    }
+    return "";
+  };
+  async function applySubstitute(original, substitute, permanent) {
+    if (permanent) {
+      const r = await fetch("/api/fonts/substitute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ shop_id: shopId, original_font: original, substitute_font: substitute, is_permanent: true }),
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(typeof b.detail === "string" ? b.detail : `HTTP ${r.status}`);
+      setPermSubs(b.substitutions || {});
+      const temp = { ...session.temp };
+      delete temp[original];
+      updateSession({ ...session, temp });
+    } else {
+      if (permSubs[original]) await removePermanent(original); // the person chose "this session only" instead
+      updateSession({ ...session, temp: { ...session.temp, [original]: substitute } });
+    }
+    setFontDialog(null);
+    say(`${original} is now drawn in ${substitute}${permanent ? " - saved for this shop's exports" : " for this session"}.`);
+  }
+  async function removePermanent(original) {
+    const r = await fetch(`/api/fonts/substitute?shop_id=${encodeURIComponent(shopId)}&original_font=${encodeURIComponent(original)}`, { method: "DELETE" });
+    const b = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(typeof b.detail === "string" ? b.detail : `HTTP ${r.status}`);
+    setPermSubs(b.substitutions || {});
+  }
+  function dismissFont(original) { // "Cancel / Use System Default": keep CorelDRAW's own render; not asked again this session
+    if (!session.dismissed.includes(original)) updateSession({ ...session, dismissed: [...session.dismissed, original] });
+    setFontDialog(null);
+  }
+  async function removeSubstitute(original) {
+    try {
+      if (permSubs[original]) await removePermanent(original);
+      const temp = { ...session.temp };
+      delete temp[original];
+      updateSession({ temp, dismissed: session.dismissed.includes(original) ? session.dismissed : [...session.dismissed, original] });
+      setFontDialog(null);
+      say(`${original}: substitution removed - CorelDRAW's own render is shown again.`);
+    } catch (e) {
+      say(`Could not remove the substitution: ${e.message}`);
+    }
+  }
 
   useEffect(() => {
     if (scene && !fitted.current && sizeMeasured.current) {
@@ -311,6 +401,35 @@ export default function EditorPage() {
       return false;
     }
   }, [ops, cursor, jobId, shopId, say]);
+
+  // "Save Changes": save the edit list now, tell the Automation tab (which opened this one), then close this tab. Exporting
+  // happens from the shop's row there (the download button), with the edits saved here.
+  const saveChanges = useCallback(async () => {
+    if (closing) return;
+    setClosing(true);
+    if (!(await flush())) {
+      setClosing(false); // flush() already showed why
+      return;
+    }
+    try {
+      const ch = new BroadcastChannel("signage-editor");
+      ch.postMessage({ type: "saved", jobId, shopId, ops: cursor });
+      ch.close();
+    } catch {
+      /* no BroadcastChannel: the main tab just is not told */
+    }
+    try {
+      if (window.opener && !window.opener.closed) window.opener.focus();
+    } catch {
+      /* cross-origin or gone */
+    }
+    window.close();
+    // Browsers only let a script close a tab that a script opened; if this one stays open, say the save worked.
+    setTimeout(() => {
+      setClosing(false);
+      say("Changes saved. This tab could not close itself - close it and return to the Automation tab.");
+    }, 400);
+  }, [closing, flush, jobId, shopId, cursor, say]);
 
   useEffect(() => {
     if (load.phase !== "ready") return undefined;
@@ -551,8 +670,8 @@ export default function EditorPage() {
           <input type="checkbox" checked={showRender} onChange={(e) => setShowRender(e.target.checked)} /> Corel page render
         </label>
         <span className="ed-top-spacer" />
-        <button className="btn" onClick={() => setShowExport(true)}>
-          Save and Generate
+        <button className="btn" onClick={saveChanges} disabled={closing} title="Save your edits and close the editor (export from the shop's row)">
+          {closing ? "Saving..." : "Save Changes"}
         </button>
       </div>
 
@@ -575,6 +694,7 @@ export default function EditorPage() {
               showRender={showRender}
               snap={snap}
               fonts={fonts}
+              fontSubs={fontSubs}
               textPreview={textPreview}
               editingId={editing}
               onEditText={startEdit}
@@ -608,30 +728,48 @@ export default function EditorPage() {
           <span
             className={fontsMissing.length ? "ed-fonts-missing" : undefined}
             title={
-              fontEntries.map(([f, s]) => `${f}: ${FONT_SOURCE[s] || s}`).join("\n") +
-              "\n\nOnly edited text is drawn by the browser; everything else is CorelDRAW's own render."
+              fontEntries.map(([f, s]) => `${f}: ${FONT_SOURCE[s] || s}${fontSourceDetail(f) ? ` [${fontSourceDetail(f)}]` : ""}${fontSubs[f] ? ` -> drawn in ${fontSubs[f].font} (${fontSubs[f].permanent ? "saved for this shop" : "this session"})` : ""}`).join("\n") +
+              "\n\nOnly edited or substituted text is drawn by the browser; everything else is CorelDRAW's own render."
             }
           >
-            {fontsLoading
-              ? "Loading fonts…"
-              : fontsMissing.length
-                ? `Font${fontsMissing.length > 1 ? "s" : ""} missing: ${fontsMissing.join(", ")}`
-                : `Fonts: all ${fontEntries.length} available`}
+            {fontsLoading ? (
+              "Loading fonts…"
+            ) : fontsMissing.length ? (
+              <button type="button" className="ed-fonts-btn" onClick={() => setFontDialog(fontsMissing[0])} title="Choose a replacement for the missing font">
+                {`Font${fontsMissing.length > 1 ? "s" : ""} missing: ${fontsMissing
+                  .map((f) => (fontSubs[f] ? `${f} → ${fontSubs[f].font}${fontSubs[f].permanent ? " (saved)" : ""}` : f))
+                  .join(", ")}`}
+              </button>
+            ) : fontsWebOnly.length ? (
+              <button type="button" className="ed-fonts-btn ed-fonts-webonly" onClick={() => setFontDialog(fontsWebOnly[0])}
+                title="Shown with a web font; the server does not have it, so exports substitute it - click to choose the replacement exports use">
+                {`Fonts: all ${fontEntries.length} available · preview only: ${fontsWebOnly
+                  .map((f) => (fontSubs[f] ? `${f} → ${fontSubs[f].font}${fontSubs[f].permanent ? " (saved)" : ""}` : f))
+                  .join(", ")}`}
+              </button>
+            ) : (
+              `Fonts: all ${fontEntries.length} available`
+            )}
           </span>
         )}
         <span>{ops.length ? `${cursor}/${ops.length} operations` : "No edits"}</span>
         <span>{scene.stats && scene.stats.mock ? "Mock scene (no CorelDRAW)" : `${scene.stats?.leaves ?? "?"} rendered objects`}</span>
       </footer>
 
-      {showExport && (
-        <ExportDialog
-          jobId={jobId}
-          shopId={shopId}
-          scene={scene}
-          opsCount={cursor}
-          fonts={fonts}
-          flush={flush}
-          onClose={() => setShowExport(false)}
+
+      {dialogFont && (
+        <FontSubstituteModal
+          key={dialogFont}
+          font={dialogFont}
+          webSource={isWebOnly(fontStatus[dialogFont]) ? fontSourceDetail(dialogFont) || FONT_SOURCE[fontStatus[dialogFont]].split(" - ")[0] : null}
+          position={Math.max(1, dialogList.indexOf(dialogFont) + 1)}
+          total={dialogList.length}
+          sample={sampleFor(dialogFont)}
+          installed={installedFonts}
+          current={fontSubs[dialogFont] || null}
+          onApply={(sub, permanent) => applySubstitute(dialogFont, sub, permanent)}
+          onCancel={() => dismissFont(dialogFont)}
+          onRemove={fontSubs[dialogFont] ? () => removeSubstitute(dialogFont) : null}
         />
       )}
 

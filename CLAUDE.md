@@ -414,6 +414,160 @@ cross-machine font differences are only warned about, not fixed.
 (driven by embedded bitmaps), PNG/JPEG 1-3 s at 4000 px; one CorelDRAW
 instance per export, same free-RAM floor as everything else.
 
+**Update: export moved to the Shops queue row; the editor only saves.** The editor toolbar's "Save and Generate" is now
+**"Save Changes"** (`EditorPage.saveChanges`): it flushes the op list (PUT .../ops), posts `{type: "saved", jobId, shopId}` on
+`BroadcastChannel("signage-editor")`, focuses `window.opener` and calls `window.close()` (allowed because "Open in editor" uses
+`window.open`); if the browser refuses, a toast says the save worked. The Automation page listens and shows a queue notice. A done
+row's Convert cell has a Download icon that opens `components/ExportModal.jsx` ("Export Signage Files"; `editor/ExportDialog.jsx`
+was deleted). It builds the scene if the board was never opened in the editor (202 progress), reads `/replayed` for the page size, and
+offers four cards, each with a checkbox and its own single-format download: **PDF** (Print-Ready CMYK / Digital Web RGB, image dpi
+150/300/600, crop marks, include bleed, text as curves), **JPG** (RGB/CMYK, 72/150/300 dpi), **CDR** (v21 recommended / v27 native = 0 /
+X7 = 17, editable text / text as curves), **PNG** (transparent, 72/150/300 dpi, padding 0/10/25/50 mm). "Download Selected" exports
+the ticked formats and auto-downloads the zip (or the single file); per-file links and "Download All (.zip)" stay. A dpi that would
+break the 20000 px / 200 MP limits is disabled; the default is the largest of 72/150 that fits. Mapping: `utils/exportOptions.js`
+(tested). Backend (`export_replay.normalize_options`): `png`/`jpeg` blocks override the shared `raster` block per format
+(`raster_sizes`); PDF `CropMarks`/`IncludeBleed` (both exist on PDFSettings in the v27 typelib, checked with `LoadRegTypeLib`; set and
+read back like the other settings, the bleed LIMIT stays CorelDRAW's default and is reported); JPEG CMYK = `cdrCMYKColorImage` (5),
+read back with PIL (`report.jpeg_mode`, warning if not CMYK); PNG padding widens `_page_export_area` by N mm per side; CDR
+`version` goes through `save_cdr(doc, path, version)` / `check_cdr_format(..., version)`; CDR text-as-curves converts every text shape
+(groups and PowerClips via `index_doc`) and counts what is left (`report.cdr_text_to_curves`), and the CDR is then written LAST
+(`export_order`, also in `plan_steps`) so the PDF/PNG/JPEG keep editable text. **Not offered: JPEG quality**. COM cannot control it
+(see above), and the JPG card says so. **Not verified live in CorelDRAW:** crop marks/bleed, CMYK JPEG, padding, X7/native saves
+and text-to-curves were tested with fake COM + a mock-engine browser run only (Edge via playwright-core: modal, all controls,
+request body, zip + single-file downloads, Esc, Save Changes closing the tab and the notice in the main tab); each has a
+read-back warning for when CorelDRAW ignores it. Known layout issue (predates this): at 1440 px the Shops table is wider than its
+card once a shop is done (727 px in 617), so the Editor/trash columns need a sideways scroll; the Download icon adds 30 px.
+
+**"Create Print File" - the Print Details summary sheet (`app/print_sheet.py`, `POST /api/print-sheet/generate`,
+`components/PrintFileModal.jsx`).** A button at the bottom-left of the Shops Queue (disabled until a shop is converted) opens "Create
+Print File Details": header/title (prefilled `<BRAND> - ACP BOARD`), project no, date (`<input type="date">`, today in LOCAL time -
+`utils/printSheet.todayISO`, not `toISOString`), location, board type (free text + suggestions), a checklist of the queue's converted
+shops (all ticked, numbered by their S.no) with live Total Qty / Total Sq.Feet, and PDF/JPEG. The server renders the sheet with **Pillow**
+(no CorelDRAW, so it never waits behind conversions; ReportLab is not installed) after the reference
+`assets/DT-2026-00065__...print-details-2...jpg`: A4 landscape at 300 dpi (3508x2480 - the reference's own ratio), geometry measured
+off the reference in 2000-px-wide coordinates (`_R`), red slanted "PRINT DETAILS" block + grey title band, DATE / PROJECT NO (value in
+red) with the location right-aligned, divider, red board-type banner + QTY / Sq.feet, a drawn yellow folder with a red "CDR" emblem
+captioned "CDR & PDF", and per shop a bottom-aligned thumbnail with a drop shadow and a caption `05 - 214 X 36 Inch - ACP BOARD - NAME`
+(mixed units: `10 Feet X 48 Inch`). Headings are Bahnschrift Bold SemiCondensed (closest installed match), captions Segoe UI, Tamil
+text Nirmala UI; off Windows DejaVu / Pillow's default. Qty = one per shop; Sq.feet = sum of each board's area, whole feet
+(reference: 26676.25 sq in = 185.25 -> "185"), one decimal below 10. The grid grows from 3 to 6 columns, then continues on further
+pages that repeat the header (multi-page PDF; multi-page JPEG = zip). Thumbnail = the shop's latest finished editor export PNG/JPEG,
+else its conversion preview PNG; MockEngine's SVG preview draws a "No preview available" box. Files are rendered to a temp dir and
+removed after sending; the name is `Print_Details_<project>_<DD.MM.YYYY>.<ext>`. Deviations: the module is `app/print_sheet.py`, not
+`app/engines/print_sheet_generator.py` (an `app/engines/` package would shadow `app/engines.py`); the caption uses the sheet's board
+type for every shop (the reference shows ACP-LIT under an ACP BOARD header - there is no per-shop board type field). Limits: no
+complex-script shaping (Pillow without libraqm), so Tamil in a name renders with unshaped conjuncts; the PDF is a raster page. Tests:
+`test_print_sheet.py` (11: reference totals, captions, date, grid/pagination, pixel checks of the layout colours, PDF/JPEG/zip, API
+validation 404/409/422, thumbnail preference), `printSheet.test.mjs` (4). Checked in Edge against a mock backend: button disabled
+until a conversion, date = today, only converted shops listed, totals update on untick, JPEG download named from the server; sheets
+rendered from real CorelDRAW previews viewed side by side with the reference.
+**Update: the Print Details sheet is A4 PORTRAIT now (supersedes the landscape layout described just above).** 210 x 297 mm =
+595.28 x 841.89 pt, 15 mm margins, geometry in points (`_P` = 300/72; canvas 2480 x 3508 px; the PDF's MediaBox reads 595.2 x 841.92
+from whole-pixel rounding). Sections: header 120 pt (red rounded "PRINT DETAILS" badge + the title in near-black bold, a red rule, a
+#F4F4F4 bar with DATE / PROJECT NO - values red - and the location right-aligned), summary 40 pt (red pill with the board type,
+"QTY : n Nos", "Total Sq.feet : n" right-aligned), the shop grid, footer 30 pt ("Generated DD.MM.YYYY HH:MM", "Page X of Y"). Grid
+(`plan_grid`): 2 columns x 3 rows (cards ~249 x 171 pt) when every shop fits, else 3 x 4 per page (12 per page, further pages repeat
+header and summary). Card: white, #E0E0E0 outline, 4 pt radius; the preview aspect-fitted on #F9F9F9; "CDR" / "PDF" chips when those
+files exist (`SheetShop.has_cdr/has_pdf`, from `asset_zip.pick_sources` - the same rule as the ZIP); the caption wrapped to 3 lines.
+Fonts Arial / Arial Bold (the spec's Helvetica/Arial), Nirmala UI for Tamil. The reference-matched landscape design (Bahnschrift, slanted
+banners, folder graphic) was replaced, not kept as an option. Tests: `test_print_sheet.py` (12 - grid geometry inside the margins,
+pixel checks of each section). Rendered from real previews at 4 and 9 shops and viewed.
+**Update 2: A4 portrait IN THE REFERENCE'S STYLE (supersedes the rounded-badge portrait layout just above).** The reference's own
+elements are laid out in its units (the reference scaled to 2000 wide) and mapped onto the portrait page at `K` = 0.372 pt per unit
+(the page is `REF_W` = 1600 units wide): red angled "PRINT DETAILS" block + grey title band (0-125), DATE / PROJECT NO (values red, caps
+at 188 / 308) with the location / region right-aligned on the project line, a full-width dark rule (428-432), the red angled board-type bar
+(430-532) with QTY / Sq.feet, a thin dark frame round the page; Bahnschrift Bold SemiCondensed headings, Segoe UI captions (Nirmala UI for
+Tamil). Grid from unit 568: card #1 is ALWAYS the yellow "CDR & PDF" folder (drawn by `_draw_folder` from the reference's folder geometry,
+mapped into the box - `assets/folder_cdr_icon.png` did not exist and a drawing stays crisp), then one card per shop, previews bottom-aligned
+in their box with a soft shadow (as on the reference), captions centred, at most 2 lines (`_wrap` ends an overflow with "..."). `plan_grid(n)`
+counts the folder: 2 columns x 3 rows (box 150 pt) while everything fits on one page, else 3 x 3 (box 120 pt, 9 per page); further pages
+repeat the header and show "Page X of Y" (no footer otherwise - the reference has none). The CDR/PDF chips and the generated-time footer of
+the previous portrait version were dropped to match the reference; `SheetShop.has_cdr/has_pdf` remain (still filled by the endpoint) but are
+not drawn. Tests: `test_print_sheet.py` (grid incl. the folder, 2-line captions, pixel checks of the angled blocks, rule, folder-first and
+bottom-aligned previews).
+`print_sheet` is imported INSIDE the route (like every other Pillow use in the app), so a Python without Pillow still starts the
+server and only this route answers 503 with the pip command. A "Not Found" from this button means the running server predates the
+route - the dev server here runs without `--reload`, so restart it. (Its process list shows the base Python 3.10 exe, which has no
+packages; that is only the Windows venv launcher's child - the parent is `.venv\Scripts\python.exe`, which has Pillow.)
+
+**"Generate ZIP" (`app/asset_zip.py`, `components/GenerateZipModal.jsx`; supersedes the earlier one-click "Download ZIP").**
+Next to "Create Print File". Opening the modal POSTs `/api/export-zip` (the shops as they were when it opened - the page's
+`printable` array is new on every render, and StrictMode runs effects twice in dev, so a ref allows ONE build per attempt), which
+builds `Signage_Assets_Export.zip` = `<NN>_<SHOP>.jpg` at the root, `CDR&PDF/cdr/<NN>_<SHOP>.cdr`, `CDR&PDF/pdf/<NN>_<SHOP>.pdf`
+(`asset_zip.FILES_DIR`; NN = queue S.no; names keep any script WITH combining marks - `\w` alone drops Tamil vowel signs and
+the virama; the same bug in the per-export `_zip_name` was fixed) and answers `{token, download, summary}`. The archive stays on
+the server for the modal: "Download ZIP File" is a plain link to `GET /api/export-zip/{token}` (streamed to disk, never held in
+page memory - CDRs are 9-300 MB; any number of downloads) and the WeTransfer card uploads the same file. Closing the modal sends
+`DELETE /api/export-zip/{token}`; if an upload is still reading it, it is removed when that upload ends; anything left is swept
+after an hour. Sources per shop and format (`pick_sources`): the newest finished editor export of that format whose `ops` equal
+the shop's CURRENT saved edits, else the conversion's file, with a note when the shop has edits no export contains. The JPG is an
+export's JPEG, or a PNG (export, else the conversion preview) re-encoded as JPEG q95 on white - CorelDRAW's pixels, but a conversion
+preview is only 36-150 dpi (1600 px target; a 120 in board is 4320 px), so print-resolution JPGs need an editor export; the
+modal says "Packaging JPGs...", not "high-res". Missing files (MockEngine: no PDF, SVG preview) are listed in the modal, never faked.
+
+**"Generate WeTransfer Link" (`app/wetransfer_uploader.py`, `POST /api/export-wetransfer` {token | shop_ids} -> {job_id},
+`GET /api/export-wetransfer/{job_id}` -> {status queued|running|success|failed, step, progress, wetransfer_url, error}).**
+WeTransfer RETIRED its Public API in 2020 and issues no keys (its support article and a 503 from developers.wetransfer.com,
+checked 2026-09-28), so - the project owner's decision, made knowing the terms/fragility risk - the uploader drives the website
+itself: Playwright + the installed Microsoft Edge (`channel="msedge"`, no Chromium download), headless, on its own one-thread pool
+(never `_pool`), polled by the card every second (setup steps fill 10 %, then the page's own upload %). Every run accepts
+WeTransfer's Terms ("I agree") on the company's behalf and sends client artwork to a third party. A size check (`SIGNAGE_WETRANSFER_MAX_GB`,
+default 3 = the free-transfer limit when written) answers 413 before starting; without Playwright the route answers 503 with the
+pip command. **UNVERIFIED against the real site**: only the first two screens were observed live (cookie banner "Reject All",
+Terms "I agree"); a follow-up probe of the send panel was blocked by this session's permission policy, so the link-mode switch,
+file input, submit button and link location are best guesses. Each step fails with a named error and a screenshot in
+`<SIGNAGE_DATA>/wetransfer_debug/`, and screens needing an account / e-mail code / paid plan are detected and reported (free link
+transfers may now require one). What IS verified: the uploader's browser mechanics end to end through real Edge against a LOCAL
+stand-in page (`tests/fixtures/wetransfer_standin.html`: consent clicks, hidden file input, link mode, submit, % progress, link
+extraction; and stopping at an e-mail-verification screen with a screenshot); the API job lifecycle with a fake uploader; the modal
+in Edge with the WeTransfer endpoints intercepted (loading state, animated tick, download, progress text, link, Copy Link -> clipboard
++ "Copied!" toast, Open Link = new tab with noopener, DELETE on close, one build). First real use: run it once by hand and read the
+screenshot if it fails. Tests: `test_asset_zip.py` (8), `test_wetransfer.py` (9, 2 of them drive Edge locally and skip without it),
+`assetZip.test.mjs` (3), `generateZip.test.mjs` (2).
+
+**WeTransfer: first live run + server-link fallback.** The first real run failed at `link_mode`; its screenshot showed the send
+panel with the file already attached (76 MB, "2.9 GB remaining" of the 3 GB free allowance): e-mail fields, a "3 days" expiry button, an
+ICON-ONLY "..." button beside it (no accessible name that matched) and "Transfer". `_set_link_mode` now finds that button by an anchored
+name, else by position (the icon-only button nearest above the submit button, inside its panel), then picks a `link` choice among
+radio/menuitemradio/menuitem/option/tab/switch/button/label. Found while testing it: a loose `/more/` name pattern hit the panel's
+"Add more" (files) button first - on the live page that would have opened the file dialog - so name patterns are anchored. Consent:
+"Reject All" first, "Accept" only on a banner without a reject option. Each on-page step fails after `NAV_STEP_MS` (15 s). Every failure
+now also writes `wetransfer_<time>_<step>_controls.json` (visible controls: text, aria-label, role, test id, position) next to the
+screenshot - read it before changing selectors again. The menu's contents and the link-mode submit label are STILL unobserved.
+**Fallback** (`main._wt_worker`): if the upload fails for any reason - or is skipped (Playwright missing, ZIP over
+`SIGNAGE_WETRANSFER_MAX_GB`) - the job still ends `success` with `fallback_used: true`, `wetransfer_error` (the reason, also logged),
+`message`, `local_only`, `expires_at`, and `wetransfer_url` = a server link `/api/shared/<id>/Signage_Assets_Export.zip`: a COPY in
+`<SIGNAGE_DATA>/shared_zips/<id>/` (the modal's archive is deleted on close), id = `secrets.token_urlsafe(18)`, kept `SIGNAGE_SHARE_DAYS`
+(default 3, WeTransfer's own default), 410 once expired, swept on the next share. The host comes from the address the server listens
+on (`request.scope["server"]`): 127.0.0.1 -> `local_only` (the dev server here runs without `--host`, so such a link opens only on
+this computer and the modal says to start it with `--host 0.0.0.0`); 0.0.0.0 -> this machine's LAN address (UDP-connect trick, no
+packet sent); `SIGNAGE_PUBLIC_BASE_URL` overrides. Never an internet link. The modal shows "Generated direct server link (WeTransfer
+upload fallback)." with the reach/expiry and a "Why WeTransfer failed" disclosure. Checked: stand-in variants in Edge (icon-only menu
+found by position; no-link menu -> diagnostics JSON), API fallback/expiry/bad-id/local-only tests, and the whole fallback in Edge
+against a mock backend with the size limit forcing the skip (link label, notice, the link downloads the ZIP; 0 requests left the machine).
+
+**WeTransfer: sender e-mail + e-mailed code (OTP), done by the person.** The second live run got past link mode (the controls dump
+showed the "..." menu is a "Send email" / "Create link" radio pair, and the submit button is `data-testid="uploaderForm-transfer-button"`,
+"Get a link") and stopped because WeTransfer requires a sender address: a required `input[type=email]` labelled "Your email", with the
+hint "We ask for your email to keep the community safe." Flow now (the project owner's explicit request, after the first attempt to
+automate this was refused by the session's permission policy - the code is typed by the person, never read from a mailbox):
+1. Modal card: "Enter Sender Email" (`type=email`, validated, remembered in localStorage) -> "Proceed with Upload" ->
+   `POST /api/export-wetransfer {token, sender_email}` (a malformed address is 422; no address at all skips straight to the server link).
+2. The uploader fills "Your email" after choosing link mode, reads it back, clicks the submit test id, and fails with a named step if
+   WeTransfer still shows its e-mail hint.
+3. If a code screen appears (`CODE_RE`, plus visible code inputs: one-character boxes or a code/otp-named field) it calls `ask_code`:
+   the worker sets the job to `requires_otp` (`session_id` = job id, `otp_deadline`, `otp_error`) and waits on a per-job queue with the
+   browser open - Playwright's sync API cannot move to another request, so the "session" is that waiting thread. The card shows
+   "WeTransfer sent a 6-digit verification code to <email>." with a numeric box and "Submit OTP & Generate Link" ->
+   `POST /api/export-wetransfer/verify-otp {session_id, otp_code}` (422 malformed, 404 unknown, 409 not waiting). A rejected code asks
+   again with the reason, up to `MAX_CODE_ATTEMPTS` (3); no code within `SIGNAGE_WETRANSFER_OTP_WAIT_S` (default 300 s, not the
+   60 s asked for - reading the e-mail can take longer) or 3 rejections -> the 3-day server-link fallback. Status polling (1 s) carries
+   every state; the POST itself answers {job_id} rather than `requires_otp`.
+**The code has letters AND digits** (a real one read like `953GYV`; the first modal only took digits and dropped the letters): the box is `type=text`, `normalizeOtp` (utils/generateZip.js, tested) keeps A-Z/0-9, upper-cases typing and pasting (" 953-gyv " -> "953GYV"), caps at 8; Submit is enabled once anything is typed and needs 4+ characters; `verify-otp` strips spaces/dashes, upper-cases and accepts 4-10 of [A-Z0-9]; the uploader clears the box(es) and types the upper-cased code.
+`SIGNAGE_WETRANSFER_URL` (TESTING ONLY; a Windows path must be a real `file:///D:/...` URI - a Git Bash `/d/...` path became `D:/d/...` once and the job correctly fell back) points a whole server's uploader at `tests/fixtures/wetransfer_standin.html`, whose `?code=1` screen accepts 953GYV: the full flow was run that way in Edge (email validation, upload, code prompt, wrong code -> "did not accept",
+right code -> we.tl link; 0 requests left the machine). NOT run against the real wetransfer.com: whether WeTransfer shows a code at all,
+and what that screen looks like, is still unobserved - the next real run's `_controls.json` will show it if the code step fails.
+
 **Live PowerClip contents (scene version 3).** The scene export now renders every PowerClip
 child to its own image (a bitmap child cannot be selection-exported inside the clip - E_FAIL, verified
 live - so a duplicate is moved out onto the layer, exported and deleted; the same for EVERY leaf inside
@@ -1409,6 +1563,31 @@ also not done (median 0.6-1.7 s per shop; it would make every download slow inst
 | 4 shops through the API (Convert All) | ~100 s (4 x 25 s) | **30.5 s** (DB completion times 11.2 / 20.3 / 25.4 / 30.5 s) |
 | force-kills, leftover CorelDRW.exe, stale tracked pids | every job | none |
 
+**Stuck "Converting 1 of N" (per-shop time limit + restart recovery).** Found in the database of a stuck session: a batch's
+job 4 last beat step `png`, then the server was restarted - the worker died with it, but its rows stayed `queued`/`converting`
+(one for 5 days), so the page polled them forever; earlier, four shops had waited the full 600 s no-progress limit. Fixes:
+(1) `main._recover_interrupted_work` (startup event, `db.fail_interrupted_work`) fails every queued/converting shop and
+queued/running export with "Interrupted: the server was restarted... convert it again" and clears `data/convert_runs`.
+(2) `corel_supervisor.run_batch(job_timeout_s=...)`: a hard limit per JOB, clocked from the job's first heartbeat past
+`starting`/`launch` (CorelDRAW start-up has its own 45 s Dispatch timeout), enforced even while the job keeps beating; over it
+the worker tree and its CorelDRAW are killed, the job gets "timed out after 45s at step 'png' - CorelDRAW was stopped...", later
+jobs "not started". Conversions pass `main._convert_limits()`: `SIGNAGE_SHOP_TIMEOUT_S` (default **45**, as requested; 0 = off)
+and a 120 s no-progress limit instead of 600 s; scene builds, exports and `validate_all.py` keep the old limits. Recovery = the
+existing retry-alone path: a later batch member that timed out, and every one it blocked, is retried in a fresh worker with a fresh
+CorelDRAW; a timed-out FIRST shop fails (it already had a fresh instance). **Risk**: 45 s is tight - one shop normally takes 10 s on
+CorelDRAW 27, but 31 s on 2019, 75 s once under memory pressure, and Agarpathi's 100-350 MB masters were never timed; raise the env
+var for those. (3) Dialog suppression: the requested `app.DisplayAlerts` does not exist in CorelDRAW's `IVGApplication` (checked
+in the typelib); `_suppress_prompts` already sets every related member (`Optimization`, `EventsEnabled=False`, `PanoseMatching`,
+ColorManager `WarnOn*`), and the watchdog dismisses any dialog after 20 s - within the 45 s. Why job 4 stalled at `png` is unknown
+(the evidence went with the restart). Tests: `test_corel_supervisor.py` (+4, fake worker `beat`/`_test_launch_s` modes),
+`test_convert_batching.py` (+3).
+
+**QA audit 2026-09-28 (`docs/qa-audit-2026-09-28.md`).** Profiled with 1,001 finished shops: `/api/v2/step-estimates`
+262 -> 13 ms (SQLite `json_extract` of `timings_s` instead of parsing every whole report in Python); `/api/v2/shop-statuses`
+no longer carries `report` (50 ids: 755 -> 22 KB); `/status` no longer sends `report_json` next to the parsed `report`;
+`/api/v2/jobs/{id}` leaves out `report_json` (9.2 MB -> 394 KB). The startup recovery is a `lifespan` handler (the deprecated
+`on_event` produced 220 of the suite's 222 warnings). Backend 757 passed, frontend 201.
+
 **Frontend.** Editor-tab load was dominated by the loader, not by data: the workspace had painted at 0.4-2.0 s, but the loader
 (eased at a fixed 45 %/s) left at 3.0-3.4 s. It now also closes 14/s of the remaining gap and finishes at 97 %: an in-page
 trace on the production build shows the loader gone at **0.69 s warm / 1.0 s cold** (dalmia). The editor route is lazy
@@ -1733,6 +1912,43 @@ API (`queryLocalFonts`, needs a permission prompt) - measuring needs no permissi
 server; Google's lookup is by exact family name (no fuzzy "AvantGarde-Demi" -> "TeX Gyre Adventor"); a Google miss leaves one
 unavoidable "Failed to load resource" line in the console; the exported file is unaffected by any of this (CorelDRAW uses the fonts
 installed on the machine that runs it).
+
+**"Missing Font Detected" (`editor/FontSubstituteModal.jsx`, `editor/fontSubs.js`, `POST/DELETE /api/fonts/substitute`,
+`GET /api/fonts/substitutions`, table `font_substitutions`).** When the editor has loaded (after the loading screen - a popup that opened
+earlier sat behind it) and a board font's status is "missing" (not in this browser, not installed on the server, not on Google Fonts -
+`utils/fontLoader.js`), the modal asks for a replacement from the SERVER's installed fonts (CorelDRAW on the server writes the files and
+ignores a font it lacks; `/api/fonts` lists 285 here), with a live sample of the board's own text in the choice. **Temporary (This Session
+Only)**: kept in this tab (sessionStorage, per shop), nothing stored. **Permanent (Save to Shop Config)**: `POST /api/fonts/substitute`
+{shop_id, original_font, substitute_font, is_permanent} validates the replacement is installed (422 otherwise; stored under the installed
+family's own spelling) and saves it per shop; choosing Temporary later removes a saved one. Either way the canvas draws every text node in
+that font LIVE in the replacement (`Canvas` liveTexts + `substituteFor`) instead of CorelDRAW's render - the editor has no Fabric canvas;
+its text is CorelDRAW images, and LiveText is the existing way to redraw text (browser typesetting, approximate). **Exports**: the shop's
+permanent map rides in the export spec (`font_subs`) and `export_replay.apply_font_substitutions` - after the replay is verified, before
+any file is written - sets `Story.Font` on every matching text object (groups and PowerClips too, case-insensitive), reads it back, and
+reports `report.font_substitutions` {original: {to, changed, not_applied}} plus a warning when CorelDRAW ignored it; a text mixing fonts
+in one run is skipped (counted). "Cancel / Use System Default" keeps CorelDRAW's own render and is not asked again in that tab; the footer's
+"Font missing: X -> Y (saved)" reopens the modal, which then also offers "Remove substitution". NOT applied to `batch_runner.py`: that is a
+separate legacy tool (products.json + config.json + generate_layout.CorelDrawEngine) with no shops, so a per-shop map has nothing to
+attach to. Not verified live in CorelDRAW (fake COM tests only). Found checking: "Copperplate Gothic Bold" IS installed on this machine now
+(the earlier note that it is missing is outdated); "AvantGarde-Demi" is missing. Tests: `test_font_substitution.py` (5), `fontSubs.test.mjs`
+(3); Edge run on a mock board with the scene's font rewritten: auto popup, Temporary -> live Arial, footer -> Permanent -> saved, reopened
+editor keeps it without a popup, Remove, Cancel not re-asked after reload.
+
+**Font search before the substitute popup (`utils/fontLoader.js ensureFont`).** Order: renderable in this browser -> the server's
+installed copy -> Google Fonts by the exact name -> Google Fonts by the name's variants -> Fontsource by the exact name and its variants
+-> "missing" (only then the "Missing Font Detected" popup). Variants (`fontCandidates`, tested): the base family with the weight/style its
+trailing words mean, camel case split ("AvantGarde-Demi" -> "AvantGarde" / "Avant Garde" 600, "Roboto Semi Bold Italic" -> Roboto 600
+italic). Google variants: `googleFaceUrl` for that one weight, the css2 response parsed (`parseGoogleCss`, latin / latin-ext / tamil blocks)
+and each file registered with the FontFace API under the board's ORIGINAL name (LiveText asks for that name). Fontsource: metadata from
+`https://api.fontsource.org/v1/fonts/<id>` (`fontsourceId` = lower case, hyphens; format checked against the live API 2026-09-28:
+variants -> weight -> style -> subset -> url -> woff2 on cdn.jsdelivr.net, OFL-licensed), nearest weight, default subset plus Tamil
+(`pickFontsourceFiles`). A family found on the web ("google" / "fontsource", `isWebOnly`) fixes the EDITOR PREVIEW only - CorelDRAW on the
+server, which writes the exports, does not have it; the footer says "preview only: X" (warning colour) and opens the substitute dialog
+reworded as "Font Not On The Server", so an export replacement can still be saved; it does not pop up by itself. (This was already true
+of Google-sourced fonts and was not said before.) No backend change: the server was not asked to download or install fonts. Checked in
+Edge with every web request answered inside the page (Google 400, Fontsource only "avant-garde", the CDN file a local font): AvantGarde-Demi
+found via "avant-garde" weight 600 with no popup; an unknown family searched everywhere and then the popup. Real Fontsource/jsDelivr CORS
+from the browser was not exercised live.
 
 ### Replacement-image upload: `POST /api/editor/{job}/{shop}/product-assets`
 
@@ -3100,6 +3316,21 @@ Queued -> Processing -> Completed, and the button/summary returned at the end. I
 styles (a hover-vs-focus specificity bug that hid the red focus ring was found and fixed). The estimate is only as good as the
 backend's step percentages and the per-shop time; it is not a promise.
 
+**Batch banner: monotonic % and a moving-average ETA (supersedes the ETA formula above).** Root cause of the backwards jumps was the
+SERVER: in a batched CorelDRAW session the shops share one heartbeat, and `/status` only read it for the shop's own index - so the moment
+the worker moved on to shop i+1 (before `on_progress` stored shop i as done), shop i fell back to its placeholder step "starting" = 5 %
+after showing 97 %; a batch member that failed and was retried alone also restarted at 5 %. Now a converting shop whose heartbeat index
+is behind the file's reports step "saving", 99 %, and `_progress_peak` makes a conversion's `progress_pct` never drop (cleared when the
+shop leaves "converting"). Page (`utils/batchStats.js`, tested): weighted progress (done/failed = 100, converting = its %, queued = 0);
+the banner shows `monotonicProgress(peak, raw)` - never below what it already showed in this batch, reset to 0 by Convert All; ETA =
+moving average of the last `ETA_WINDOW` (5) completion intervals (`batch.finishTimes`, stamped by `recordFinishes` as shops settle) x
+the work left INCLUDING in-flight % (the old elapsed/finished estimate grew every second a shop was busy, then dropped), extrapolated
+from progress before the first finish, floored at 0; displayed through `smoothEta` (counts down on its own, moves 1/4 toward each new
+estimate); text `fmtEta`: "~2m 15s remaining" / "~45s remaining" / "Finishing up..." / "Calculating...". No SSE/WebSocket was added:
+the page already polls atomic per-shop rows (`/api/v2/shop-statuses`) and derives the batch state itself. Checked in Edge with the
+status responses replayed for 7 shops of uneven length and one 97 -> 5 % blip: 125 samples, 0 backward steps, no negative ETA,
+a steady countdown.
+
 **Executive brand bar.** The top bar (`.ws-bar`) is a translucent, blurred, rounded card (sticky, hover border shift) with a
 Building2 "BRAND" label, a native `<select>` restyled with `appearance: none` inside a `.ws-select` wrapper and a
 ChevronDown overlay (`pointer-events: none`; red focus ring), a gradient "+ New Brand" button (lift on hover; it becomes an
@@ -3314,6 +3545,48 @@ uppercase subtitle, one glassy panel; tactile red buttons (bevel highlight, dark
 No "press Enter" copy (Enter still presses the primary button). Start: camera push-in + 0.4 s fade, then "/" and `onStart`. Splash chunk
 back to ~1 MB (three.js), still lazy. Verified in Edge with software WebGL on the production build: 0 requests on load, every state,
 no auto-start, Enter -> "/", error layout without overlap, 390 px phone fits, no page errors (only the pre-existing favicon 404).
+
+**3D city backdrop (current; supersedes the single billboard + neutral studio lighting above - the title, the one Connect button
+and the connection modal are unchanged).** `components/CityScene.jsx`: a procedural low-poly night street, no model files. Ground
+`#0A0A0C`, buildings `#121218` as ONE instanced mesh with a generated window texture (a few red windows), a four-lane road (dashed
+lanes, centre line, street lamps with warm pools), the main Adinn billboard (the old chrome frame, scale 1.8, on poles from the
+pavement, with a red light line), two roadside hoardings and two building-mounted LED boxes with the logo, red neon borders and a red
+glow, 12 cars both ways (headlight pools, red taillight trails; position = a function of the clock, wrapped at +/-75), and an
+elevated metro (deck, rails, pillars, red edge line) with a 4-car train on each track every 22 s. The camera stands back far enough
+for the main board to fit the canvas width (`baseDistance`, also on phones), drifts slowly and follows the pointer. **Start**
+(button, Enter or Space) closes the modal, folds the title block away so the canvas fills the screen, and flies the camera along a
+Catmull-Rom curve down over the traffic and into the board face (`FLIGHT_S` = 2.4 s); the scene calls `onArrive` at 92 %, then the
+screen fades (0.32 s) and the workspace opens; a timer finishes anyway after 3.9 s. Reduced motion: nothing moves and Start enters at
+once. Checked in Edge (software WebGL, 1440x900 and 390x844): all elements render, the fade begins 2.3-2.4 s after Space (triggered by
+the scene, not the timer), reduced motion enters immediately, no page errors (the only console line is the old favicon 404). Frame
+rate was 8-9 fps at 1440x900 and 28 fps at 390x844 in SOFTWARE rendering; a real GPU was not measured, so "no frame drops" is not
+verified. Chunk ~1.02 MB (289 KB gzip), +12 KB. No bloom (no postprocessing package); the glow is additive halo planes.
+**Update: fidelity pass (bloom, lit signs, real vehicles).** New dependency `@react-three/postprocessing` 2.19.1 (the last line for
+React 18 / fiber 8; pulls `postprocessing` 6.39). `EffectComposer` (multisampling 4; the canvas' own antialias is now off) renders
+WITHOUT tone mapping, `Bloom` (mipmap blur) takes everything above `BLOOM_THRESHOLD` = 1.15, `Vignette`, then `ToneMapping` ACES last -
+so only HDR colours bloom: neon borders, head/tail lights, the train stripe (`NEON`/`HEAD`/`TAIL`, values 5-7). Sign faces (main board
+included) are unlit basic materials at 1.08 - just UNDER the threshold: a first try at 1.3 plus the old lit face washed the logo's black
+text to grey. Signs: `Sign` (roadside pole or wall lightbox with brackets) on 2 roadside poles and 4 building facades (`FACADES`,
+buildings placed for them, no random building over them; the two under the metro sit low and towards their facade's outer edge because
+the deck cut their tops). Cars: extruded side profiles (sedan / van) with bevels, wheel arches, a B-pillar, protruding dark glass,
+merged tyres + chrome rims, HDR lamps, a headlight pool faded forwards AND sideways (`beam` texture - the first pools had hard
+rectangular sides) and taillight trails; 6 meshes per car. Trains: extruded streamlined nose car (front and turned-round rear) + two
+middle cars, windscreen, window band (emissive 0.72 - at 1.15 it bloomed into a flat strip), doors, roof unit, bogies with wheels, red
+HDR stripe; merged per part. Environment: four light strips (white, warm, red, cool) reflect in the clear-coated paint, the train shell
+and a glossier road; lamp pools are radial now. The metro deck moved to y 8.4 and the look point up to 5.6 so the train runs fully in
+frame. Checked in Edge at 2x (crops of road and metro): shapes, glass, wheels, lamps and trails read as vehicles, the train shows
+nose/tail, all 7 Adinn signs are visible, flight + fade still ~2.5 s, no 3D warnings. Chunk 1.11 MB (310 KB gzip, +85 KB). Frame rate in
+software rendering dropped to ~4.6 fps at 1440x900 (was 8.6; phone size 14.5) - real-GPU smoothness is still unmeasured.
+**Update: the Connect button is a glass HUD panel (`ConnectControl` in `SplashScreen.jsx`, `.sp3-hud*` in `styles.css`; plain CSS
+with the spec's Tailwind values - the project has no Tailwind).** A translucent slate panel (75 % #020617, 24 px backdrop blur,
+slate border, red outer glow layer, four glowing red corner brackets) holds a status bar (pinging red dot + "Engine node", a CPU
+icon + the host the page was opened from - the spec's "LOCAL HOST : 8000" was not used: the page reaches the backend through the
+dev proxy and does not know its port), the button (dark red glass gradient, neon red edge, mono uppercase "Initialize CorelDRAW
+connection" / "Establishing handshake...", pulsing power icon, radio icon, shimmer sweep and bright red fill + glow + 1.02 scale on
+hover) and a "Press [Enter] or click to connect" hint. Same behaviour as before: it opens the connection modal and is disabled while
+the modal is open; it takes focus on load, so its focus ring was made a faint 1 px outer line (2 px doubled the neon edge). Under
+420 px the button's gaps/tracking shrink so the label stays on one line. Reduced motion stops the ping/pulse/shimmer/scale. Checked in
+Edge at 1440 and 390 px (idle, hover, Enter opens the modal, no horizontal scroll, no page errors).
 
 **Connection HUD (supersedes the plug -> socket animation, which was removed on request - `Plug3DAnimation.jsx` deleted).** The top of
 the splash panel is `StatusHud` (in `SplashScreen.jsx`), CSS 3D - no second WebGL context: two tilted halo rings (conic arc masked to an

@@ -4,6 +4,7 @@ import { clipChildAt, contentLeaves, dragTargets, flattenLeaves, hitTest, inside
 import { toScene, zoomAt } from "./view.js";
 import TextEditor from "./TextEditor.jsx";
 import LiveText from "./LiveText.jsx";
+import { substituteFor } from "./fontSubs.js";
 
 const HANDLES = [
   ["nw", 0, 0], ["n", 0.5, 0], ["ne", 1, 0], ["e", 1, 0.5],
@@ -101,7 +102,7 @@ function ancestryOf(idx, id) {
   return out;
 }
 
-export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, textPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
+export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, fontSubs, textPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
   const imgRefs = useRef(new Map());
@@ -126,17 +127,19 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
     for (const n of iterNodes(scene)) {
       if (!n.text || n.visible === false || !n.image) continue;
       const typing = textPreview && textPreview.id === n.id;
-      if (!typing && !n.stale) continue;
+      // a substituted missing font ("Missing Font Detected"): drawn live in the replacement instead of CorelDRAW's render
+      const sub = substituteFor(n.text.font, fontSubs);
+      if (!typing && !n.stale && !sub) continue;
       out.push({
         node: n,
         content: typing && textPreview.content != null ? textPreview.content : n.text.content,
-        font: typing && textPreview.font ? textPreview.font : n.text.font,
+        font: typing && textPreview.font ? textPreview.font : sub || n.text.font,
         typing,
         origLines: baseLines.get(n.id) || lineCount(n.text.content),
       });
     }
     return out;
-  }, [scene, textPreview, baseLines]);
+  }, [scene, textPreview, baseLines, fontSubs]);
   const hideKey = liveTexts.map((l) => l.node.id).join(",");
   const leaves = useMemo(() => flattenLeaves(scene), [scene]);
   const plan = useMemo(() => renderItems(scene), [scene]);

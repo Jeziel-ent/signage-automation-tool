@@ -34,6 +34,16 @@ CREATE TABLE IF NOT EXISTS editor_ops (
     updated_at REAL NOT NULL
 );
 
+-- Permanent font substitutions per shop ("Missing Font Detected" in the editor): text in `original_font`, a font not
+-- installed on the server, is set to `substitute_font` in CorelDRAW before every export of that board.
+CREATE TABLE IF NOT EXISTS font_substitutions (
+    shop_id TEXT NOT NULL,
+    original_font TEXT NOT NULL,
+    substitute_font TEXT NOT NULL,
+    updated_at REAL NOT NULL,
+    PRIMARY KEY (shop_id, original_font)
+);
+
 -- Phase D exports ("Save and Generate"): one row per export request.
 CREATE TABLE IF NOT EXISTS exports (
     id TEXT PRIMARY KEY,
@@ -236,6 +246,7 @@ def delete_shop(shop_id: str) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM editor_ops WHERE shop_id = ?", (shop_id,))
         conn.execute("DELETE FROM exports WHERE shop_id = ?", (shop_id,))
+        conn.execute("DELETE FROM font_substitutions WHERE shop_id = ?", (shop_id,))
         conn.execute("DELETE FROM shops WHERE id = ?", (shop_id,))
 
 
@@ -262,6 +273,19 @@ def set_shop_result(shop_id: str, files: dict, report: dict) -> None:
         )
 
 
+def fail_interrupted_work(reason: str) -> tuple[int, int]:
+    """Marks every shop still queued/converting and every export still queued/running as failed with `reason`.
+    Called once at server start: those rows belonged to the previous server process, whose worker queue died with it,
+    so nothing will ever finish them - the UI would otherwise poll them forever ("Converting 1 of N"). Returns
+    (shops, exports) changed."""
+    with _conn() as conn:
+        shops = conn.execute("UPDATE shops SET status = 'failed', step = NULL, error = ? "
+                             "WHERE status IN ('queued', 'converting')", (reason,)).rowcount
+        exports = conn.execute("UPDATE exports SET status = 'failed', error = ?, completed_at = ? "
+                               "WHERE status IN ('queued', 'running')", (reason, time.time())).rowcount
+    return shops, exports
+
+
 def list_all_shops_with_job() -> list[dict]:
     """Every shop across every job, newest first, joined with its job's
     brand/master filename - for the "Recently generated" page.
@@ -286,12 +310,17 @@ def get_step_timing_estimates() -> dict[str, float]:
     """
     sums: dict[str, float] = {}
     counts: dict[str, int] = {}
+    # Only the timings: extracted by SQLite, not by parsing each whole report (they hold every placed object) in Python -
+    # measured 262 ms -> 13 ms with 1000 shops. A malformed report yields NULL and is skipped.
     with _conn() as conn:
-        rows = conn.execute("SELECT report_json FROM shops WHERE report_json IS NOT NULL").fetchall()
+        rows = conn.execute("SELECT CASE WHEN json_valid(report_json) THEN json_extract(report_json, '$.timings_s') END AS t "
+                            "FROM shops WHERE report_json IS NOT NULL").fetchall()
     for r in rows:
         try:
-            timings = json.loads(r["report_json"]).get("timings_s") or {}
+            timings = json.loads(r["t"]) if r["t"] else {}
         except Exception:
+            continue
+        if not isinstance(timings, dict):
             continue
         for step, seconds in timings.items():
             sums[step] = sums.get(step, 0.0) + float(seconds)
@@ -371,3 +400,28 @@ def get_export_step_estimates() -> dict[str, float]:
             sums[k] = sums.get(k, 0.0) + float(v)
             counts[k] = counts.get(k, 0) + 1
     return {k: round(sums[k] / counts[k], 2) for k in sums}
+
+
+# ---------------------------------------------------------------- font substitutions
+
+def get_font_substitutions(shop_id: str) -> dict[str, str]:
+    """{original font: substitute font} saved for this shop."""
+    with _conn() as conn:
+        rows = conn.execute("SELECT original_font, substitute_font FROM font_substitutions WHERE shop_id = ? "
+                            "ORDER BY original_font", (shop_id,)).fetchall()
+    return {r["original_font"]: r["substitute_font"] for r in rows}
+
+
+def set_font_substitution(shop_id: str, original_font: str, substitute_font: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO font_substitutions (shop_id, original_font, substitute_font, updated_at) VALUES (?, ?, ?, ?)
+               ON CONFLICT(shop_id, original_font) DO UPDATE SET substitute_font = excluded.substitute_font,
+               updated_at = excluded.updated_at""",
+            (shop_id, original_font, substitute_font, time.time()))
+
+
+def delete_font_substitution(shop_id: str, original_font: str) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM font_substitutions WHERE shop_id = ? AND original_font = ?", (shop_id, original_font))
+    return cur.rowcount > 0

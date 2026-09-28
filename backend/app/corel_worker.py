@@ -139,7 +139,7 @@ def main() -> None:
                 entry["report"] = export_from_file(
                     Path(spec["cdr"]), Path(spec["scene"]), spec["ops"], spec["formats"], spec["options"],
                     Path(spec["out_dir"]), spec["base_name"], on_step=_heartbeat,
-                    assets_dir=spec.get("assets_dir"),
+                    assets_dir=spec.get("assets_dir"), font_subs=spec.get("font_subs"),
                 )
                 entry["status"] = "done"
             except Exception as e:

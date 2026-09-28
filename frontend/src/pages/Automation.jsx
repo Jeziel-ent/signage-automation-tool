@@ -1,12 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { Building2, CheckCircle2, ExternalLink, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
+import { Building2, CheckCircle2, Download, ExternalLink, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
 import UploadDropzone from "../components/UploadDropzone.jsx";
 import BrandSelect from "../components/BrandSelect.jsx";
+import ExportModal from "../components/ExportModal.jsx";
+import PrintFileModal from "../components/PrintFileModal.jsx";
+import GenerateZipModal from "../components/GenerateZipModal.jsx";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 import { parseShopFile } from "../utils/shopImport.js";
 import { isDraft, resetForNewMaster, shopPayload, toDraftRow } from "../utils/shopPayload.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
-import { batchStats, fmtSeconds } from "../utils/batchStats.js";
+import { batchStats, fmtEta, monotonicProgress, recordFinishes, smoothEta } from "../utils/batchStats.js";
 import { fmtBytes } from "../utils/fileSize.js";
 
 const UNITS = ["in", "ft"];
@@ -95,6 +98,9 @@ export default function Automation() {
   // Bumped whenever the masters change; an in-flight convert / Convert All started under older masters stops at its next step.
   const masterGen = useRef(0);
   const [queueNotice, setQueueNotice] = useState("");
+  const [exportShop, setExportShop] = useState(null); // the done shop whose Export modal is open
+  const [showPrintFile, setShowPrintFile] = useState(false);
+  const [showZip, setShowZip] = useState(false); // the Generate ZIP modal
 
   // Uploading, replacing or removing a master invalidates every conversion in the queue: each saved shop (done, converting, queued,
   // failed) becomes a fresh draft with the same name and size, so its next Convert creates a new shop on the NEW master instead of
@@ -291,10 +297,14 @@ export default function Automation() {
   }
 
   const convertible = shops.filter((x) => x.status === "new" || x.status === "failed");
+  // converted shops for "Create Print File", numbered by their S.no in the table
+  const printable = shops.map((x, i) => ({ ...x, no: i + 1 })).filter((x) => x.status === "done" && !isDraft(x));
 
   // ---- batch conversion: Convert All swaps for a progress banner until every shop in the batch has finished
   const [isBatchConverting, setIsBatchConverting] = useState(false);
-  const [batch, setBatch] = useState(null); // {startedAt, total, ids: [real shop ids that started], notStarted}
+  const [batch, setBatch] = useState(null); // {startedAt, total, ids: [real shop ids that started], notStarted, finishTimes}
+  // what the banner SHOWS: the % never below what it already showed in this batch, the ETA smoothed (see batchStats.js)
+  const [batchView, setBatchView] = useState({ peak: 0, eta: null });
   const [now, setNow] = useState(Date.now());
   const [batchSummary, setBatchSummary] = useState("");
 
@@ -302,7 +312,8 @@ export default function Automation() {
     const todo = convertible.map((x) => x.id);
     if (!todo.length) return;
     setBatchSummary("");
-    setBatch({ startedAt: Date.now(), total: todo.length, ids: [], notStarted: 0 });
+    setBatch({ startedAt: Date.now(), total: todo.length, ids: [], notStarted: 0, finishTimes: [] });
+    setBatchView({ peak: 0, eta: null }); // a new batch starts from 0 with no leftover estimate
     setIsBatchConverting(true);
     // one after another: saving drafts numbers the shops (seq_no), which must not race. The server then converts
     // the queued shops one at a time.
@@ -323,6 +334,18 @@ export default function Automation() {
 
   const stats = batchStats(batch, shops, now);
   const { batchProgress, estimatedTimeRemaining, currentShopIndex } = stats;
+  const settledCount = stats.done + stats.failed;
+  useEffect(() => { // stamp each shop's finish, for the moving-average ETA
+    setBatch((b) => {
+      if (!b) return b;
+      const finishTimes = recordFinishes(b.finishTimes, settledCount, Date.now());
+      return finishTimes === b.finishTimes ? b : { ...b, finishTimes };
+    });
+  }, [settledCount]);
+  useEffect(() => {
+    if (!isBatchConverting) return;
+    setBatchView((v) => ({ peak: monotonicProgress(v.peak, batchProgress), eta: smoothEta(v.eta, estimatedTimeRemaining, now) }));
+  }, [isBatchConverting, batchProgress, estimatedTimeRemaining, now]);
   useEffect(() => {
     if (isBatchConverting && stats.allSettled) {
       setIsBatchConverting(false);
@@ -333,6 +356,21 @@ export default function Automation() {
   function openEditor(shop) {
     window.open(`/editor/${shop.job_id || job.id}/${shop.id}`, "_blank");
   }
+
+  // The editor tab's "Save Changes" saves, tells this tab, and closes itself - say so here, where the user lands.
+  const shopsRef = useRef(shops);
+  shopsRef.current = shops;
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return undefined;
+    const ch = new BroadcastChannel("signage-editor");
+    ch.onmessage = (e) => {
+      const m = e.data || {};
+      if (m.type !== "saved") return;
+      const shop = shopsRef.current.find((x) => x.id === m.shopId);
+      if (shop) setQueueNotice(`Edits to "${shop.name}" saved. Use the download button on its row to export the files.`);
+    };
+    return () => ch.close();
+  }, []);
 
   const bothMasters = !!(landscapeJob && portraitJob);
   const masterBadge = bothMasters ? "Dual-Master Ready" : landscapeJob ? "Landscape master only" : portraitJob ? "Portrait master only" : "No master yet";
@@ -525,6 +563,7 @@ export default function Automation() {
                         onDelete={() => deleteShop(s.id)}
                         onConvert={() => convertShop(s.id)}
                         onOpen={() => openEditor(s)}
+                        onExport={() => setExportShop(s)}
                         stepEstimates={stepEstimates}
                       />
                     ))}
@@ -535,14 +574,30 @@ export default function Automation() {
               <div className="ws-card-foot">
                 {isBatchConverting ? (
                   <BatchBanner
-                    progress={batchProgress}
+                    progress={monotonicProgress(batchView.peak, batchProgress)}
                     index={currentShopIndex}
                     total={batch?.total ?? 0}
-                    remaining={estimatedTimeRemaining}
+                    remaining={batchView.eta ? batchView.eta.value : null}
                   />
                 ) : (
                   <>
                     {batchSummary && <span className="ws-summary">{batchSummary}</span>}
+                    <button
+                      className="btn-outline-red"
+                      onClick={() => setShowPrintFile(true)}
+                      disabled={!printable.length}
+                      title={printable.length ? "Create the Print Details summary sheet for converted shops" : "Convert at least one shop first"}
+                    >
+                      <Printer size={15} /> Create Print File
+                    </button>
+                    <button
+                      className="btn-outline-dark"
+                      onClick={() => setShowZip(true)}
+                      disabled={!printable.length}
+                      title={printable.length ? "JPG, CDR and PDF of every converted shop in one ZIP - download it or get a WeTransfer link" : "Convert at least one shop first"}
+                    >
+                      <FolderArchive size={15} /> Generate ZIP
+                    </button>
                     {convertible.length > 0 && (
                       <button className="btn-gradient" onClick={convertAll}>
                         <Play size={15} /> Convert All ({convertible.length})
@@ -555,6 +610,16 @@ export default function Automation() {
           )}
         </section>
       </div>
+      {showZip && <GenerateZipModal shops={printable} onClose={() => setShowZip(false)} />}
+      {showPrintFile && <PrintFileModal shops={printable} brand={brand} onClose={() => setShowPrintFile(false)} />}
+      {exportShop && (
+        <ExportModal
+          jobId={exportShop.job_id || (job && job.id)}
+          shopId={exportShop.id}
+          shopName={exportShop.name}
+          onClose={() => setExportShop(null)}
+        />
+      )}
     </div>
   );
 }
@@ -602,7 +667,7 @@ function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportCli
 // One editable row: name, width, height and the shared unit are live inputs (disabled while the shop is queued or
 // converting, or once it is done - its output would no longer match the row); text/number fields save on blur, the unit
 // on change.
-function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, stepEstimates }) {
+function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onExport, stepEstimates }) {
   const locked = shop.status === "queued" || shop.status === "converting" || shop.status === "done";
   const field = (key, label, extra = {}) => (
     <input
@@ -636,7 +701,7 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, ste
         </select>
       </td>
       <td>
-        <ConvertCell shop={shop} onConvert={onConvert} stepEstimates={stepEstimates} />
+        <ConvertCell shop={shop} onConvert={onConvert} onExport={onExport} stepEstimates={stepEstimates} />
       </td>
       <td>
         {shop.status === "done" ? (
@@ -695,7 +760,7 @@ function NewShopRow({ seqNo, form, setForm, onAdd, onCancel }) {
 }
 
 // The Convert column: a button while a shop is new, then a status badge (queued / processing with the eased % / completed).
-function ConvertCell({ shop, onConvert, stepEstimates }) {
+function ConvertCell({ shop, onConvert, onExport, stepEstimates }) {
   // Called unconditionally (hooks can't be conditional) - it's a no-op
   // until `shop.status === "converting"` actually starts reporting steps.
   const smoothedPct = useSteppedProgress(CONVERT_STEPS, shop.step, shop.status === "done", stepEstimates);
@@ -715,8 +780,13 @@ function ConvertCell({ shop, onConvert, stepEstimates }) {
   }
   if (shop.status === "done") {
     return (
-      <span className="badge badge-done">
-        <CheckCircle2 size={13} /> Completed
+      <span className="done-cell">
+        <span className="badge badge-done">
+          <CheckCircle2 size={13} /> Completed
+        </span>
+        <button className="icon-btn row-dl-btn" onClick={onExport} title="Download / export this shop's files" aria-label={`Export files for ${shop.name}`}>
+          <Download size={16} />
+        </button>
       </span>
     );
   }
@@ -759,7 +829,7 @@ function BatchBanner({ progress, index, total, remaining }) {
       </svg>
       <div className="batch-text">
         <div>
-          Converting {index} of {total} &bull; Estimated time remaining: ~{fmtSeconds(remaining)}
+          Converting {index} of {total} &bull; {fmtEta(remaining)}
         </div>
         <div className="batch-bar" aria-hidden="true">
           <div className="batch-bar-fill" style={{ width: `${progress}%` }} />
