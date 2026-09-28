@@ -1,0 +1,65 @@
+/* SpecularButton.jsx - glossy tinted button with a pointer-following specular edge and a sweeping shine.
+   All geometry and colour come from the --spb-* custom properties the component sets. */
+.spb {
+  position: relative; isolation: isolate; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; padding: 0; margin: 0; cursor: pointer; border-radius: var(--spb-radius); color: var(--spb-text);
+  font: inherit; background: transparent; overflow: hidden; -webkit-tap-highlight-color: transparent;
+  /* the design's shadow-lg shadow-red-900/40 */
+  box-shadow: 0 10px 15px -3px rgba(127, 29, 29, 0.4), 0 4px 6px -4px rgba(127, 29, 29, 0.4);
+  transition: filter 0.2s ease, transform 0.2s ease, box-shadow 0.2s ease;
+}
+.spb-sm { min-height: 32px; padding: 0 14px; font-size: 12px; }
+.spb-md { min-height: 40px; padding: 0 20px; font-size: 13px; }
+.spb-lg { min-height: 48px; padding: 0 28px; font-size: 14px; }
+.spb:hover:not(:disabled) { filter: brightness(1.1); box-shadow: 0 14px 24px -6px rgba(185, 28, 28, 0.5), 0 4px 8px -4px rgba(127, 29, 29, 0.45); }
+.spb:active:not(:disabled) { transform: scale(0.99); }
+.spb:disabled { cursor: default; opacity: 0.6; }
+/* keyboard focus only (the launch buttons are no longer auto-focused, so nothing rings them on load): a soft glow, not an
+   outline around the edge */
+.spb:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(248, 113, 113, 0.45), 0 10px 15px -3px rgba(127, 29, 29, 0.4); }
+
+/* the face: the tint (at tintOpacity - 1 = fully the tint, whatever baseColor is) as a rich diagonal gradient over the
+   base colour, a soft top gloss and a slightly deeper bottom - reads as a lit, rounded surface. With baseColor
+   "transparent" and tintOpacity 1 the face is solid tint. */
+.spb-face {
+  position: absolute; inset: 0; z-index: -3; border-radius: inherit; pointer-events: none;
+  -webkit-backdrop-filter: blur(var(--spb-blur)); backdrop-filter: blur(var(--spb-blur));
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.16) 0%, rgba(255, 255, 255, 0) 48%, rgba(0, 0, 0, 0.14) 100%),
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--spb-tint) calc(var(--spb-tint-op) * 100%), transparent) 0%,
+      color-mix(in srgb, color-mix(in srgb, var(--spb-tint) 82%, #000) calc(var(--spb-tint-op) * 100%), transparent) 100%),
+    var(--spb-base);
+}
+
+/* the sweep: a soft diagonal light band travelling across the face */
+.spb-sweep {
+  position: absolute; inset: 0; z-index: -2; border-radius: inherit; pointer-events: none; overflow: hidden;
+}
+.spb-sweep::before {
+  content: ""; position: absolute; top: -50%; bottom: -50%; left: 0; width: 100%;
+  transform: translateX(var(--spb-sweep, -200%)) skewX(-20deg);
+  background: linear-gradient(90deg,
+    transparent calc(50% - var(--spb-shine) / 2 - var(--spb-fade) / 2),
+    rgba(255, 255, 255, calc(0.28 * var(--spb-int))) 50%,
+    transparent calc(50% + var(--spb-shine) / 2 + var(--spb-fade) / 2));
+  mix-blend-mode: screen;
+}
+
+/* the specular edge: a thin ring (masked to `thickness`) lit ONLY where the moving highlight is - a conic streak aimed at
+   --spb-angle, fully transparent elsewhere, so there is no static outline around the button */
+.spb-edge {
+  position: absolute; inset: 0; z-index: -1; border-radius: inherit; pointer-events: none; padding: var(--spb-thick);
+  background: conic-gradient(from calc(var(--spb-angle, 0deg) - 60deg),
+    transparent 0deg,
+    color-mix(in srgb, var(--spb-line) calc(min(1, 0.95 * var(--spb-int) * var(--spb-near, 1)) * 100%), transparent) 60deg,
+    transparent 120deg,
+    transparent 360deg);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
+}
+
+.spb-label { position: relative; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-weight: 600; letter-spacing: 0.02em; white-space: nowrap; }
+
+@media (prefers-reduced-motion: reduce) { .spb { transition: none; } }

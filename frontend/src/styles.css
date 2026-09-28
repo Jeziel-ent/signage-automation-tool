@@ -756,24 +756,16 @@ a.btn { text-decoration: none; display: inline-block; }
 .btn-outline-dark[aria-busy="true"] { opacity: 0.8; cursor: progress; }
 
 /* ---------------------------------------------------------------- launch screen: connection control (ProfessionalConnectControl)
-   A calm dark-glass panel (slate-900/90 + blur, slate-700 border) whose content changes in place: connect -> checking ->
-   start automation / failure. Plain CSS versions of the design's Tailwind classes. */
-.pcc { width: 100%; max-width: 384px; margin: 0 auto; position: relative; z-index: 20; user-select: none; }
-.pcc-panel { background: rgba(15, 23, 42, 0.9); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(51, 65, 85, 0.8); border-radius: 12px; padding: 12px; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.45), 0 8px 10px -6px rgba(0, 0, 0, 0.4); transition: all 0.3s ease; }
-.pcc-btn { width: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; border-radius: 8px; color: #fff; font-family: Inter, system-ui, -apple-system, "Segoe UI", sans-serif; font-size: 12px; cursor: pointer; transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease; }
-.pcc-btn:active:not(:disabled) { transform: scale(0.99); }
-.pcc-btn:disabled { opacity: 0.6; cursor: default; }
-.pcc-btn:focus-visible, .pcc-link:focus-visible { outline: 2px solid #f87171; outline-offset: 2px; }
-.pcc-primary { padding: 10px 20px; background: #dc2626; font-weight: 600; letter-spacing: 0.025em; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3); }
-.pcc-primary:hover:not(:disabled) { background: #ef4444; box-shadow: 0 10px 15px -3px rgba(127, 29, 29, 0.4); }
-.pcc-start { padding: 12px 24px; background: linear-gradient(to right, #dc2626, #e11d48); font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; box-shadow: 0 10px 15px -3px rgba(127, 29, 29, 0.3); }
-.pcc-start:hover:not(:disabled) { background: linear-gradient(to right, #ef4444, #f43f5e); box-shadow: 0 10px 15px -3px rgba(220, 38, 38, 0.4); }
+   No card: the standalone SpecularButton (its own styles in components/SpecularButton.css), with the checking / connected /
+   failure states shown in place around it. */
+.pcc { width: 100%; max-width: 384px; margin: 0 auto; position: relative; z-index: 20; user-select: none; display: flex; flex-direction: column; align-items: center; }
+.pcc-link:focus-visible { outline: 2px solid #f87171; outline-offset: 2px; }
 .pcc-arrow { transition: transform 0.2s ease; }
 .pcc-start:hover .pcc-arrow { transform: translateX(4px); }
 .pcc-status-box { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 16px; border-radius: 8px; background: rgba(30, 41, 59, 0.8); border: 1px solid #334155; color: #e2e8f0; font-size: 12px; font-weight: 500; }
 .pcc-spin { color: #ef4444; animation: pcc-spin 1s linear infinite; }
 @keyframes pcc-spin { to { transform: rotate(360deg); } }
-.pcc-stack { display: flex; flex-direction: column; gap: 10px; }
+.pcc-stack { display: flex; flex-direction: column; align-items: center; gap: 10px; width: 100%; }
 .pcc-enter { animation: pcc-enter 0.3s ease-out both; }
 @keyframes pcc-enter { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 .pcc-status { display: flex; align-items: center; justify-content: center; gap: 8px; margin: 0; padding: 4px 0; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 11px; }
@@ -783,4 +775,4 @@ a.btn { text-decoration: none; display: inline-block; }
 .pcc-note.warn { color: #fbbf24; }
 .pcc-link { align-self: center; background: none; border: 0; padding: 2px 4px; color: #94a3b8; font-size: 11px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .pcc-link:hover:not(:disabled) { color: #e2e8f0; }
-@media (prefers-reduced-motion: reduce) { .pcc-spin, .pcc-enter { animation: none; } .pcc-btn, .pcc-arrow { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .pcc-spin, .pcc-enter { animation: none; } .pcc-arrow { transition: none; } }
