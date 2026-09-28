@@ -26,6 +26,7 @@ export const CONVERT_STEPS = [
   { key: "launch", endPct: 10 },
   { key: "open", endPct: 25 },
   { key: "tile_resize", endPct: 55 },
+  { key: "bitmaps", endPct: 60 },
   { key: "saveas", endPct: 75 },
   { key: "pdf", endPct: 88 },
   { key: "png", endPct: 97 },

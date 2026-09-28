@@ -1582,6 +1582,23 @@ ColorManager `WarnOn*`), and the watchdog dismisses any dialog after 20 s - with
 (the evidence went with the restart). Tests: `test_corel_supervisor.py` (+4, fake worker `beat`/`_test_launch_s` modes),
 `test_convert_batching.py` (+3).
 
+**Oversampled bitmaps: SaveAs was 62% of a shop (2026-09-28).** A real 7-shop batch (10x4 in boards from a 125x48 in,
+199 MB master) took 217.6 s; per shop: open 3.5 s, layout 0.5-0.8 s, **saveas 15-24 s**, pdf 2-6 s, png 2 s. Save options
+make no difference (probed live on CorelDRAW 2019: default, no thumbnail, no KeepAppearance, no VBA - all 12.4-13.1 s,
+208.6 MB; CMX data is already off by default). The cause is the master's five photos (100-300 dpi at 125x48 in, ~530 MB
+raw): shrunk 12.5x they sit at 1,250-3,750 dpi and every output rewrites them. New step `bitmaps`
+(`corel_util.cap_bitmap_resolution`, between `tile_resize` and `saveas`): each bitmap above `SIGNAGE_MAX_BITMAP_DPI`
+(default **300**, 0 = off) at its PLACED size is `Bitmap.Resample`d down - never up, rotated ones skipped. Verified live:
+Resample keeps the image's own dpi, i.e. it SHRINKS and moves the shape, so the box is recorded and restored (every box back
+within 0.001 mm). Same 7 shops through the real pipeline: **217.6 s -> 104.9 s** (the 7th shop done at ~97 s); outputs
+199 MB -> 9-11 MB; saveas 0.7-0.9 s, pdf 0.6-0.8 s, the resample 2.7-3.1 s; previews vs the old ones: mean diff 0.58/255,
+0.07% of pixels off by >40. Full-size boards (photos already at their designed dpi) are untouched and gain nothing. Remaining
+per shop: open 3.2-4.4 s + close ~1.5 s (the master reopened per shop) and the resample; the batch split at
+`CONVERT_BATCH_MAX` 5 costs ~9 s (a second worker + CorelDRAW). A 15-20 s target for 7 shops is below what CorelDRAW needs
+here (~5 s of real work per shop even with one open); keeping the master open across a batch (undo a command group per shop)
+would save ~4.5 s/shop but is not done - it needs output-equivalence checks against the reopen path. `report["bitmap_cap"]`
+records {max_dpi, checked, resampled, skipped, pixels_before/after}. Tests: `test_bitmap_cap.py` (10, fake COM with the live
+Resample behaviour).
 **List thumbnails + fly-in (2026-09-28, second pass).** Recently generated drew each row's 56 px thumbnail from the shop's
 full CorelDRAW preview PNG: measured **17.9 MB for 16 rows** (~1.1-1.3 MB each), all downloaded and decoded. New
 `GET /api/v2/shops/{id}/thumb` (`main.v2_shop_thumb`): Pillow, bilinear with a reducing gap, 240 px long side, WebP (PNG if the

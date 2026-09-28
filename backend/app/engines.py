@@ -341,6 +341,14 @@ class CorelEngine:
                 return page_w, page_h, placed
 
             page_w, page_h, placed = step("tile_resize", _resize_and_tile)
+            # Cap embedded bitmaps at SIGNAGE_MAX_BITMAP_DPI (300) at their PLACED size, before the save: a board smaller
+            # than its master otherwise carries the master's full-resolution photos into every output (measured live: a
+            # 10x4 in board from a 125x48 in master saved 208.7 MB in 14.1 s; capped, 10.0 MB in 0.8 s). Downsamples only,
+            # keeps every bitmap's box - see corel_util.cap_bitmap_resolution.
+            bitmap_cap = step("bitmaps", lambda: corel_util.cap_bitmap_resolution(doc, corel_util.max_bitmap_dpi()))
+            if bitmap_cap.get("resampled"):
+                logger.info("capped %d bitmap(s) at %d dpi (%.1f -> %.1f Mpx)", bitmap_cap["resampled"],
+                            corel_util.max_bitmap_dpi(), bitmap_cap["pixels_before"] / 1e6, bitmap_cap["pixels_after"] / 1e6)
 
             cdr_path = out_dir / f"{base}.cdr"
             pdf_path = out_dir / f"{base}.pdf"
@@ -377,6 +385,7 @@ class CorelEngine:
 
         report = _report((page_w, page_h), (new_w, new_h), placed, timings, warnings, free_ram_gb)
         report["cdr_format"] = cdr_format
+        report["bitmap_cap"] = {"max_dpi": corel_util.max_bitmap_dpi(), **bitmap_cap}
         report["corel"] = dict(corel_util.connected)  # which CorelDRAW (ProgID + version) produced this board
         (out_dir / f"{base}_report.json").write_text(json.dumps(report, indent=2))
         return {"files": {"cdr": cdr_path.name, "pdf": pdf_path.name,

@@ -630,6 +630,85 @@ def save_cdr(doc, path, version: int | None = None) -> int:
     return target
 
 
+DEFAULT_MAX_BITMAP_DPI = 300
+
+
+def max_bitmap_dpi() -> int:
+    """`SIGNAGE_MAX_BITMAP_DPI` (default 300): the most pixels per inch an embedded bitmap keeps at its placed size in an
+    output .cdr. 0 disables the cap."""
+    try:
+        return max(0, int(os.environ.get("SIGNAGE_MAX_BITMAP_DPI", DEFAULT_MAX_BITMAP_DPI)))
+    except ValueError:
+        return DEFAULT_MAX_BITMAP_DPI
+
+
+def _iter_bitmaps(shapes):
+    """Every bitmap shape under `shapes`: inside groups and PowerClips too."""
+    for i in range(1, shapes.Count + 1):
+        s = shapes.Item(i)
+        t = s.Type
+        if t == 5:  # cdrBitmapShape
+            yield s
+        elif t == 7:  # cdrGroupShape
+            yield from _iter_bitmaps(s.Shapes)
+        try:
+            pc = s.PowerClip
+        except Exception:
+            pc = None
+        if pc is not None:
+            yield from _iter_bitmaps(pc.Shapes)
+
+
+def cap_bitmap_resolution(doc, max_dpi: int) -> dict:
+    """Downsample every embedded bitmap whose resolution AT ITS PLACED SIZE exceeds `max_dpi` - never upsample.
+
+    Why: a master's photos are sized for the master's page. Shrinking a 125x48 in board to 10x4 in keeps every pixel, so
+    its photos end up at 1,250-3,750 dpi and each output .cdr is a 199 MB rewrite of them: measured live, SaveAs 14.1 s /
+    208.7 MB for such a board vs 0.8 s / 10.0 MB with the bitmaps capped at 300 dpi (resampling all 5 took 1.5 s). At
+    300 dpi of the size it will actually print at, the difference is not visible in print. A full-size board, whose photos
+    are at their designed 100-300 dpi, is left exactly as it is.
+
+    Verified live: `Bitmap.Resample` keeps the image's own dpi, i.e. it SHRINKS and moves the shape - so each bitmap's
+    placed box (LeftX/BottomY/SizeWidth/SizeHeight) is recorded first and put back after. Rotated or skewed bitmaps are
+    skipped (their bounding box is not the image's size). Any single failure leaves that bitmap untouched. Returns
+    {"checked", "resampled", "skipped", "pixels_before", "pixels_after"}."""
+    stats = {"checked": 0, "resampled": 0, "skipped": 0, "pixels_before": 0, "pixels_after": 0}
+    if not max_dpi:
+        return stats
+    doc.Unit = 3  # cdrMillimeter: SizeWidth/Height below are mm
+    for layer in doc.ActivePage.Layers:
+        try:
+            if layer.IsSpecialLayer:
+                continue
+        except Exception:
+            pass
+        for s in _iter_bitmaps(layer.Shapes):
+            stats["checked"] += 1
+            try:
+                if abs(float(s.RotationAngle or 0)) > 1e-6:
+                    stats["skipped"] += 1
+                    continue
+                b = s.Bitmap
+                px_w, px_h = int(b.SizeWidth), int(b.SizeHeight)
+                x, y, w, h = s.LeftX, s.BottomY, s.SizeWidth, s.SizeHeight
+                if w <= 0 or h <= 0 or px_w <= 0 or px_h <= 0:
+                    continue
+                tw = max(1, round(w / 25.4 * max_dpi))
+                th = max(1, round(h / 25.4 * max_dpi))
+                if tw >= px_w or th >= px_h:
+                    continue  # already at or under the cap on at least one axis: never upsample or distort
+                b.Resample(tw, th, True, 0.0, 0.0)
+                s.SetSize(w, h)
+                s.LeftX, s.BottomY = x, y
+                stats["resampled"] += 1
+                stats["pixels_before"] += px_w * px_h
+                stats["pixels_after"] += int(b.SizeWidth) * int(b.SizeHeight)
+            except Exception as e:
+                logger.warning("bitmap resolution cap skipped one bitmap: %s", e)
+                stats["skipped"] += 1
+    return stats
+
+
 def cdr_file_format(path) -> dict:
     """What a saved .cdr says about its own format, read from the file (a zip for X4+ files): `form` is the RIFF form type
     of `content/root.dat` (b'CDRM' for a 2019-compatible file, b'CDRU' for the newest format), `version` the

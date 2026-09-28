@@ -497,7 +497,7 @@ def v2_list_shops(job_id: str):
 # Discrete CorelEngine steps (see app/engines.py's `step()` closure) mapped to
 # a rough completion percentage - the best "real" progress signal available,
 # since COM gives step transitions, not byte-level progress within a step.
-_STEP_PERCENT = {"launch": 10, "open": 25, "tile_resize": 55, "saveas": 75, "pdf": 88, "png": 97}
+_STEP_PERCENT = {"launch": 10, "open": 25, "tile_resize": 55, "bitmaps": 60, "saveas": 75, "pdf": 88, "png": 97}
 _progress_peak: dict[str, int] = {}  # shop id -> highest progress_pct reported during its current conversion
 _progress_lock = threading.Lock()
 
