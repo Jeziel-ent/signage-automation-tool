@@ -178,3 +178,53 @@ body:has(.ed-root) { background: #020617; }
 .ed-root .ed-modal .btn.ghost { color: #fca5a5; border-color: rgba(239, 68, 68, 0.45); }
 .ed-root .ed-modal .btn.ghost:hover { background: rgba(127, 29, 29, 0.25); }
 .ed-splash { background: radial-gradient(900px 600px at 50% 40%, #0f1623, #020617 70%); }
+
+/* ---------------------------------------------------------------- font combobox (FontCombobox.jsx, the Missing Font dialog)
+   trigger + dark glass popover with search; each option drawn in its own face; red left accent on the active/selected one */
+.ed-root .fcb { position: relative; font-weight: 400; }
+.ed-root .fcb-trigger {
+  width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 12px;
+  font: inherit; font-size: 15px; color: var(--ed-strong); cursor: pointer; text-align: left;
+  background: var(--ed-field); border: 1px solid var(--ed-line); border-radius: 8px; transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ed-root .fcb-trigger:hover:not(:disabled) { border-color: #334155; }
+.ed-root .fcb-trigger:focus-visible, .ed-root .fcb-trigger.open { outline: none; border-color: var(--ed-accent); box-shadow: var(--ed-ring); }
+.ed-root .fcb-trigger:disabled { opacity: 0.5; cursor: not-allowed; }
+.ed-root .fcb-value { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-root .fcb-chevron { flex: none; color: var(--ed-faint); transition: transform 0.2s ease; }
+.ed-root .fcb-trigger.open .fcb-chevron { transform: rotate(180deg); }
+.ed-root .fcb-menu {
+  position: absolute; top: calc(100% + 6px); left: 0; right: 0; z-index: 30; padding: 6px;
+  /* opaque, no backdrop-filter: nested inside the dialog's own blur a translucent menu let the dialog text show through */
+  background: #0f172a;
+  border: 1px solid var(--ed-line); border-radius: 12px; box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8);
+  transform-origin: top center; animation: fcb-in 0.14s ease-out;
+}
+/* transform only: an opacity animation kept the menu on a compositing layer that let the text beneath show through */
+@keyframes fcb-in { from { transform: translateY(-4px) scale(0.98); } }
+/* the white font-preview box sits right under the menu and its corners showed past the menu's rounded top corners;
+   it is covered anyway while the menu is open */
+.ed-root .ed-fontsub:has(.fcb-menu) .ed-fontsub-sample { visibility: hidden; }
+.ed-root .fcb-search {
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px; color: var(--ed-faint);
+  background: rgba(2, 6, 23, 0.8); border: 1px solid var(--ed-line); border-radius: 8px; transition: border-color 0.15s;
+}
+.ed-root .fcb-search:focus-within { border-color: rgba(239, 68, 68, 0.6); }
+.ed-root .fcb-search input, .ed-root .ed-modal .fcb-search input, .ed-root .ed-modal .fcb-search input:focus { flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: #e2e8f0; font: inherit; font-size: 13px; outline: none; box-shadow: none; }
+.ed-root .fcb-search input::placeholder { color: var(--ed-faint); }
+.ed-root .fcb-list { position: relative; /* offsetParent for the options (FontCombobox scrollToIndex) */ list-style: none; margin: 6px 0 0; padding: 0 2px 0 0; max-height: 248px; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; scrollbar-color: rgba(239, 68, 68, 0.4) rgba(15, 23, 42, 0.6); }
+.ed-root .font-dropdown-list::-webkit-scrollbar { width: 6px; }
+.ed-root .font-dropdown-list::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.6); }
+.ed-root .font-dropdown-list::-webkit-scrollbar-thumb { background: rgba(239, 68, 68, 0.4); border-radius: 3px; }
+.ed-root .font-dropdown-list::-webkit-scrollbar-thumb:hover { background: rgba(239, 68, 68, 0.8); }
+.ed-root .fcb-option {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 34px; padding: 6px 10px;
+  border-left: 2px solid transparent; border-radius: 0 6px 6px 0; color: #cbd5e1; font-size: 15px; cursor: pointer;
+  content-visibility: auto; contain-intrinsic-size: auto 34px; /* hundreds of fonts: only the visible ones are laid out */
+}
+.ed-root .fcb-option.active, .ed-root .fcb-option.selected { border-left-color: var(--ed-accent); background: rgba(30, 41, 59, 0.8); color: #fff; }
+.ed-root .fcb-option.selected:not(.active) { background: rgba(30, 41, 59, 0.45); }
+.ed-root .fcb-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ed-root .fcb-check { flex: none; color: #f87171; }
+.ed-root .fcb-empty { padding: 12px 10px; font-size: 13px; color: var(--ed-faint); }
+@media (prefers-reduced-motion: reduce) { .ed-root .fcb-menu { animation: none; } .ed-root .fcb-chevron { transition: none; } }

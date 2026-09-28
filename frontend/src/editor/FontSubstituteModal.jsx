@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { defaultReplacement } from "./fontSubs.js";
+import FontCombobox from "./FontCombobox.jsx";
 
 /**
  * "Missing Font Detected": a font the board's text uses is neither installed on this server nor on Google Fonts. The
@@ -50,14 +51,10 @@ export default function FontSubstituteModal({ font, webSource, position, total, 
           </p>
         )}
 
-        <label className="ed-fontsub-field">
-          <span>Select Replacement Font</span>
-          <select value={choice} onChange={(e) => setChoice(e.target.value)} disabled={busy || !installed.length}>
-            {installed.map((f) => (
-              <option key={f} value={f} style={{ fontFamily: `"${f}"` }}>{f}</option>
-            ))}
-          </select>
-        </label>
+        <div className="ed-fontsub-field">
+          <span id="fs-font-label">Select Replacement Font</span>
+          <FontCombobox fonts={installed} value={choice} onChange={setChoice} disabled={busy || !installed.length} label="Replacement font" />
+        </div>
         {!installed.length && <div className="ed-warn">The server's font list is not available, so there is nothing to choose from.</div>}
         {choice && (
           <div className="ed-fontsub-sample" style={{ fontFamily: `"${choice}", sans-serif` }} title="Preview in the replacement font">
