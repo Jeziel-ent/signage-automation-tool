@@ -32,6 +32,8 @@ export { FLIGHT_S };
 const FACE_W = 4.2;
 const FACE_H = 2.1;
 const BOARD = { z: -2, y: 6.2, s: 1.8 }; // main billboard: face centre height and scale
+const BOARD_FACE_Z = BOARD.z + 0.135 * BOARD.s; // world z of the sign face (MainBillboard puts it 0.135 in front, scaled)
+const FLIGHT_END_DIST = 1.6; // where the fly-in ends: this far in front of the face, which then fills the whole frame
 const ROAD = { z0: -0.3, z1: 5.5 };
 const LANES = [
   { z: 0.55, dir: 1, speed: 9 },
@@ -897,25 +899,27 @@ function CameraRig({ leaving, still, onArrive }) {
       if (!flight.current) {
         const p0 = camera.position.clone();
         flight.current = {
-          t0: state.clock.elapsedTime,
+          u: 0,
           arrived: false,
           look0: look.current.clone(),
-          // down over the traffic, low across the lanes, then up into the board's face
+          // a straight, rising dolly onto the board's axis: it closes the sideways sway, climbs gently over the traffic
+          // (never below y 4 above the lanes) and ends square in front of the face, close enough that the face fills the
+          // frame when the fade starts - no swing along the street, the board stays centred the whole way
           curve: new THREE.CatmullRomCurve3([
             p0,
-            new THREE.Vector3(p0.x * 0.4 - 3.2, 2.2, 11), // already low: glide over the lanes, no climb first
-            new THREE.Vector3(2.4, 1.9, 3.0),
-            new THREE.Vector3(0.8, BOARD.y - 1, BOARD.z + 5),
-            new THREE.Vector3(0, BOARD.y, BOARD.z + 0.6),
+            new THREE.Vector3(p0.x * 0.5, 4.2, 13),
+            new THREE.Vector3(p0.x * 0.1, 5.8, 5),
+            new THREE.Vector3(0, BOARD.y, BOARD_FACE_Z + FLIGHT_END_DIST),
           ], false, "centripetal"),
         };
       }
       const f = flight.current;
-      const u = Math.min(1, (state.clock.elapsedTime - f.t0) / FLIGHT_S);
+      // progress advances by the frame time, capped at 1/30 s: a dropped frame slows the flight a touch instead of jumping it
+      f.u = Math.min(1, f.u + Math.min(dt, 1 / 30) / FLIGHT_S);
+      const u = f.u;
       camera.position.copy(f.curve.getPointAt(easeInOutCubic(u)));
-      const low = tmp.set(0.6, 2.4, BOARD.z); // look along the street while low, then up at the board
-      if (u < 0.55) look.current.lerpVectors(f.look0, low, smooth(u / 0.55));
-      else look.current.lerpVectors(low, new THREE.Vector3(0, BOARD.y, BOARD.z), smooth((u - 0.55) / 0.45));
+      // the aim settles on the face centre early (it starts only a little above it) and then holds there
+      look.current.lerpVectors(f.look0, tmp.set(0, BOARD.y, BOARD_FACE_Z), smooth(u / 0.45));
       camera.lookAt(look.current);
       if (u >= 0.92 && !f.arrived) {
         f.arrived = true;
