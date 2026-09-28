@@ -2,7 +2,7 @@
 html, body, #root { height: 100%; }
 body {
   margin: 0;
-  background: var(--color-gray-50);
+  background: #020617; /* dark from the first paint (every screen - splash, workspace, editor - covers it anyway) */
   color: var(--color-black);
   font: 14px/1.5 var(--font-sans);
 }
@@ -676,7 +676,31 @@ a.btn { text-decoration: none; display: inline-block; }
    city above them (CityScene's frameProjection), and the fly-in close-up can then fill the entire screen */
 .sp3-stage { position: absolute; inset: 0; }
 /* the city fades in once its first frames (shader compile, texture upload) are done instead of popping in piecemeal */
-.sp3-canvas-wrap { position: absolute; inset: 0; opacity: 0; transition: opacity 0.6s ease; }
+.sp3-canvas-wrap { position: absolute; inset: 0; opacity: 0; transition: opacity 0.7s ease-out; }
+/* instant 2D backdrop under the canvas (visible until the city has compiled and faded in): slate night sky, a soft red
+   horizon glow at roughly the billboard's height in the area above the controls (--sp3-inset = the controls' height) */
+.sp3-backdrop-2d {
+  position: absolute; inset: 0; overflow: hidden; pointer-events: none;
+  background: radial-gradient(ellipse at top, #0f172a 0%, #020617 55%, #000 100%);
+}
+.sp3-horizon-glow {
+  position: absolute; left: 50%; top: calc((100% - var(--sp3-inset, 30vh)) * 0.62); width: 75%; height: 256px;
+  transform: translate(-50%, -50%); border-radius: 50%; background: rgba(220, 38, 38, 0.1); filter: blur(120px);
+}
+/* while the 3D scene loads/compiles: a small spinner + label, centred in the area above the controls, fading out */
+.sp3-preloader {
+  position: absolute; left: 50%; top: calc((100% - var(--sp3-inset, 30vh)) / 2); z-index: 1; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 12px; pointer-events: none;
+  transition: opacity 0.5s ease;
+}
+.sp3-preloader.done { opacity: 0; }
+.sp3-preloader-spin {
+  width: 32px; height: 32px; border-radius: 50%; border: 2px solid rgba(239, 68, 68, 0.2); border-top-color: #ef4444;
+  animation: sp3-preload-spin 0.9s linear infinite;
+}
+@keyframes sp3-preload-spin { to { transform: rotate(360deg); } }
+.sp3-preloader-text { font: 500 12px/1.4 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: 0.18em; text-transform: uppercase; color: #94a3b8; }
+@media (prefers-reduced-motion: reduce) { .sp3-preloader-spin { animation: none; } .sp3-canvas-wrap, .sp3-preloader { transition: none; } }
 .sp3-canvas-wrap.ready { opacity: 1; }
 .sp3-canvas { position: absolute !important; inset: 0; }
 /* the poles run into this: the controls always sit on a calm, dark surface */

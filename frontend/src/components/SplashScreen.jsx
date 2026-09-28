@@ -120,6 +120,17 @@ export default function SplashScreen({ onStart }) {
       transition={{ duration: arriving ? FADE_MS / 1000 : 0.3, ease: "easeOut" }}
     >
       <div className="sp3-stage">
+        {/* painted at frame 0, before the 3D bundle and its shader compile: a night-sky gradient with a red horizon glow,
+            so the screen is never plain black; the city fades in over it (its canvas is opaque once shown) */}
+        <div className="sp3-backdrop-2d" aria-hidden="true">
+          <div className="sp3-horizon-glow" />
+        </div>
+        {gl && (
+          <div className={"sp3-preloader" + (cityReady ? " done" : "")} role="status" aria-live="polite">
+            <span className="sp3-preloader-spin" aria-hidden="true" />
+            <span className="sp3-preloader-text">{cityReady ? "City ready" : "Initializing City Studio..."}</span>
+          </div>
+        )}
         {gl && (
           <CanvasBoundary>
             <Suspense fallback={null}>
