@@ -6,8 +6,8 @@ import Automation from "./pages/Automation.jsx";
 import RecentlyGenerated from "./pages/RecentlyGenerated.jsx";
 import { loadEditorPage } from "./utils/prefetchEditor.js";
 
-// three.js + react-three-fiber (the 3D billboard) are large: keep them out of the main bundle, fetched only for the launch screen.
-const SplashScreen = lazy(() => import("./components/SplashScreen.jsx"));
+// The splash's title and button are light and render immediately; it lazy-loads its own 3D canvas (three.js, ~1 MB).
+import SplashScreen from "./components/SplashScreen.jsx";
 // The editor (canvas, panels, ops engine) is only needed in its own tab: out of the Automation bundle, prefetched on hover.
 const EditorPage = lazy(loadEditorPage);
 
@@ -70,11 +70,7 @@ function Shell() {
   return (
     <div className="app-shell">
       <AnimatePresence>
-        {showSplash && (
-          <Suspense fallback={<div className="sp3-root" />}>
-            <SplashScreen key="splash" onStart={startAutomation} />
-          </Suspense>
-        )}
+        {showSplash && <SplashScreen key="splash" onStart={startAutomation} />}
       </AnimatePresence>
       <aside className={"app-sidebar" + (collapsed ? " collapsed" : "")} aria-label="Sidebar">
         <div className="sidebar-brand">

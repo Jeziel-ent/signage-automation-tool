@@ -1,4 +1,4 @@
-import { Suspense, useLayoutEffect, useMemo, useRef } from "react";
+import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Environment, Lightformer, RoundedBox, Stars, useTexture } from "@react-three/drei";
 import { Bloom, EffectComposer, ToneMapping, Vignette } from "@react-three/postprocessing";
@@ -6,16 +6,18 @@ import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import logoImg from "../assets/logo.jpeg";
+import { FLIGHT_S } from "./cityTiming.js";
 
 /**
  * The launch screen's 3D backdrop: a minimal low-poly night street. The main Adinn billboard stands on the far pavement
- * facing the camera; four smaller Adinn hoardings / LED lightboxes with red neon borders line the street and two buildings;
+ * facing the camera - the one brand sign in the scene - in front of a row of dimly lit shops with generic names, behind them a
+ * New York-style skyline of glass towers (setbacks, crowns, a few masts);
  * cars run both ways on a four-lane road in front of it (headlight pools, taillight trails); an elevated metro line runs
  * behind the billboard with a train on each track at intervals. While waiting the camera drifts slowly (plus pointer
  * parallax); once `leaving` is set it flies a curved path down over the traffic and into the billboard's face, and calls
  * `onArrive` just before contact so the caller can fade out and open the workspace.
  *
- * Everything is procedural (no model files): buildings are ONE instanced mesh with a generated window texture, lane dashes
+ * Everything is procedural (no model files): the towers are ONE merged mesh with a generated curtain-wall texture, lane dashes
  * another; cars and train cars are extruded side profiles (bevelled bodies, glass, metallic wheels) whose parts are merged
  * into a few meshes each. Lights that should glow (neon, head/tail lights, sign faces) are HDR colours above 1.0: the
  * EffectComposer renders without tone mapping, Bloom picks up everything over BLOOM_THRESHOLD, then ToneMapping (ACES) runs
@@ -25,7 +27,7 @@ import logoImg from "../assets/logo.jpeg";
 export const BG = "#0A0A0C";
 const RED = "#E31E24";
 const BUILDING = "#121218";
-export const FLIGHT_S = 2.4; // camera flight from wherever it is into the billboard
+export { FLIGHT_S };
 
 const FACE_W = 4.2;
 const FACE_H = 2.1;
@@ -45,17 +47,27 @@ const TRAIN_RUN = 10; // seconds a pass takes
 const NEON = [5, 0.28, 0.34];
 const HEAD = [7, 7, 6.2];
 const TAIL = [6, 0.25, 0.35];
-// sign faces stay just under the bloom threshold (1.15): bright and crisp, only their neon borders glow
+// the sign face stays just under the bloom threshold (1.15): bright and crisp, only its neon line glows
 const SIGN_WHITE = [1.08, 1.08, 1.08];
 const BLOOM_THRESHOLD = 1.15;
-// buildings that carry lit signs on their street-facing facade (front face at z + d/2)
-const FACADES = [
-  { x: -19, z: -18.5, w: 8, d: 7, h: 24, sign: { y: 11.8, w: 5.6, h: 2.6 } },
-  { x: 18, z: -18.5, w: 9, d: 7, h: 28, sign: { y: 11.8, w: 5.6, h: 2.6 } },
-  // these two sit under the metro deck and beside the main board: low and towards the outer edge of their facade
-  { x: -8.6, z: -18.5, w: 7.5, d: 7, h: 17, sign: { y: 5.7, dx: -1, w: 4.6, h: 2.3 } },
-  { x: 8.9, z: -18.5, w: 7.5, d: 7, h: 19, sign: { y: 5.7, dx: 0.9, w: 4.6, h: 2.3 } },
+const BUILDING_KEEP = 0.55; // share of generated building slots actually built: a sparser skyline behind the hero board
+// the curtain-wall texture tile: 4 panels across x 8 floors, each panel 0.9 wide and 0.85 tall in world units - towers get
+// UVs from their real size, so a floor is the same height on every tower (no stretched windows on the tall ones)
+const GLASS_TILE = { cols: 4, rows: 8, panelW: 0.9, floorH: 0.85 };
+const FRAME_EDGE_MIN_Z = -24; // towers further back than this get no outline (see Skyline)
+const LEDGE_MIN_Z = -34; // ledge slabs on the front and middle rows only (sub-pixel further back)
+const LEDGE_FLOORS = 4; // a ledge every 4 floors
+// the two towers flanking the main billboard, each carrying a large LED Adinn board on its street face
+const FLANK_TOWERS = [
+  { x: -17, z: -19.5, w: 10, d: 7, h: 32, boardY: 16.5, boardW: 7 },
+  { x: 17.5, z: -19.5, w: 10, d: 7, h: 35, boardY: 17.5, boardW: 7 },
 ];
+const LED_WHITE = [1.12, 1.12, 1.12]; // LED faces: a touch brighter than the main board's, still just under the bloom threshold
+const SHOP_FRONT_Z = -5.2; // storefront row, just behind the far pavement (which ends at ROAD.z0 - 4.4)
+
+// the logo is the only image the scene loads: start fetching/decoding it as soon as this module is imported, so it is
+// ready by the time <City> mounts instead of the board popping in a moment after the rest of the street
+useTexture.preload(logoImg);
 
 // deterministic pseudo-random numbers, so the city is the same on every load
 function mulberry32(seed) {
@@ -82,19 +94,46 @@ function canvasTexture(w, h, draw) {
 function useTextures() {
   return useMemo(() => {
     const rnd = mulberry32(7);
-    const windows = canvasTexture(64, 128, (g, w, h) => {
-      g.fillStyle = BUILDING;
-      g.fillRect(0, 0, w, h);
-      for (let row = 0; row < 16; row++) {
-        for (let col = 0; col < 4; col++) {
-          const lit = rnd() < 0.3;
-          g.fillStyle = lit ? (rnd() < 0.12 ? "#ff5a5f" : "#ffd9a8") : "#1a1a23";
-          g.fillRect(4 + col * 15, 4 + row * 7.8, 10, 4.2);
+    // glass curtain wall, one tile = GLASS_TILE.cols x GLASS_TILE.rows panels: dark blue-grey glass with a faint vertical
+    // sheen per panel, framed by thin metallic mullions (vertical) and spandrels (horizontal, slightly heavier)
+    const { cols, rows } = GLASS_TILE;
+    const pw = 32, ph = 32;
+    const lit = []; // which panels are lit, shared by the colour map and the emissive map so they line up
+    for (let i = 0; i < cols * rows; i++) lit.push(rnd() < 0.12 ? (rnd() < 0.3 ? "#c9d6f2" : "#e8c79a") : null);
+    const glass = canvasTexture(cols * pw, rows * ph, (g) => {
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const x = c * pw, y = r * ph;
+          const tone = 30 + Math.floor(rnd() * 14);
+          const gr = g.createLinearGradient(x, y, x + pw, y + ph);
+          gr.addColorStop(0, `rgb(${tone + 8}, ${tone + 20}, ${tone + 42})`); // a cool sheen top-left
+          gr.addColorStop(1, `rgb(${tone - 12}, ${tone - 6}, ${tone + 8})`);
+          g.fillStyle = gr;
+          g.fillRect(x, y, pw, ph);
+          if (lit[r * cols + c]) {
+            g.fillStyle = lit[r * cols + c];
+            g.fillRect(x + 3, y + 5, pw - 6, ph - 10);
+          }
         }
       }
+      g.fillStyle = "#4a5568"; // mullions
+      for (let c = 0; c <= cols; c++) g.fillRect(c * pw - 1, 0, 2, rows * ph);
+      g.fillStyle = "#3a4353"; // spandrels
+      for (let r = 0; r <= rows; r++) g.fillRect(0, r * ph - 2, cols * pw, 4);
     });
-    windows.wrapS = windows.wrapT = THREE.RepeatWrapping;
-    windows.repeat.set(2, 2);
+    const glassLit = canvasTexture(cols * pw, rows * ph, (g) => {
+      g.fillStyle = "#000";
+      g.fillRect(0, 0, cols * pw, rows * ph);
+      lit.forEach((colour, i) => {
+        if (!colour) return;
+        g.fillStyle = colour;
+        g.fillRect((i % cols) * pw + 3, Math.floor(i / cols) * ph + 5, pw - 6, ph - 10);
+      });
+    });
+    for (const t of [glass, glassLit]) {
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.anisotropy = 4; // the towers are seen at grazing angles
+    }
     // alpha ramps: opaque at u = 0, clear at u = 1 (headlight pools, taillight trails)
     const ramp = canvasTexture(128, 8, (g, w, h) => {
       const gr = g.createLinearGradient(0, 0, w, 0);
@@ -125,7 +164,7 @@ function useTextures() {
       g.fillStyle = across;
       g.fillRect(0, 0, w, h);
     });
-    return { windows, ramp, halo, beam };
+    return { glass, glassLit, ramp, halo, beam };
   }, []);
 }
 
@@ -147,47 +186,267 @@ function useLogo() {
 
 // ---------------------------------------------------------------- static city
 
-function Buildings({ windows }) {
-  const mesh = useRef();
-  const list = useMemo(() => {
+// a box with UVs from its real size, so the curtain-wall texture keeps one panel width / floor height on every face
+function glassBox(w, h, d, x, y, z, uShift) {
+  const g = new THREE.BoxGeometry(w, h, d);
+  const uv = g.attributes.uv;
+  const tileW = GLASS_TILE.cols * GLASS_TILE.panelW;
+  const tileH = GLASS_TILE.rows * GLASS_TILE.floorH;
+  // BoxGeometry faces, 4 vertices each: +x, -x, +y, -y, +z, -z; (face width, face height) of each
+  const faces = [[d, h], [d, h], [w, d], [w, d], [w, h], [w, h]];
+  faces.forEach(([fw, fh], f) => {
+    for (let v = f * 4; v < f * 4 + 4; v++) uv.setXY(v, uv.getX(v) * (fw / tileW) + uShift, uv.getY(v) * (fh / tileH));
+  });
+  return g.translate(x, y, z);
+}
+
+/**
+ * The skyline: New York-style glass towers. Every tower is a glass shaft, often stepped back into a narrower upper block and
+ * a crown; on the nearer rows the facades carry real structure - corner columns, vertical fins (mullions) across the street
+ * face and a ledge slab every few floors - and every roof carries plant: HVAC boxes, sometimes a cooling drum, a spire or a
+ * mast with a red aviation light. Two fixed towers flank the main billboard and carry large LED Adinn boards.
+ *
+ * Draw calls stay flat whatever the count: all glass is ONE merged mesh (curtain-wall texture, UVs from each box's real size),
+ * all structure ONE merged mesh (dark metal), outlines ONE line mesh. Fine detail (fins, ledges, outlines) is only built on
+ * the near rows: further back it is thinner than a pixel and would crawl as the camera sways.
+ */
+function Skyline({ glass, glassLit, logo, halo }) {
+  const parts = useMemo(() => {
     const rnd = mulberry32(21);
-    const out = FACADES.map(({ x, z, w, d, h }) => ({ x, z, w, d, h }));
-    for (const [rowZ, minH, maxH] of [[-18.5, 9, 22], [-28, 13, 32], [-40, 18, 40]]) {
+    const boxes = []; // glass: [w, h, d, cx, cy, cz]
+    const metal = []; // structure geometries, merged at the end
+    const masts = []; // [x, y0, z, h]
+    const add = (w, h, d, x, y, z) => metal.push(new THREE.BoxGeometry(w, h, d).translate(x, y, z));
+
+    const facade = (w, h, d, x, y0, z, near) => {
+      boxes.push([w, h, d, x, y0 + h / 2, z]);
+      if (z < LEDGE_MIN_Z) return;
+      // ledge slabs every LEDGE_FLOORS floors, all the way round
+      const step = LEDGE_FLOORS * GLASS_TILE.floorH;
+      for (let y = y0 + step; y < y0 + h - 0.5; y += step) add(w + 0.18, 0.1, d + 0.18, x, y, z);
+      if (!near) return;
+      // corner columns, and vertical fins across the street-facing (+z) face every two panels
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(0.28, h, 0.28, x + sx * (w / 2 - 0.1), y0 + h / 2, z + sz * (d / 2 - 0.1));
+      const pitch = GLASS_TILE.panelW * 2;
+      for (let fx = -w / 2 + pitch; fx < w / 2 - 0.4; fx += pitch) add(0.1, h, 0.24, x + fx, y0 + h / 2, z + d / 2 + 0.12);
+    };
+
+    const roof = (w, d, x, top, z) => {
+      // parapet lip, then 2-4 HVAC boxes and sometimes a cooling drum, kept inside the roof footprint
+      add(w + 0.1, 0.35, d + 0.1, x, top + 0.17, z);
+      const n = 2 + Math.floor(rnd() * 3);
+      for (let i = 0; i < n; i++) {
+        const bw = w * (0.14 + rnd() * 0.16), bd = d * (0.14 + rnd() * 0.16), bh = 0.6 + rnd() * 0.8;
+        add(bw, bh, bd, x + (rnd() - 0.5) * (w - bw) * 0.8, top + 0.35 + bh / 2, z + (rnd() - 0.5) * (d - bd) * 0.8);
+      }
+      if (rnd() < 0.35) {
+        const r = Math.min(w, d) * 0.12;
+        metal.push(new THREE.CylinderGeometry(r, r * 1.1, 1.4, 12).translate(x + w * 0.22, top + 1.05, z - d * 0.2));
+      }
+    };
+
+    // one tower: shaft, optional setback + crown, roof plant, optional spire / mast
+    const tower = (x, z, w, d, h, { tiers = true, near = false, spire = true } = {}) => {
+      let tw = w, td = d, top;
+      if (!tiers || h < 20 || rnd() > 0.6) {
+        facade(w, h, d, x, 0, z, near);
+        top = h;
+      } else {
+        const h1 = h * 0.72, h2 = h * 0.2;
+        facade(w, h1, d, x, 0, z, near);
+        roof(w, d, x, h1, z); // the setback terrace carries plant too
+        tw = w * 0.72; td = d * 0.72;
+        facade(tw, h2, td, x, h1, z, near);
+        top = h1 + h2;
+        if (rnd() < 0.5) {
+          const h3 = h * 0.08;
+          tw = w * 0.42; td = d * 0.42;
+          facade(tw, h3, td, x, top, z, false);
+          top += h3;
+        }
+      }
+      roof(tw, td, x, top, z);
+      if (spire && h > 26) {
+        const r = rnd();
+        if (r < 0.18) {
+          // a tapered spire on a small drum
+          const sh = 5 + rnd() * 5;
+          metal.push(new THREE.CylinderGeometry(tw * 0.18, tw * 0.2, 1.2, 16).translate(x, top + 0.95, z));
+          metal.push(new THREE.CylinderGeometry(0.04, tw * 0.12, sh, 12).translate(x, top + 1.55 + sh / 2, z));
+        } else if (r < 0.4) {
+          masts.push([x, top + 0.35, z, 3 + rnd() * 5]);
+        }
+      }
+      return top;
+    };
+
+    // the two LED-board towers flanking the billboard, fixed so the boards always frame it
+    for (const t of FLANK_TOWERS) tower(t.x, t.z, t.w, t.d, t.h, { near: true, spire: true });
+    // three rows behind the metro, each taller than the one in front: the back row reaches past the top of the frame
+    for (const [rowZ, minH, maxH] of [[-18.5, 12, 28], [-28, 20, 42], [-40, 30, 58]]) {
       for (let x = -80; x < 80; ) {
         const w = 5 + rnd() * 4;
         const cx = x + w / 2;
         x += w + 0.8 + rnd() * 1.5;
-        if (rowZ === -18.5 && FACADES.some((f) => Math.abs(cx - f.x) < (f.w + w) / 2 + 0.6)) continue;
-        out.push({ x: cx, z: rowZ - rnd() * 3, w, d: 5 + rnd() * 3, h: minH + rnd() * (maxH - minH) });
+        const z = rowZ - rnd() * 3, d = 5 + rnd() * 3, h = minH + rnd() * (maxH - minH);
+        if (rnd() >= BUILDING_KEEP) continue; // decided after the slot's own numbers, so the kept ones don't shift around
+        if (rowZ === -18.5 && FLANK_TOWERS.some((t) => Math.abs(cx - t.x) < (t.w + w) / 2 + 0.8)) continue;
+        tower(cx, z, w, d, h, { near: z > FRAME_EDGE_MIN_Z });
       }
     }
     for (const side of [-1, 1]) {
       // the near side of the street, only at the edges of the view
       for (let x = 20; x < 80; ) {
         const w = 6 + rnd() * 4;
-        out.push({ x: side * (x + w / 2), z: 11 + rnd() * 6, w, d: 6, h: 7 + rnd() * 14 });
+        const cx = side * (x + w / 2), z = 11 + rnd() * 6, h = 8 + rnd() * 16;
         x += w + 1 + rnd() * 2;
+        if (rnd() < BUILDING_KEEP) tower(cx, z, w, 6, h, { tiers: false, near: true, spire: false });
       }
     }
-    return out;
+
+    const geos = boxes.map(([w, h, d, x, y, z]) => glassBox(w, h, d, x, y, z, rnd()));
+    // frame outlines only on the near towers (front row behind the metro, and the near side of the street): on the rows
+    // 28-40+ units back a 1 px line is thinner than the tower's own pixels and crawls/shimmers as the camera sways
+    const edges = boxes
+      .filter(([, , , , , z]) => z > FRAME_EDGE_MIN_Z)
+      .map(([w, h, d, x, y, z]) => new THREE.EdgesGeometry(new THREE.BoxGeometry(w, h, d)).translate(x, y, z));
+    const mastGeo = masts.length ? mergeGeometries(masts.map(([x, y0, z, h]) => new THREE.BoxGeometry(0.16, h, 0.16).translate(x, y0 + h / 2, z))) : null;
+    const beaconGeo = masts.length ? mergeGeometries(masts.map(([x, y0, z, h]) => new THREE.BoxGeometry(0.3, 0.3, 0.3).translate(x, y0 + h, z))) : null;
+    return { towers: mergeGeometries(geos), structure: mergeGeometries(metal), frames: mergeGeometries(edges), mastGeo, beaconGeo };
   }, []);
-  const [geometry, materials] = useMemo(() => {
-    const side = new THREE.MeshStandardMaterial({ color: "#ffffff", map: windows, emissive: "#ffffff", emissiveMap: windows, emissiveIntensity: 0.6, roughness: 0.85, metalness: 0.1 });
-    const roof = new THREE.MeshStandardMaterial({ color: BUILDING, roughness: 0.9 });
-    // BoxGeometry face groups: +x, -x, +y, -y, +z, -z
-    return [new THREE.BoxGeometry(1, 1, 1), [side, side, roof, roof, side, side]];
-  }, [windows]);
-  useLayoutEffect(() => {
-    const m = new THREE.Matrix4();
-    list.forEach((b, i) => {
-      m.compose(new THREE.Vector3(b.x, b.h / 2, b.z), new THREE.Quaternion(), new THREE.Vector3(b.w, b.h, b.d));
-      mesh.current.setMatrixAt(i, m);
-    });
-    mesh.current.instanceMatrix.needsUpdate = true;
-  }, [list]);
-  return <instancedMesh ref={mesh} args={[geometry, materials, list.length]} />;
+  // standard (not physical) material: no clearcoat layer to shade; high metalness makes the glass mirror the Environment's
+  // light strips (the sheen), and the curtain-wall map tints those reflections panel by panel
+  const material = useMemo(() => new THREE.MeshStandardMaterial({
+    color: "#ffffff", map: glass, emissive: "#ffffff", emissiveMap: glassLit, emissiveIntensity: 0.38,
+    metalness: 0.85, roughness: 0.15, envMapIntensity: 1.5,
+  }), [glass, glassLit]);
+  return (
+    <group>
+      <mesh geometry={parts.towers} material={material} />
+      <mesh geometry={parts.structure}>
+        <meshStandardMaterial color="#2b3341" metalness={0.8} roughness={0.35} envMapIntensity={1.2} />
+      </mesh>
+      <lineSegments geometry={parts.frames}>
+        <lineBasicMaterial color="#6b7789" transparent opacity={0.35} depthWrite={false} />
+      </lineSegments>
+      {parts.mastGeo && (
+        <mesh geometry={parts.mastGeo}>
+          <meshStandardMaterial color="#2a2f38" metalness={0.8} roughness={0.35} />
+        </mesh>
+      )}
+      {/* aviation lights: a small red point on each mast, barely over the bloom threshold */}
+      {parts.beaconGeo && (
+        <mesh geometry={parts.beaconGeo}>
+          <meshBasicMaterial color={[1.6, 0.12, 0.12]} toneMapped={false} />
+        </mesh>
+      )}
+      {FLANK_TOWERS.map((t) => (
+        <LedBoard key={t.x} logo={logo} halo={halo} position={[t.x, t.boardY, t.z + t.d / 2 + 0.4]} w={t.boardW} />
+      ))}
+    </group>
+  );
 }
 
+/**
+ * A large LED Adinn board on a tower facade: a dark metal cabinet, the logo face self-lit just under the bloom threshold (so
+ * the white stays crisp and the logo readable - above it the whole face would bloom into a white blob), a glowing red neon
+ * frame and a soft red halo on the facade behind it. `position` is the face centre; the face is 2:1 like the logo crop.
+ */
+function LedBoard({ logo, halo, position, w }) {
+  const h = w / 2;
+  const b = 0.12; // neon tube
+  const neon = useMemo(() => mergeGeometries([
+    new THREE.BoxGeometry(w + 0.4 + b, b, b).translate(0, h / 2 + 0.2, 0.08),
+    new THREE.BoxGeometry(w + 0.4 + b, b, b).translate(0, -(h / 2 + 0.2), 0.08),
+    new THREE.BoxGeometry(b, h + 0.4, b).translate(-(w / 2 + 0.2), 0, 0.08),
+    new THREE.BoxGeometry(b, h + 0.4, b).translate(w / 2 + 0.2, 0, 0.08),
+  ]), [w, h]);
+  return (
+    <group position={position}>
+      <mesh position={[0, 0, -0.3]}>
+        <planeGeometry args={[w * 2, h * 2.8]} />
+        <meshBasicMaterial map={halo} color={RED} transparent opacity={0.45} blending={THREE.AdditiveBlending} depthWrite={false} />
+      </mesh>
+      <mesh position={[0, 0, -0.12]}>
+        <boxGeometry args={[w + 0.4, h + 0.4, 0.24]} />
+        <meshStandardMaterial color="#1b1b21" metalness={0.8} roughness={0.3} />
+      </mesh>
+      <mesh position={[0, 0, 0.01]}>
+        <planeGeometry args={[w, h]} />
+        <meshBasicMaterial map={logo} color={LED_WHITE} toneMapped={false} />
+      </mesh>
+      <mesh geometry={neon}>
+        <meshBasicMaterial color={NEON} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
+
+/**
+ * Street-level shops along the back of the billboard's pavement: low units with a warmly lit shop window and an illuminated
+ * Adinn lightbox on the fascia (dark cabinet, backlit logo face, a thin red neon line under it). Bodies, windows, cabinets,
+ * faces and neon lines are each ONE merged mesh - every face shares the logo texture - so the whole row is five draw calls.
+ */
+function Storefronts({ logo }) {
+  const { bodies, windows, cabinets, faces, neons, glazing } = useMemo(() => {
+    const rnd = mulberry32(44);
+    const units = [];
+    for (let x = -48; x < 48; ) {
+      const w = 4 + rnd() * 2.2;
+      const cx = x + w / 2;
+      x += w + 0.25;
+      if (Math.abs(cx) < 4.5) continue; // directly behind the billboard's poles: hidden anyway, and keeps the board clean
+      units.push({ x: cx, w, h: 3.4 + rnd() * 1.1 });
+    }
+    const depth = 3;
+    const fz = SHOP_FRONT_Z;
+    const bodies = mergeGeometries(units.map((u) => new THREE.BoxGeometry(u.w, u.h, depth).translate(u.x, u.h / 2, fz - depth / 2)));
+    const windows = mergeGeometries(units.map((u) => new THREE.PlaneGeometry(u.w - 0.7, u.h * 0.5).translate(u.x, 0.35 + u.h * 0.25, fz + 0.01)));
+    // the lightbox fills the fascia band above the window, at the logo's 2:1
+    const boxes = units.map((u) => {
+      const band0 = 0.35 + u.h * 0.5, band = u.h - band0;
+      const sh = Math.min(band - 0.3, 1.2);
+      return { x: u.x, y: band0 + band / 2, sw: sh * 2, sh };
+    });
+    const cabinets = mergeGeometries(boxes.map((s) => new THREE.BoxGeometry(s.sw + 0.16, s.sh + 0.16, 0.14).translate(s.x, s.y, fz + 0.07)));
+    const faces = mergeGeometries(boxes.map((s) => new THREE.PlaneGeometry(s.sw, s.sh).translate(s.x, s.y, fz + 0.145)));
+    const neons = mergeGeometries(boxes.map((s) => new THREE.BoxGeometry(s.sw + 0.16, 0.05, 0.05).translate(s.x, s.y - s.sh / 2 - 0.14, fz + 0.12)));
+    // a shop window: warm interior light falling off towards the floor, framed glazing bars and a transom
+    const glazing = canvasTexture(256, 128, (g, w, h) => {
+      const gr = g.createLinearGradient(0, 0, 0, h);
+      gr.addColorStop(0, "#a07a4c");
+      gr.addColorStop(1, "#2e241a");
+      g.fillStyle = gr;
+      g.fillRect(0, 0, w, h);
+      g.fillStyle = "#15161b";
+      g.fillRect(0, 0, w, 6); g.fillRect(0, h - 6, w, 6); g.fillRect(0, 0, 6, h); g.fillRect(w - 6, 0, 6, h);
+      g.fillRect(0, h * 0.24, w, 5);
+      for (const fx of [1 / 3, 2 / 3]) g.fillRect(w * fx - 3, 0, 6, h);
+    });
+    return { bodies, windows, cabinets, faces, neons, glazing };
+  }, []);
+  return (
+    <group>
+      <mesh geometry={bodies}>
+        <meshStandardMaterial color={BUILDING} roughness={0.9} />
+      </mesh>
+      {/* shop windows: a warm interior glow (tone mapped, far below the bloom threshold) */}
+      <mesh geometry={windows}>
+        <meshBasicMaterial map={glazing} color={[0.62, 0.62, 0.62]} />
+      </mesh>
+      <mesh geometry={cabinets}>
+        <meshStandardMaterial color="#1b1b21" metalness={0.7} roughness={0.35} />
+      </mesh>
+      {/* backlit faces: bright, but under the bloom threshold so the logo stays legible */}
+      <mesh geometry={faces}>
+        <meshBasicMaterial map={logo} color={SIGN_WHITE} toneMapped={false} />
+      </mesh>
+      <mesh geometry={neons}>
+        <meshBasicMaterial color={NEON} toneMapped={false} />
+      </mesh>
+    </group>
+  );
+}
 function Street({ halo }) {
   const dashes = useRef();
   const dashList = useMemo(() => {
@@ -210,20 +469,20 @@ function Street({ halo }) {
     <group>
       <mesh rotation-x={-Math.PI / 2} position={[0, 0, 0]}>
         <planeGeometry args={[400, 400]} />
-        <meshStandardMaterial color={BG} roughness={1} />
+        <meshStandardMaterial color={BG} roughness={1} depthWrite />
       </mesh>
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.005, (ROAD.z0 + ROAD.z1) / 2]}>
         <planeGeometry args={[400, roadW]} />
-        <meshStandardMaterial color="#101015" roughness={0.42} metalness={0.4} envMapIntensity={0.9} />
+        <meshStandardMaterial color="#101015" roughness={0.42} metalness={0.4} envMapIntensity={0.9} depthWrite polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
       </mesh>
       {/* the solid centre line and the dashed lane lines */}
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.013, 2.6]}>
         <planeGeometry args={[400, 0.08]} />
-        <meshBasicMaterial color="#6b5a3a" />
+        <meshBasicMaterial color="#6b5a3a" depthWrite polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} />
       </mesh>
       <instancedMesh ref={dashes} args={[undefined, undefined, dashList.length]}>
         <planeGeometry args={[1, 1]} />
-        <meshBasicMaterial color="#3d3d48" />
+        <meshBasicMaterial color="#3d3d48" depthWrite polygonOffset polygonOffsetFactor={-2} polygonOffsetUnits={-2} />
       </instancedMesh>
       {/* pavements: far (the billboard's) and near */}
       <mesh position={[0, 0.07, ROAD.z0 - 2.2]}>
@@ -251,7 +510,7 @@ function Street({ halo }) {
           </mesh>
           <mesh rotation-x={-Math.PI / 2} position={[0, 0.02, 1.8]}>
             <planeGeometry args={[5.6, 5.6]} />
-            <meshBasicMaterial map={halo} color="#ffcf8a" transparent opacity={0.16} blending={THREE.AdditiveBlending} depthWrite={false} />
+            <meshBasicMaterial map={halo} color="#ffcf8a" transparent opacity={0.16} blending={THREE.AdditiveBlending} depthWrite={false} polygonOffset polygonOffsetFactor={-3} polygonOffsetUnits={-3} />
           </mesh>
         </group>
       ))}
@@ -290,56 +549,6 @@ function MainBillboard({ logo }) {
         </mesh>
       ))}
       <pointLight position={[0, BOARD.y + 0.5, 4]} intensity={40} distance={14} color="#fff1dc" />
-    </group>
-  );
-}
-
-/**
- * An Adinn sign with a red neon border: a roadside hoarding on a pole (`poleH`) or a lightbox on a building facade (`wall`,
- * with two brackets). The face is self-lit (unlit material, HDR white) so it reads clearly against dark buildings whatever
- * the scene lighting, and blooms a little; `position` is the face centre.
- */
-function Sign({ logo, halo, position, rotationY = 0, w, h, poleH = 0, wall = false }) {
-  const b = 0.08; // neon tube thickness
-  const neon = useMemo(() => {
-    const parts = [
-      new THREE.BoxGeometry(w + 0.3 + b, b, b).translate(0, h / 2 + 0.15, 0.13),
-      new THREE.BoxGeometry(w + 0.3 + b, b, b).translate(0, -(h / 2 + 0.15), 0.13),
-      new THREE.BoxGeometry(b, h + 0.3, b).translate(-(w / 2 + 0.15), 0, 0.13),
-      new THREE.BoxGeometry(b, h + 0.3, b).translate(w / 2 + 0.15, 0, 0.13),
-    ];
-    return mergeGeometries(parts);
-  }, [w, h]);
-  return (
-    <group position={position} rotation-y={rotationY}>
-      <mesh position={[0, 0, -0.16]}>
-        <planeGeometry args={[w * 2.1, h * 2.6]} />
-        <meshBasicMaterial map={halo} color={RED} transparent opacity={0.4} blending={THREE.AdditiveBlending} depthWrite={false} />
-      </mesh>
-      <mesh>
-        <boxGeometry args={[w + 0.3, h + 0.3, 0.22]} />
-        <meshStandardMaterial color="#1b1b21" metalness={0.8} roughness={0.28} envMapIntensity={1.3} />
-      </mesh>
-      <mesh position={[0, 0, 0.115]}>
-        <planeGeometry args={[w, h]} />
-        <meshBasicMaterial map={logo} color={SIGN_WHITE} toneMapped={false} />
-      </mesh>
-      <mesh geometry={neon}>
-        <meshBasicMaterial color={NEON} toneMapped={false} />
-      </mesh>
-      <pointLight position={[0, -h * 0.3, 1.6]} intensity={wall ? 8 : 5} distance={wall ? 9 : 7} color={RED} />
-      {wall && [-w * 0.3, w * 0.3].map((x) => (
-        <mesh key={x} position={[x, 0, -0.2]}>
-          <boxGeometry args={[0.18, 0.18, 0.3]} />
-          <meshStandardMaterial color="#2a2a32" metalness={0.8} roughness={0.3} />
-        </mesh>
-      ))}
-      {poleH > 0 && (
-        <mesh position={[0, -(h / 2 + 0.15) - poleH / 2, -0.15]}>
-          <cylinderGeometry args={[0.12, 0.12, poleH, 12]} />
-          <meshStandardMaterial color="#2a2a32" metalness={0.8} roughness={0.3} />
-        </mesh>
-      )}
     </group>
   );
 }
@@ -480,7 +689,7 @@ function Car({ car, ramp, beam, carRef }) {
       {/* headlight pool on the road ahead, taillight trails behind */}
       <mesh rotation-x={-Math.PI / 2} position={[g.half + 2.5, 0.02, 0]}>
         <planeGeometry args={[4.8, 1.6]} />
-        <meshBasicMaterial map={beam} color="#fff6e0" transparent opacity={0.35} blending={THREE.AdditiveBlending} depthWrite={false} />
+        <meshBasicMaterial map={beam} color="#fff6e0" transparent opacity={0.35} blending={THREE.AdditiveBlending} depthWrite={false} polygonOffset polygonOffsetFactor={-3} polygonOffsetUnits={-3} />
       </mesh>
       <mesh geometry={g.trail}>
         <meshBasicMaterial map={ramp} color={TAIL} transparent opacity={0.55} blending={THREE.AdditiveBlending} depthWrite={false} side={THREE.DoubleSide} toneMapped={false} />
@@ -664,9 +873,20 @@ function baseDistance(aspect, fovDeg) {
   return Math.max(24, (halfW / tanH) * 1.35);
 }
 
+// Waiting view: a flat, near eye-level shot across the road at the main billboard, looking slightly UP at it (the board's
+// face is centred at BOARD.y). Low enough that the road reads as a horizontal band in front, high enough that passing cars
+// don't cover the board. The sway only slides sideways, with a barely-there vertical bob.
+// Low eye, tilted up ~13 deg: the bottom edge of the frame lands on the road's near kerb (no empty dark foreground) and the
+// billboard sits just under the centre with the skyline rising above it. (From y 2.2 the kerb, ~15.5 ahead, is ~8 deg down;
+// with the 21 deg half-fov that needs a 13 deg upward pitch -> aim at y ~7.6 over the board's 24-unit distance.)
+export const CAMERA_EYE_Y = 2.2;
+const CAMERA_LOOK_Y = 7.6;
+const SWAY_X = 1.2; // amplitude of the sideways drift
+const SWAY_Y = 0.1; // amplitude of the vertical bob
+
 function CameraRig({ leaving, still, onArrive }) {
   const { camera, pointer, size } = useThree();
-  const look = useRef(new THREE.Vector3(0, 5.6, 0));
+  const look = useRef(new THREE.Vector3(0, CAMERA_LOOK_Y, BOARD.z));
   const inited = useRef(false);
   const flight = useRef(null);
   const tmp = useMemo(() => new THREE.Vector3(), []);
@@ -683,7 +903,7 @@ function CameraRig({ leaving, still, onArrive }) {
           // down over the traffic, low across the lanes, then up into the board's face
           curve: new THREE.CatmullRomCurve3([
             p0,
-            new THREE.Vector3(p0.x * 0.4 - 3.2, 5, 11),
+            new THREE.Vector3(p0.x * 0.4 - 3.2, 2.2, 11), // already low: glide over the lanes, no climb first
             new THREE.Vector3(2.4, 1.9, 3.0),
             new THREE.Vector3(0.8, BOARD.y - 1, BOARD.z + 5),
             new THREE.Vector3(0, BOARD.y, BOARD.z + 0.6),
@@ -704,17 +924,22 @@ function CameraRig({ leaving, still, onArrive }) {
       return;
     }
     const d = baseDistance(size.width / Math.max(1, size.height), camera.fov);
-    const lift = (d - 24) * 0.2;
+    const lift = (d - 24) * 0.05; // narrow (portrait) screens stand further back: rise a touch so the road stays in view
     const px = still ? 0 : pointer.x;
     const py = still ? 0 : pointer.y;
-    const target = tmp.set(Math.sin(t * 0.13) * 1.8 + px * 1.2, 14 + lift + Math.sin(t * 0.21) * 0.3 + py * 0.4, BOARD.z + d + Math.sin(t * 0.1) * 0.8);
+    // one slow sine per axis, fixed distance: a smooth horizontal glide instead of three out-of-phase wobbles
+    const target = tmp.set(
+      Math.sin(t * 0.2) * SWAY_X + px * 0.8,
+      CAMERA_EYE_Y + lift + Math.cos(t * 0.15) * SWAY_Y + py * 0.2,
+      BOARD.z + d,
+    );
     if (!inited.current) {
       camera.position.copy(target);
       inited.current = true;
     } else {
       camera.position.lerp(target, 1 - Math.exp(-dt * 2));
     }
-    look.current.set(Math.sin(t * 0.09) * 0.4, 5.6 + lift * 0.3, 0);
+    look.current.set(camera.position.x * 0.15, CAMERA_LOOK_Y + lift * 0.5, BOARD.z); // follows the glide a little: no swivel
     camera.lookAt(look.current);
   });
   return null;
@@ -722,19 +947,61 @@ function CameraRig({ leaving, still, onArrive }) {
 
 // ---------------------------------------------------------------- scene
 
-function City({ leaving, still, onArrive }) {
+const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
+
+/**
+ * Runs once, inside <City> - i.e. only after the logo has loaded and every mesh of the city exists - and calls `onReady` when
+ * the scene can be shown without a hitch or a pop:
+ *   1. one frame, so everything mounted alongside (the Environment's reflection map, the effect passes) is in the scene
+ *      before any shader is built - a program compiled without the env map would be rebuilt the moment it arrived;
+ *   2. every texture uploaded to the GPU up front (initTexture), instead of mid-frame when a mesh first draws with it;
+ *   3. every shader program compiled - compileAsync uses KHR_parallel_shader_compile where the driver has it, so the page
+ *      stays responsive meanwhile (plain compile() on older three/drivers);
+ *   4. two rendered frames (the effect composer builds its own passes on its first render), still invisible behind the
+ *      canvas's opacity 0.
+ * Guarded so React's StrictMode double effect doesn't run it twice.
+ */
+function WarmUp({ textures, onReady }) {
+  const { gl, scene, camera } = useThree();
+  const started = useRef(false);
+  const alive = useRef(true);
+  const ready = useRef(onReady);
+  ready.current = onReady;
+  // mounted-ness tracked on its own: StrictMode's simulated unmount/remount must not cancel the one warm-up that runs
+  useEffect(() => {
+    alive.current = true;
+    return () => { alive.current = false; };
+  }, []);
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    (async () => {
+      await nextFrame();
+      for (const t of textures) if (t) gl.initTexture(t);
+      try {
+        if (gl.compileAsync) await gl.compileAsync(scene, camera);
+        else gl.compile(scene, camera);
+      } catch {
+        /* a compile failure here is not fatal: the first real frame compiles whatever is left */
+      }
+      await nextFrame();
+      await nextFrame();
+      if (alive.current) ready.current?.();
+    })();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return null;
+}
+
+function City({ leaving, still, onArrive, onReady }) {
   const logo = useLogo();
-  const { windows, ramp, halo, beam } = useTextures();
+  const { glass, glassLit, ramp, halo, beam } = useTextures();
   return (
     <>
-      <Buildings windows={windows} />
+      <WarmUp textures={[logo, glass, glassLit, ramp, halo, beam]} onReady={onReady} />
+      <Skyline glass={glass} glassLit={glassLit} logo={logo} halo={halo} />
+      <Storefronts logo={logo} />
       <Street halo={halo} />
       <MainBillboard logo={logo} />
-      <Sign logo={logo} halo={halo} position={[-12.5, 3.6, -2.6]} rotationY={0.22} w={4.4} h={2.2} poleH={2.4} />
-      <Sign logo={logo} halo={halo} position={[13, 3.8, -3]} rotationY={-0.24} w={4.4} h={2.2} poleH={2.6} />
-      {FACADES.map((f) => (
-        <Sign key={f.x} logo={logo} halo={halo} position={[f.x + (f.sign.dx || 0), f.sign.y, f.z + f.d / 2 + 0.26]} w={f.sign.w} h={f.sign.h} wall />
-      ))}
       <Metro />
       <Train dir={1} z={-1.1} phase={0} still={still} />
       <Train dir={-1} z={1.1} phase={TRAIN_CYCLE / 2} still={still} />
@@ -744,14 +1011,17 @@ function City({ leaving, still, onArrive }) {
   );
 }
 
-export default function CityScene({ leaving, still, onArrive }) {
+export default function CityScene({ leaving, still, onArrive, onReady }) {
   return (
     <>
       <color attach="background" args={[BG]} />
       <fog attach="fog" args={[BG, 34, 110]} />
-      <ambientLight intensity={0.22} color="#fff4e6" />
+      {/* a fixed lighting baseline: nothing in the scene can fall to pitch black, whatever the camera's position in its loop
+          or the flight - the key/fill directionals are static (never animated) */}
+      <ambientLight intensity={0.8} color="#fff4e6" />
       <hemisphereLight args={["#2a2a38", BG, 0.35]} />
       <directionalLight position={[-6, 14, 10]} intensity={0.6} color="#ffe9d2" />
+      <directionalLight position={[8, 10, 12]} intensity={0.3} color="#dfe6ff" />
       <pointLight position={[0, 9, -4]} intensity={30} distance={30} color={RED} />
       {/* reflections for the chrome, the car paint, the train shell and the wet road: white, warm and red strips */}
       <Environment resolution={256} frames={1}>
@@ -759,12 +1029,16 @@ export default function CityScene({ leaving, still, onArrive }) {
         <Lightformer form="rect" intensity={1.4} position={[-7, 1.5, 1]} scale={[2, 8, 1]} color="#ffe2c0" />
         <Lightformer form="rect" intensity={1.6} position={[7, 0.5, -2]} scale={[2, 7, 1]} color={RED} />
         <Lightformer form="rect" intensity={0.8} position={[0, -2, -6]} scale={[18, 1, 1]} color="#8fa3c8" />
+        {/* the night-sky glow on the camera's side, 5-35 deg up: what the towers' street-facing glass mirrors when seen from
+            the low camera (their reflections point back up towards the viewer). Only visible in reflections - it gives the
+            glass a cool gradient sheen instead of reflecting black, and a soft highlight on the cars' flanks */}
+        <Lightformer form="rect" intensity={0.9} position={[0, 3.5, 10]} rotation-y={Math.PI} scale={[44, 8, 1]} color="#51689a" />
       </Environment>
       <Stars radius={90} depth={40} count={still ? 300 : 700} factor={3} saturation={0} fade speed={still ? 0 : 0.2} />
       <Suspense fallback={null}>
-        <City leaving={leaving} still={still} onArrive={onArrive} />
+        <City leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} />
       </Suspense>
-      <EffectComposer multisampling={4}>
+      <EffectComposer multisampling={2}>
         <Bloom mipmapBlur luminanceThreshold={BLOOM_THRESHOLD} luminanceSmoothing={0.2} intensity={0.9} radius={0.72} />
         <Vignette offset={0.3} darkness={0.6} />
         <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
