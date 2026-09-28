@@ -2,6 +2,7 @@ import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { collectImageUrls, mapBuild, mapPreload, preloadImages } from "../utils/loadStages.js";
 import { useParams } from "react-router-dom";
 import "../editor/editor.css";
+import "../editor/editor-dark.css"; // dark studio theme, layered over editor.css
 import Canvas from "../editor/Canvas.jsx";
 import LayersPanel from "../editor/LayersPanel.jsx";
 import ShopDetailsPanel from "../editor/ShopDetailsPanel.jsx";
@@ -640,7 +641,10 @@ export default function EditorPage() {
       <header className="ed-top">
         <span className="dot" />
         <strong>Signage Editor</strong>
-        <span className="ed-top-sub">job {jobId.slice(0, 8)} · shop {shopId.slice(0, 8)}</span>
+        <span className="ed-top-sub">
+          <span className="ed-pill" title={`Job ${jobId}`}>job <b>{jobId.slice(0, 8)}</b></span>
+          <span className="ed-pill" title={`Shop ${shopId}`}>shop <b>{shopId.slice(0, 8)}</b></span>
+        </span>
         <span className="ed-top-spacer" />
         <span className={`ed-save ed-save-${saveState}`}>
           {saveState === "saved" ? "All edits saved" : saveState === "saving" ? "Saving…" : saveState === "dirty" ? "Unsaved edits" : "Save failed"}
@@ -679,9 +683,9 @@ export default function EditorPage() {
         <div className="ed-stage" style={{ gridTemplateColumns: `${DIM}px ${RULER}px 1fr`, gridTemplateRows: `${DIM}px ${RULER}px 1fr` }}>
           <div className="ed-corner" style={{ gridArea: "1 / 1 / 3 / 3" }} />
           <div style={{ gridArea: "1 / 3" }}><TopDimension width={size.w} view={view} pageW={pageW} unit={unit} /></div>
-          <div style={{ gridArea: "2 / 3" }}><TopRuler width={size.w} view={view} unit={unit} cursor={pointer} /></div>
+          <div style={{ gridArea: "2 / 3" }}><TopRuler width={size.w} view={view} unit={unit} cursor={pointer} span={selBox} /></div>
           <div style={{ gridArea: "3 / 1" }}><LeftDimension height={size.h} view={view} pageH={pageH} unit={unit} /></div>
-          <div style={{ gridArea: "3 / 2" }}><LeftRuler height={size.h} view={view} pageH={pageH} unit={unit} cursor={pointer} /></div>
+          <div style={{ gridArea: "3 / 2" }}><LeftRuler height={size.h} view={view} pageH={pageH} unit={unit} cursor={pointer} span={selBox} /></div>
           <div style={{ gridArea: "3 / 3", position: "relative", minWidth: 0, minHeight: 0, overflow: "hidden" }}>
             <Canvas
               scene={scene}

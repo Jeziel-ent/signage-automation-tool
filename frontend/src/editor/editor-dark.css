@@ -1,0 +1,180 @@
+/* ======================================================================
+   Editor dark studio theme - layered over editor.css (loaded after it by EditorPage.jsx), scoped to .ed-root (the editor
+   and the dialogs it renders) and .ed-splash (its error/loading card). Same design system as the workspace
+   (workspace-dark.css): slate-950 surfaces, slate-900 glass bars and panels, slate-800 borders, red accents.
+
+   The artboard itself stays pure white with no tint (Canvas.jsx draws it: white page, a zoom-independent soft shadow and
+   a 1 px border on top of the content), so the design's colours read exactly as they will print. The rulers' tick and
+   label-mask colours come from the --ed-* variables below (Rulers.jsx falls back to the light values without them).
+   Values follow the design's Tailwind classes; the project has no Tailwind.
+   ====================================================================== */
+.ed-root, .ed-splash {
+  --ed-bg: #020617;
+  --ed-canvas: #090d14;
+  --ed-bar: rgba(15, 23, 42, 0.9);
+  --ed-panel: rgba(15, 23, 42, 0.8);
+  --ed-ruler-bg: #0f172a;
+  --ed-line: #1e293b;
+  --ed-line-soft: rgba(30, 41, 59, 0.55);
+  --ed-text: #e2e8f0;
+  --ed-strong: #f8fafc;
+  --ed-muted: #94a3b8;
+  --ed-faint: #64748b;
+  --ed-field: rgba(2, 6, 23, 0.6);
+  --ed-field-top: rgba(30, 41, 59, 0.8);
+  --ed-field-top-border: rgba(51, 65, 85, 0.8);
+  --ed-accent: #ef4444;
+  --ed-ring: 0 0 0 3px rgba(239, 68, 68, 0.2);
+  /* read by Rulers.jsx / Canvas.jsx */
+  --ed-tick: #64748b;
+  --ed-dim-bg: #0b1120;
+  --ed-box-stroke: #94a3b8;
+  --ed-page-border: rgba(100, 116, 139, 0.65);
+  color-scheme: dark;
+}
+.ed-root { background: var(--ed-bg); color: var(--ed-text); }
+body:has(.ed-root) { background: #020617; }
+
+/* ---------------------------------------------------------------- header + toolbar */
+.ed-root .ed-top, .ed-root .ed-toolbar {
+  background: var(--ed-bar); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--ed-line); color: var(--ed-text); position: relative; z-index: 2;
+}
+.ed-root .ed-top strong { color: var(--ed-strong); letter-spacing: 0.01em; }
+.ed-root .ed-top .dot { box-shadow: 0 0 10px rgba(239, 68, 68, 0.85); }
+.ed-root .ed-top-sub { display: inline-flex; gap: 6px; margin-left: 6px; }
+.ed-root .ed-pill {
+  display: inline-flex; align-items: center; gap: 5px; padding: 2px 10px; border-radius: 999px; font-size: 11.5px;
+  color: var(--ed-muted); background: rgba(30, 41, 59, 0.55); border: 1px solid rgba(51, 65, 85, 0.7);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+}
+.ed-root .ed-pill b { color: #e2e8f0; font-weight: 600; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+.ed-root .ed-save { color: var(--ed-muted); }
+.ed-root .ed-save-dirty, .ed-root .ed-save-saving { color: #fbbf24; }
+.ed-root .ed-save-error { color: #fca5a5; }
+.ed-root .ed-sep { background: var(--ed-line); }
+.ed-root .ed-zoom { color: var(--ed-text); }
+.ed-root .ed-pagesize, .ed-root .ed-check { color: var(--ed-muted); }
+.ed-root .ed-icon-btn { color: var(--ed-muted); }
+.ed-root .ed-icon-btn:hover:not(:disabled) { color: var(--ed-strong); background: rgba(30, 41, 59, 0.8); }
+.ed-root .ed-check input { accent-color: var(--ed-accent); }
+
+/* toolbar inputs (page W/H, units, orientation, zoom): slate-800/80 fields, white text, red focus ring */
+.ed-root .ed-toolbar input, .ed-root .ed-toolbar select {
+  background: var(--ed-field-top); border: 1px solid var(--ed-field-top-border); color: var(--ed-strong);
+  border-radius: 8px; transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ed-root .ed-toolbar input:hover, .ed-root .ed-toolbar select:hover { border-color: #475569; }
+.ed-root .ed-toolbar input:focus, .ed-root .ed-toolbar select:focus { outline: none; border-color: var(--ed-accent); box-shadow: var(--ed-ring); }
+.ed-root .ed-toolbar input[type="checkbox"] { background: none; border: 0; box-shadow: none; }
+.ed-root .ed-toolbar select option { background: #0f172a; color: var(--ed-text); }
+
+/* Save Changes: red gradient with a soft glow */
+.ed-root .ed-toolbar .btn {
+  border: 0; border-radius: 10px; padding: 7px 16px;
+  background-image: linear-gradient(to right, #dc2626, #b91c1c);
+  box-shadow: 0 8px 20px -8px rgba(239, 68, 68, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+  transition: box-shadow 0.2s, transform 0.2s, filter 0.2s;
+}
+.ed-root .ed-toolbar .btn:hover:not(:disabled) {
+  background-image: linear-gradient(to right, #ef4444, #dc2626);
+  box-shadow: 0 10px 26px -8px rgba(239, 68, 68, 0.75), inset 0 1px 0 rgba(255, 255, 255, 0.18); transform: translateY(-1px);
+}
+
+/* ---------------------------------------------------------------- canvas surround + rulers */
+.ed-root .ed-stage { background: var(--ed-canvas); }
+.ed-root .ed-canvas {
+  /* deep canvas with a faint grid and a soft ambient light behind the artboard */
+  background-color: var(--ed-canvas);
+  background-image:
+    radial-gradient(900px 600px at 50% 45%, rgba(30, 41, 59, 0.45), transparent 70%),
+    linear-gradient(rgba(148, 163, 184, 0.045) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(148, 163, 184, 0.045) 1px, transparent 1px);
+  background-size: 100% 100%, 24px 24px, 24px 24px;
+}
+.ed-root .ed-corner { background: var(--ed-ruler-bg); border-color: var(--ed-line); }
+.ed-root .ed-ruler { background: var(--ed-ruler-bg); border-color: var(--ed-line); }
+.ed-root .ed-ruler-label { fill: var(--ed-muted); }
+.ed-root .ed-dim { background: var(--ed-dim-bg); }
+.ed-root .ed-dim-label { fill: #f87171; }
+.ed-root .ed-handle { fill: #0f172a; stroke: #f8fafc; }
+.ed-root .ed-handle:hover { fill: var(--ed-accent); }
+.ed-root .ed-ctx-label { fill: #f87171; }
+
+/* ---------------------------------------------------------------- inspector (properties, shop details, layers) */
+.ed-root .ed-side {
+  background: var(--ed-panel); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-left: 1px solid var(--ed-line);
+}
+.ed-root .ed-panel { border-bottom-color: var(--ed-line); }
+.ed-root .ed-panel h3 { color: #cbd5e1; font-weight: 700; position: relative; padding-left: 10px; }
+.ed-root .ed-panel h3::before {
+  content: ""; position: absolute; left: 0; top: 50%; width: 3px; height: 12px; transform: translateY(-50%); border-radius: 2px;
+  background: var(--ed-accent); box-shadow: 0 0 8px rgba(239, 68, 68, 0.8);
+}
+.ed-root .ed-unit-tag, .ed-root .ed-empty, .ed-root .ed-hint, .ed-root .ed-prop-sub, .ed-root .ed-field, .ed-root .ed-order, .ed-root .ed-sub,
+.ed-root .ed-shop-record, .ed-root .ed-shop-hint { color: var(--ed-muted); }
+.ed-root .ed-prop-title, .ed-root .ed-shop-label, .ed-root .ed-shop-record strong { color: var(--ed-text); }
+.ed-root .ed-field input, .ed-root .ed-field textarea, .ed-root .ed-field select, .ed-root .ed-shop-pick, .ed-root .ed-shop-input,
+.ed-root .ed-modal input, .ed-root .ed-modal select, .ed-root .ed-texteditor textarea {
+  background: var(--ed-field); border: 1px solid var(--ed-line); color: var(--ed-strong); border-radius: 8px;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.ed-root .ed-field input:hover, .ed-root .ed-field textarea:hover, .ed-root .ed-shop-pick:hover, .ed-root .ed-shop-input:hover:not(:disabled) { border-color: #334155; }
+.ed-root .ed-field input:focus, .ed-root .ed-field textarea:focus, .ed-root .ed-shop-pick:focus, .ed-root .ed-shop-input:focus,
+.ed-root .ed-modal input:focus, .ed-root .ed-modal select:focus, .ed-root .ed-texteditor textarea:focus {
+  outline: none; border-color: var(--ed-accent); box-shadow: var(--ed-ring);
+}
+.ed-root .ed-shop-input:disabled { background: rgba(15, 23, 42, 0.6); color: var(--ed-faint); }
+.ed-root .ed-field input:disabled { color: var(--ed-faint); }
+.ed-root .ed-shop-pick option, .ed-root .ed-field select option { background: #0f172a; }
+.ed-root .ed-btn { background: rgba(30, 41, 59, 0.6); border-color: rgba(51, 65, 85, 0.8); color: var(--ed-text); border-radius: 6px; }
+.ed-root .ed-btn:hover:not(:disabled) { border-color: var(--ed-accent); color: #fca5a5; background: rgba(127, 29, 29, 0.25); }
+.ed-root .ed-tabs { border-bottom-color: var(--ed-line); }
+.ed-root .ed-tab { color: var(--ed-muted); }
+.ed-root .ed-tab:hover:not(:disabled) { color: var(--ed-strong); }
+.ed-root .ed-tab.active { color: #f87171; border-bottom-color: var(--ed-accent); }
+.ed-root .ed-text { border-top-color: var(--ed-line); }
+.ed-root .ed-warn { background: rgba(120, 53, 15, 0.3); color: #fcd34d; }
+.ed-root .ed-warn-error { background: rgba(127, 29, 29, 0.35); color: #fca5a5; }
+
+/* layers tree */
+.ed-root .ed-tree { border-color: var(--ed-line); background: rgba(2, 6, 23, 0.35); border-radius: 8px; }
+.ed-root .ed-row { border-bottom-color: var(--ed-line-soft); color: var(--ed-text); transition: background-color 0.12s; }
+.ed-root .ed-row:hover { background: rgba(30, 41, 59, 0.6); }
+.ed-root .ed-row.layer { background: rgba(15, 23, 42, 0.95); color: var(--ed-strong); }
+.ed-root .ed-row.selected { background: rgba(30, 41, 59, 0.8); box-shadow: inset 2px 0 0 var(--ed-accent); }
+.ed-root .ed-row.selected .ed-name { color: #fff; }
+.ed-root .ed-row.ctx { box-shadow: inset 3px 0 0 var(--ed-accent); }
+.ed-root .ed-caret, .ed-root .ed-kind, .ed-root .ed-lock { color: var(--ed-faint); }
+.ed-root .ed-row.selected .ed-kind { color: #f87171; }
+.ed-root .ed-badge { background: rgba(120, 53, 15, 0.45); color: #fcd34d; }
+/* row icon buttons (visibility eye, ungroup): muted, lit on visible rows and on hover */
+.ed-root .ed-icon-only { color: var(--ed-faint); transition: color 0.12s, background 0.12s; }
+.ed-root .ed-row:not(.hidden) .ed-icon-only { color: #cbd5e1; }
+.ed-root .ed-row.hidden .ed-icon-only { color: #475569; }
+.ed-root .ed-icon-only:hover { color: #fff; background: rgba(51, 65, 85, 0.8); }
+
+/* ---------------------------------------------------------------- status bar */
+.ed-root .ed-status { background: #020617; border-top: 1px solid rgba(30, 41, 59, 0.8); color: var(--ed-muted); }
+.ed-root .ed-fonts-missing, .ed-root .ed-fonts-webonly { color: #fbbf24; }
+
+/* ---------------------------------------------------------------- overlays: toast, inline text editor, dialogs, splash */
+.ed-root .ed-toast {
+  background: rgba(15, 23, 42, 0.92); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border: 1px solid rgba(51, 65, 85, 0.8); color: var(--ed-text); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+}
+.ed-root .ed-texteditor { background: rgba(15, 23, 42, 0.95); border-color: var(--ed-accent); box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.6), 0 0 24px rgba(239, 68, 68, 0.2); }
+.ed-root .ed-modal-back { background: rgba(11, 15, 23, 0.75); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.ed-root .ed-modal, .ed-splash .ed-splash-card {
+  background: rgba(15, 23, 42, 0.85); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  color: var(--ed-text); border: 1px solid rgba(51, 65, 85, 0.8); border-top-color: rgba(239, 68, 68, 0.5);
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 30px rgba(185, 28, 28, 0.15);
+}
+.ed-root .ed-modal h2, .ed-splash .ed-splash-card h1 { color: var(--ed-strong); }
+.ed-root .ed-fontsub-count { color: var(--ed-muted); }
+.ed-root .ed-fontsub-sample { border-color: #334155; background: #fff; color: #0f172a; } /* the sample shows the real ink */
+.ed-root .ed-fontsub-duration { border-color: var(--ed-line); }
+.ed-root .ed-modal .btn.ghost { color: #fca5a5; border-color: rgba(239, 68, 68, 0.45); }
+.ed-root .ed-modal .btn.ghost:hover { background: rgba(127, 29, 29, 0.25); }
+.ed-splash { background: radial-gradient(900px 600px at 50% 40%, #0f1623, #020617 70%); }

@@ -444,7 +444,15 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
         onContextMenu={(e) => e.preventDefault()}
       >
         <g transform={`translate(${view.x} ${view.y}) scale(${view.zoom})`}>
-          <rect x={4 / view.zoom} y={4 / view.zoom} width={pageW} height={pageH} fill="rgba(0,0,0,0.28)" />
+          {/* the artboard: a soft deep shadow (a blurred copy behind it - its blur/offset are divided by the zoom so they stay
+              the same on screen), the pure white page, and a crisp 1 px border drawn after the content so no background
+              bleeds into the design's own colours */}
+          <defs>
+            <filter id="ed-page-shadow" x="-25%" y="-25%" width="150%" height="150%">
+              <feGaussianBlur stdDeviation={18 / view.zoom} />
+            </filter>
+          </defs>
+          <rect x={0} y={10 / view.zoom} width={pageW} height={pageH} fill="#000" opacity="0.8" filter="url(#ed-page-shadow)" pointerEvents="none" />
           <rect x="0" y="0" width={pageW} height={pageH} fill="#ffffff" />
           <g style={{ visibility: showRender && scene.page_image ? "hidden" : "visible" }}>
             <SceneImages items={plan} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideKey={hideKey} />
@@ -455,6 +463,8 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
           {showRender && scene.page_image && (
             <image href={assetBase + scene.page_image.file} x="0" y="0" width={pageW} height={pageH} preserveAspectRatio="none" style={{ pointerEvents: "none" }} />
           )}
+          {/* the page border: 1 screen px whatever the zoom, on top of the content, outside the page's colours */}
+          <rect x="0" y="0" width={pageW} height={pageH} fill="none" stroke="var(--ed-page-border, rgba(0,0,0,0.25))" strokeWidth="1" vectorEffect="non-scaling-stroke" pointerEvents="none" />
         </g>
 
         {ctxNode && (() => {
@@ -485,7 +495,7 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
 
         {lb && selNodes.length > 0 && !(overlay && overlay.marquee) && (
           <g>
-            <rect pointerEvents="none" x={lb.x} y={lb.y} width={lb.w} height={lb.h} fill="none" stroke="var(--color-black)" strokeWidth="1" strokeDasharray="5 3" />
+            <rect pointerEvents="none" x={lb.x} y={lb.y} width={lb.w} height={lb.h} fill="none" stroke="var(--ed-box-stroke, var(--color-black))" strokeWidth="1" strokeDasharray="5 3" />
             {showHandles &&
               HANDLES.map(([name, fx, fy]) => (
                 <rect

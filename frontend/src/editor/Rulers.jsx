@@ -4,10 +4,14 @@ export const RULER = 22; // ruler thickness (px)
 export const DIM = 20; // dimension-marker strip thickness (px)
 
 const ARROW = 6;
-const line = "var(--color-gray-600)";
+// colours come from CSS variables (editor-dark.css) with the old light values as fallbacks
+const line = "var(--ed-tick, var(--color-gray-600))";
+const DIM_BG = "var(--ed-dim-bg, var(--color-white))"; // masks the dimension line behind its label
+// the selection's extent on a ruler: a translucent red band with crisp edges (the rulers' accent guides)
+const BAND_FILL = "rgba(239, 68, 68, 0.18)";
 
 /** Horizontal ruler. `view.x` is the screen x of the page's left edge (px), `zoom` px/mm. */
-export function TopRuler({ width, view, unit, cursor }) {
+export function TopRuler({ width, view, unit, cursor, span }) {
   const ticks = rulerTicks((0 - view.x) / view.zoom, (width - view.x) / view.zoom, view.zoom, unit);
   return (
     <svg className="ed-ruler" width={width} height={RULER}>
@@ -20,13 +24,20 @@ export function TopRuler({ width, view, unit, cursor }) {
           </g>
         );
       })}
+      {span && (
+        <g pointerEvents="none">
+          <rect x={view.x + span.x * view.zoom} y={0} width={Math.max(1, span.w * view.zoom)} height={RULER} fill={BAND_FILL} />
+          <line x1={view.x + span.x * view.zoom} x2={view.x + span.x * view.zoom} y1={0} y2={RULER} stroke="var(--color-red)" strokeWidth="1" />
+          <line x1={view.x + (span.x + span.w) * view.zoom} x2={view.x + (span.x + span.w) * view.zoom} y1={0} y2={RULER} stroke="var(--color-red)" strokeWidth="1" />
+        </g>
+      )}
       {cursor && <line x1={view.x + cursor.x * view.zoom} x2={view.x + cursor.x * view.zoom} y1="0" y2={RULER} stroke="var(--color-red)" strokeWidth="1" />}
     </svg>
   );
 }
 
 /** Vertical ruler: values run from the page's bottom edge upward (CorelDRAW's origin). */
-export function LeftRuler({ height, view, pageH, unit, cursor }) {
+export function LeftRuler({ height, view, pageH, unit, cursor, span }) {
   const top = pageH + view.y / view.zoom; // mm at the very top of the viewport
   const bottom = pageH - (height - view.y) / view.zoom;
   const ticks = rulerTicks(bottom, top, view.zoom, unit);
@@ -44,6 +55,13 @@ export function LeftRuler({ height, view, pageH, unit, cursor }) {
           </g>
         );
       })}
+      {span && (
+        <g pointerEvents="none">
+          <rect x={0} y={sy(span.y + span.h)} width={RULER} height={Math.max(1, span.h * view.zoom)} fill={BAND_FILL} />
+          <line x1={0} x2={RULER} y1={sy(span.y + span.h)} y2={sy(span.y + span.h)} stroke="var(--color-red)" strokeWidth="1" />
+          <line x1={0} x2={RULER} y1={sy(span.y)} y2={sy(span.y)} stroke="var(--color-red)" strokeWidth="1" />
+        </g>
+      )}
       {cursor && <line x1="0" x2={RULER} y1={sy(cursor.y)} y2={sy(cursor.y)} stroke="var(--color-red)" strokeWidth="1" />}
     </svg>
   );
@@ -64,7 +82,7 @@ export function TopDimension({ width, view, pageW, unit }) {
       <line x1={clampPx(x0, 0, width)} x2={clampPx(x1, 0, width)} y1={y} y2={y} stroke="var(--color-red)" strokeWidth="1" />
       {x0 >= 0 && x0 <= width && <path d={`M${x0 + ARROW} ${y - 3.5} L${x0} ${y} L${x0 + ARROW} ${y + 3.5} M${x0} 2 V${DIM - 2}`} fill="none" stroke="var(--color-red)" strokeWidth="1" />}
       {x1 >= 0 && x1 <= width && <path d={`M${x1 - ARROW} ${y - 3.5} L${x1} ${y} L${x1 - ARROW} ${y + 3.5} M${x1} 2 V${DIM - 2}`} fill="none" stroke="var(--color-red)" strokeWidth="1" />}
-      <rect x={labelX - 36} y={2} width="72" height={DIM - 4} fill="var(--color-white)" />
+      <rect x={labelX - 36} y={2} width="72" height={DIM - 4} fill={DIM_BG} />
       <text x={labelX} y={y + 4} textAnchor="middle" className="ed-dim-label">{label}</text>
     </svg>
   );
@@ -83,7 +101,7 @@ export function LeftDimension({ height, view, pageH, unit }) {
       <line y1={clampPx(y0, 0, height)} y2={clampPx(y1, 0, height)} x1={x} x2={x} stroke="var(--color-red)" strokeWidth="1" />
       {y0 >= 0 && y0 <= height && <path d={`M${x - 3.5} ${y0 + ARROW} L${x} ${y0} L${x + 3.5} ${y0 + ARROW} M2 ${y0} H${DIM - 2}`} fill="none" stroke="var(--color-red)" strokeWidth="1" />}
       {y1 >= 0 && y1 <= height && <path d={`M${x - 3.5} ${y1 - ARROW} L${x} ${y1} L${x + 3.5} ${y1 - ARROW} M2 ${y1} H${DIM - 2}`} fill="none" stroke="var(--color-red)" strokeWidth="1" />}
-      <rect x={2} y={labelY - 36} width={DIM - 4} height="72" fill="var(--color-white)" />
+      <rect x={2} y={labelY - 36} width={DIM - 4} height="72" fill={DIM_BG} />
       <text transform={`translate(${x + 4} ${labelY}) rotate(-90)`} textAnchor="middle" className="ed-dim-label">{label}</text>
     </svg>
   );
