@@ -304,3 +304,18 @@
   .app-shell .ws-bar, .app-shell .rg-bar, .app-shell .ws-card, .app-shell .rg-table-card { animation: none; }
   .app-shell .master-card:hover:not(.filled), .app-shell .rg-editor-btn:hover { transform: none; }
 }
+
+/* ---------------------------------------------------------------- batch banner: circular % loader (BatchBanner) */
+.app-shell .progress-circle-container { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 56px; height: 56px; flex: none; }
+.app-shell .progress-circle-container svg { display: block; }
+.app-shell .progress-circle-text {
+  position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+  color: #f8fafc; font-size: 0.75rem; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8); pointer-events: none; white-space: nowrap;
+}
+.app-shell .progress-circle-track { stroke: rgba(255, 255, 255, 0.1); }
+.app-shell .progress-circle-fill {
+  stroke: #ef4444; stroke-linecap: round; transition: stroke-dashoffset 0.2s ease-in-out;
+  filter: drop-shadow(0 0 4px rgba(239, 68, 68, 0.65));
+}
+@media (prefers-reduced-motion: reduce) { .app-shell .progress-circle-fill { transition: none; } }

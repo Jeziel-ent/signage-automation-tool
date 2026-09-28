@@ -822,21 +822,18 @@ function BatchBanner({ progress, index, total, remaining }) {
   const C = 2 * Math.PI * R;
   return (
     <div className="batch-banner" role="status" aria-live="polite">
-      <svg width="56" height="56" viewBox="0 0 56 56" className="batch-ring" aria-hidden="true">
-        <circle cx="28" cy="28" r={R} fill="none" stroke="#e2e8f0" strokeWidth="5" />
-        <circle
-          cx="28" cy="28" r={R} fill="none" stroke="url(#batchGrad)" strokeWidth="5" strokeLinecap="round"
-          strokeDasharray={C} strokeDashoffset={C * (1 - progress / 100)} transform="rotate(-90 28 28)"
-          style={{ transition: "stroke-dashoffset 0.6s ease" }}
-        />
-        <defs>
-          <linearGradient id="batchGrad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stopColor="#dc2626" />
-            <stop offset="100%" stopColor="#e11d48" />
-          </linearGradient>
-        </defs>
-        <text x="28" y="32" textAnchor="middle" fontSize="12" fontWeight="700" fill="#0f172a">{progress}%</text>
-      </svg>
+      {/* the % is an HTML label centred over the ring (exactly centred, tabular digits, themed by CSS) - the old SVG text
+          sat on a hand-tuned baseline and was drawn in near-black, invisible on the dark workspace */}
+      <div className="batch-ring progress-circle-container" aria-hidden="true">
+        <svg width="56" height="56" viewBox="0 0 56 56">
+          <circle className="progress-circle-track" cx="28" cy="28" r={R} fill="none" strokeWidth="5" />
+          <circle
+            className="progress-circle-fill" cx="28" cy="28" r={R} fill="none" strokeWidth="5"
+            strokeDasharray={C} strokeDashoffset={C * (1 - progress / 100)} transform="rotate(-90 28 28)"
+          />
+        </svg>
+        <span className="progress-circle-text">{Math.round(progress)}%</span>
+      </div>
       <div className="batch-text">
         <div>
           Converting {index} of {total} &bull; {fmtEta(remaining)}
