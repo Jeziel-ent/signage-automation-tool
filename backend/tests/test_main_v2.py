@@ -344,3 +344,67 @@ def test_v2_convert_worker_omits_contact_keys_when_not_set(client, monkeypatch):
         time.sleep(0.05)
 
     assert "phone" not in captured and "gst" not in captured and "address_lines" not in captured
+
+
+# ---------------------------------------------------------------- list thumbnails (/api/v2/shops/{id}/thumb)
+
+def _shop_with_png_preview(client, size=(1600, 640)):
+    """A shop marked done whose preview is a real PNG of `size` - no conversion needed."""
+    import json as _json
+    import sys as _sys
+    from PIL import Image
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "Thumb", "width": 120, "width_unit": "in", "height": 48, "height_unit": "in",
+    }).json()
+    main = _sys.modules["app.main"]
+    out = main.JOBS_V2 / job_id / "out" / shop["id"]
+    out.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", size, (200, 30, 40)).save(out / "board.png")
+    _sys.modules["app.db"].set_shop_result(shop["id"], {"preview": "board.png", "cdr": "board.cdr"}, {})
+    return job_id, shop["id"], out, main
+
+
+def test_v2_thumb_is_small_capped_and_cached_outside_the_shop_folder(client):
+    import io as _io
+    from PIL import Image
+    job_id, shop_id, out, main = _shop_with_png_preview(client)
+    r = client.get(f"/api/v2/shops/{shop_id}/thumb")
+    assert r.status_code == 200
+    im = Image.open(_io.BytesIO(r.content))
+    assert max(im.size) == main.THUMB_MAX_PX and im.size[0] / im.size[1] == 2.5  # aspect kept
+    assert len(r.content) < 20_000  # vs the 1600 px source
+    # cached under the job's thumbs/, never in out/ (the ZIP export reads out/)
+    assert list((main.JOBS_V2 / job_id / "thumbs").iterdir())
+    assert sorted(p.name for p in out.iterdir()) == ["board.png"]
+    assert client.get(f"/api/v2/shops/{shop_id}/thumb").content == r.content  # served from the cache
+
+
+def test_v2_thumb_is_rebuilt_when_the_preview_changes(client):
+    import io as _io
+    import os as _os
+    from PIL import Image
+    _job, shop_id, out, _main = _shop_with_png_preview(client, size=(1600, 640))
+    first = Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb").content)).size
+    Image.new("RGB", (600, 1200), (10, 10, 10)).save(out / "board.png")  # a re-convert: portrait now
+    later = _os.path.getmtime(out / "board.png") + 5
+    _os.utime(out / "board.png", (later, later))
+    second = Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb").content)).size
+    assert first[0] > first[1] and second[1] > second[0]
+
+
+def test_v2_thumb_404s_without_a_preview(client):
+    files = {"master": ("master.cdr", _fake_cdr_bytes(), "application/octet-stream")}
+    job_id = client.post("/api/v2/upload", data={"brand": "dalmia"}, files=files).json()["id"]
+    shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
+        "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
+    }).json()
+    assert client.get(f"/api/v2/shops/{shop['id']}/thumb").status_code == 404
+    assert client.get("/api/v2/shops/nope/thumb").status_code == 404
+
+
+def test_v2_thumb_of_an_empty_preview_is_a_404_not_a_500(client):
+    _job, shop_id, out, _main = _shop_with_png_preview(client)
+    (out / "board.png").write_bytes(b"")  # seen live: a conversion left a 0-byte preview
+    assert client.get(f"/api/v2/shops/{shop_id}/thumb").status_code == 404

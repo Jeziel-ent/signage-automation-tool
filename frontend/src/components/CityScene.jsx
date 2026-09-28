@@ -6,7 +6,7 @@ import { ToneMappingMode } from "postprocessing";
 import * as THREE from "three";
 import { mergeGeometries } from "three/examples/jsm/utils/BufferGeometryUtils.js";
 import logoImg from "../assets/logo.jpeg";
-import { FLIGHT_S } from "./cityTiming.js";
+import { ARRIVE_AT, FLIGHT_S } from "./cityTiming.js";
 
 /**
  * The launch screen's 3D backdrop: a minimal low-poly night street. The main Adinn billboard stands on the far pavement
@@ -921,7 +921,7 @@ function CameraRig({ leaving, still, onArrive }) {
       // the aim settles on the face centre early (it starts only a little above it) and then holds there
       look.current.lerpVectors(f.look0, tmp.set(0, BOARD.y, BOARD_FACE_Z), smooth(u / 0.45));
       camera.lookAt(look.current);
-      if (u >= 0.92 && !f.arrived) {
+      if (u >= ARRIVE_AT && !f.arrived) {
         f.arrived = true;
         onArrive?.();
       }

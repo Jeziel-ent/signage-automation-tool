@@ -34,6 +34,7 @@ export default function RecentlyGenerated() {
   const [selectedBrand, setSelectedBrand] = useState("");
   const [selectedStatus, setSelectedStatus] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [badThumbs, setBadThumbs] = useState(() => new Set()); // rows whose thumbnail failed (e.g. an empty preview file)
 
   async function load() {
     try {
@@ -124,11 +125,14 @@ export default function RecentlyGenerated() {
               <tbody>
                 {visible.map((r) => {
                   const previewUrl = r.files && r.files.preview && isImage(r.files.preview) ? fileUrl(r, r.files.preview) : null;
+                  // the cell shows a ~10 KB server-made thumbnail; clicking still opens the full preview
+                  const thumbUrl = previewUrl && `/api/v2/shops/${r.shop_id}/thumb?v=${r.completed_at || 0}`;
                   return (
                     <tr key={r.shop_id}>
                       <td>
-                        {previewUrl ? (
-                          <img className="rg-thumb" src={previewUrl} alt={`${r.name} preview`} loading="lazy" title="Open preview" onClick={() => window.open(previewUrl, "_blank")} />
+                        {previewUrl && !badThumbs.has(r.shop_id) ? (
+                          <img className="rg-thumb" src={thumbUrl} alt={`${r.name} preview`} loading="lazy" decoding="async" title="Open preview" onClick={() => window.open(previewUrl, "_blank")}
+                            onError={() => setBadThumbs((s) => new Set(s).add(r.shop_id))} />
                         ) : (
                           <div className="rg-thumb empty" />
                         )}

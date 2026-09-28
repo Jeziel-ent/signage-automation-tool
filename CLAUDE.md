@@ -1582,6 +1582,18 @@ ColorManager `WarnOn*`), and the watchdog dismisses any dialog after 20 s - with
 (the evidence went with the restart). Tests: `test_corel_supervisor.py` (+4, fake worker `beat`/`_test_launch_s` modes),
 `test_convert_batching.py` (+3).
 
+**List thumbnails + fly-in (2026-09-28, second pass).** Recently generated drew each row's 56 px thumbnail from the shop's
+full CorelDRAW preview PNG: measured **17.9 MB for 16 rows** (~1.1-1.3 MB each), all downloaded and decoded. New
+`GET /api/v2/shops/{id}/thumb` (`main.v2_shop_thumb`): Pillow, bilinear with a reducing gap, 240 px long side, WebP (PNG if the
+Pillow build lacks it), cached under `jobs_v2/<job>/thumbs/` - NOT the shop's `out/` folder, which the ZIP export reads -
+and rebuilt when the preview is newer. Same 16 rows: **87 KB (205x smaller)**, ~25 ms to build each once. An empty/corrupt
+preview (seen live: a 0-byte PNG) is a 404 and the row shows the empty placeholder instead of broken-image alt text. Splash
+fly-in: `FLIGHT_S` 2.4 -> 0.95 s, hand-over at `ARRIVE_AT` 0.8, and the already-faded splash exits instantly (it used to cover
+the workspace, invisible, for 0.3 s more): Start Automation -> usable workspace **~3.2 s -> ~1.1 s**; the WebGL canvas is
+unmounted with the splash (0 canvases afterwards). **Measured and left alone**: gzip (scene JSON 40 KB / 20 ms, recent list
+9 KB - nothing to win locally), optimistic IndexedDB saving (the save round trip is 24 ms and the server's replay check is the
+safety net), inspector debounce (fields commit on blur/Enter; typing is local state), streaming ZIPs (the WeTransfer upload
+reads the built file). Parallel conversion and a master "parse cache": see "Batching" above.
 **QA audit 2026-09-28 (`docs/qa-audit-2026-09-28.md`).** Profiled with 1,001 finished shops: `/api/v2/step-estimates`
 262 -> 13 ms (SQLite `json_extract` of `timings_s` instead of parsing every whole report in Python); `/api/v2/shop-statuses`
 no longer carries `report` (50 ids: 755 -> 22 KB); `/status` no longer sends `report_json` next to the parsed `report`;

@@ -4,7 +4,7 @@
    accent line along the top edge, soft hover glows and a staggered entrance.
 
    Everything is scoped to .app-shell (plus the dropdown menus PillSelect portals to <body>), so the editor - its own route,
-   outside the shell - keeps its light theme. Loaded after styles.css and components/ExportModal.css; delete this file's
+   outside the shell - has its own dark theme, editor/editor-dark.css. Loaded after styles.css and components/ExportModal.css; delete this file's
    import in main.jsx to get the light workspace back.
 
    Values follow the design's Tailwind classes (the project has no Tailwind): slate-950 #020617, slate-900/60 glass,

@@ -778,6 +778,55 @@ def v2_shop_file(shop_id: str, filename: str):
     return FileResponse(p)
 
 
+THUMB_MAX_PX = 240  # long side; the Recently generated thumbnail is 56x36 CSS px (x2 for high-DPI, x1.1 on hover)
+
+
+def _thumb_format() -> tuple[str, str]:
+    """WebP when this Pillow build has it (a 240 px board is ~5-15 KB), else PNG."""
+    from PIL import features
+    return ("WEBP", ".webp") if features.check("webp") else ("PNG", ".png")
+
+
+@app.get("/api/v2/shops/{shop_id}/thumb")
+def v2_shop_thumb(shop_id: str):
+    """A small copy of a converted shop's preview for list thumbnails. The full preview is CorelDRAW's 1600 px PNG
+    (~1-1.3 MB for a real board), which the Recently generated table used to download and decode for every row just to
+    draw it 56 px wide - 17.8 MB for 17 rows, measured. Built once with Pillow (bilinear with a reducing gap: fast, and
+    clean at this scale; export-quality rasters stay CorelDRAW's), cached under the job's thumbs/ folder - never in the
+    shop's out/ folder, which the ZIP export reads - and rebuilt only when the preview is newer than the thumbnail."""
+    row = db.get_shop(shop_id)
+    if not row:
+        raise HTTPException(404, "shop not found")
+    files = json.loads(row["files_json"]) if row.get("files_json") else {}
+    name = (files or {}).get("preview")
+    out_dir = (JOBS_V2 / row["job_id"] / "out" / shop_id).resolve()
+    src = (out_dir / name).resolve() if name else None
+    if not src or out_dir not in src.parents or not src.is_file():
+        raise HTTPException(404, "no preview for this shop")
+    fmt, ext = _thumb_format()
+    thumb = JOBS_V2 / row["job_id"] / "thumbs" / f"{shop_id}{ext}"
+    if not thumb.is_file() or thumb.stat().st_mtime < src.stat().st_mtime:
+        if src.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+            return FileResponse(src)  # e.g. MockEngine's SVG preview: already tiny, and vector
+        from PIL import Image, UnidentifiedImageError
+        thumb.parent.mkdir(parents=True, exist_ok=True)
+        tmp = thumb.with_name(f"{thumb.stem}.{os.getpid()}.tmp{ext}")
+        try:
+            with Image.open(src) as im:
+                im.thumbnail((THUMB_MAX_PX, THUMB_MAX_PX), Image.BILINEAR, reducing_gap=2.0)
+                if im.mode in ("LA", "P"):  # palette / grey+alpha: RGBA so WebP and PNG both keep any transparency
+                    im = im.convert("RGBA")
+                im.save(tmp, fmt, **({"quality": 82, "method": 4} if fmt == "WEBP" else {"optimize": True}))
+        except (UnidentifiedImageError, OSError):  # an empty/corrupt preview (seen live: a 0-byte PNG) - no thumbnail
+            tmp.unlink(missing_ok=True)
+            raise HTTPException(404, "preview is not a readable image")
+        try:
+            tmp.replace(thumb)
+        except OSError:  # another request replaced it at the same moment (Windows): serve that one
+            tmp.unlink(missing_ok=True)
+    return FileResponse(thumb, headers={"Cache-Control": "no-cache"})  # revalidated by ETag, rebuilt when the board is
+
+
 # ------------------------------------------------------ print details sheet
 #
 # "Create Print File" on the Automation page: a one-page (or, for many shops, multi-page) "Print Details" summary of

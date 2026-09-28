@@ -103,7 +103,9 @@ export default function SplashScreen({ onStart }) {
       initial={false}
       // the fade to the workspace is driven here: framer's inline opacity would override a CSS class doing it
       animate={{ opacity: arriving ? 0 : 1 }}
-      exit={{ opacity: 0 }}
+      // after the fly-in the screen has already faded to 0: leave at once, or the invisible screen would keep covering
+      // (and swallowing clicks on) the workspace for another 0.3 s
+      exit={{ opacity: 0, transition: { duration: arriving ? 0 : 0.3 } }}
       transition={{ duration: arriving ? FADE_MS / 1000 : 0.3, ease: "easeOut" }}
     >
       <div className="sp3-stage">
