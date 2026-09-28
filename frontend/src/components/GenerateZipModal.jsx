@@ -3,6 +3,8 @@ import { AlertTriangle, Check, Copy, Download, ExternalLink, Link2, Loader2, Rot
 import { zipIssuesText, zipRequest } from "../utils/assetZip.js";
 import { OTP_MAX, OTP_MIN, normalizeOtp, wtProgress, wtStatusText } from "../utils/generateZip.js";
 import { fmtBytes } from "../utils/fileSize.js";
+import { motion } from "framer-motion";
+import { BACKDROP_MOTION, CARD_MOTION } from "./modalMotion.js";
 import "./ExportModal.css";
 
 /**
@@ -63,8 +65,8 @@ export default function GenerateZipModal({ shops: shopsProp, onClose }) {
 
   const s = zip && zip.summary;
   return (
-    <div className="xm-back" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="xm gz" role="dialog" aria-modal="true" aria-labelledby="gz-title">
+    <motion.div className="xm-back" {...BACKDROP_MOTION} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <motion.div {...CARD_MOTION} className="xm gz" role="dialog" aria-modal="true" aria-labelledby="gz-title">
         <header className="xm-head">
           <div>
             <h2 id="gz-title">ZIP Archive Ready</h2>
@@ -113,8 +115,8 @@ export default function GenerateZipModal({ shops: shopsProp, onClose }) {
             </>
           )}
         </div>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Activity, Building2, ExternalLink, RefreshCw, Search } from "lucide-react";
 import PillSelect from "../components/PillSelect.jsx";
+import AnimatedCount from "../components/AnimatedCount.jsx";
 import { matchesSearch } from "../utils/recentFilter.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
 
@@ -177,7 +178,9 @@ export default function RecentlyGenerated() {
         )}
         {rows !== null && rows.length > 0 && (
           <div className="rg-foot">
-            {filtered ? `${visible.length} of ${rows.length} jobs` : `${rows.length} job${rows.length === 1 ? "" : "s"}`}
+            {filtered
+              ? <><AnimatedCount value={visible.length} /> of {rows.length} jobs</>
+              : <><AnimatedCount value={rows.length} /> job{rows.length === 1 ? "" : "s"}</>}
           </div>
         )}
       </section>

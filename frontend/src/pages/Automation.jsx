@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
+import { AnimatePresence } from "framer-motion";
 import { Building2, CheckCircle2, Download, ExternalLink, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
 import UploadDropzone from "../components/UploadDropzone.jsx";
 import BrandSelect from "../components/BrandSelect.jsx";
+import AnimatedCount from "../components/AnimatedCount.jsx";
 import ExportModal from "../components/ExportModal.jsx";
 import PrintFileModal from "../components/PrintFileModal.jsx";
 import GenerateZipModal from "../components/GenerateZipModal.jsx";
@@ -409,7 +411,7 @@ export default function Automation() {
         </div>
         <div className="ws-badges">
           <span className="ws-badge">
-            <Store size={13} /> {shops.length} Shop{shops.length === 1 ? "" : "s"} Loaded
+            <Store size={13} /> <AnimatedCount value={shops.length} /> Shop{shops.length === 1 ? "" : "s"} Loaded
           </span>
           <span className={"ws-badge" + (bothMasters ? " ok" : "")}>
             <span className={"ws-dot" + (bothMasters ? " live" : "")} aria-hidden="true" /> {masterBadge}
@@ -610,16 +612,24 @@ export default function Automation() {
           )}
         </section>
       </div>
-      {showZip && <GenerateZipModal shops={printable} onClose={() => setShowZip(false)} />}
-      {showPrintFile && <PrintFileModal shops={printable} brand={brand} onClose={() => setShowPrintFile(false)} />}
-      {exportShop && (
-        <ExportModal
-          jobId={exportShop.job_id || (job && job.id)}
-          shopId={exportShop.id}
-          shopName={exportShop.name}
-          onClose={() => setExportShop(null)}
-        />
-      )}
+      {/* each modal in its own AnimatePresence: closing plays its exit animation before it unmounts */}
+      <AnimatePresence>
+        {showZip && <GenerateZipModal key="zip" shops={printable} onClose={() => setShowZip(false)} />}
+      </AnimatePresence>
+      <AnimatePresence>
+        {showPrintFile && <PrintFileModal key="print" shops={printable} brand={brand} onClose={() => setShowPrintFile(false)} />}
+      </AnimatePresence>
+      <AnimatePresence>
+        {exportShop && (
+          <ExportModal
+            key={exportShop.id}
+            jobId={exportShop.job_id || (job && job.id)}
+            shopId={exportShop.id}
+            shopName={exportShop.name}
+            onClose={() => setExportShop(null)}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -6,6 +6,8 @@ import {
   CDR_VERSIONS, DPI_CHOICES, EXPORT_FORMATS, PADDING_CHOICES, PDF_DPI_CHOICES,
   buildExportOptions, defaultSettings, rasterPreview,
 } from "../utils/exportOptions.js";
+import { motion } from "framer-motion";
+import { BACKDROP_MOTION, CARD_MOTION } from "./modalMotion.js";
 import "./ExportModal.css";
 
 const ICON = { pdf: FileText, jpeg: ImageIcon, cdr: FileCode, png: ImageIcon };
@@ -154,8 +156,8 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
   const set = (fmt, patch) => setSettings((s) => ({ ...s, [fmt]: { ...s[fmt], ...patch } }));
 
   return (
-    <div className="xm-back" onMouseDown={(e) => { if (e.target === e.currentTarget && closable) onClose(); }}>
-      <div className="xm" role="dialog" aria-modal="true" aria-labelledby="xm-title">
+    <motion.div className="xm-back" {...BACKDROP_MOTION} onMouseDown={(e) => { if (e.target === e.currentTarget && closable) onClose(); }}>
+      <motion.div {...CARD_MOTION} className="xm" role="dialog" aria-modal="true" aria-labelledby="xm-title">
         <header className="xm-head">
           <div>
             <h2 id="xm-title">Export Signage Files</h2>
@@ -361,8 +363,8 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
             </footer>
           </>
         )}
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
 

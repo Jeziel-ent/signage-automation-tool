@@ -1,0 +1,306 @@
+/* ======================================================================
+   Workspace dark theme - the sidebar shell, Automation, Recently generated and the modals they open, in the launch
+   screen's dark-glass look: a slate-950 canvas lit by a faint red glow, translucent slate-900 glass cards with a thin red
+   accent line along the top edge, soft hover glows and a staggered entrance.
+
+   Everything is scoped to .app-shell (plus the dropdown menus PillSelect portals to <body>), so the editor - its own route,
+   outside the shell - keeps its light theme. Loaded after styles.css and components/ExportModal.css; delete this file's
+   import in main.jsx to get the light workspace back.
+
+   Values follow the design's Tailwind classes (the project has no Tailwind): slate-950 #020617, slate-900/60 glass,
+   slate-800/80 borders, slate-700/80 on hover, backdrop blur, red-950 hover shadow.
+   ====================================================================== */
+.app-shell {
+  --ws-bg: #020617;
+  --ws-glass: rgba(15, 23, 42, 0.6);
+  --ws-glass-strong: rgba(15, 23, 42, 0.85);
+  --ws-solid: #0b1222;
+  --ws-border: rgba(30, 41, 59, 0.8);
+  --ws-border-hover: rgba(51, 65, 85, 0.8);
+  --ws-line: rgba(30, 41, 59, 0.6);
+  --ws-text: #e2e8f0;
+  --ws-strong: #f8fafc;
+  --ws-muted: #94a3b8;
+  --ws-faint: #64748b;
+  --ws-field: rgba(2, 6, 23, 0.55);
+  --ws-field-border: #1e293b;
+  --ws-row-hover: rgba(30, 41, 59, 0.45);
+  --ws-accent: #ef4444;
+  --ws-accent-soft: rgba(239, 68, 68, 0.12);
+  --ws-card-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.35), 0 8px 10px -6px rgba(0, 0, 0, 0.3);
+  --ws-card-shadow-hover: 0 25px 50px -12px rgba(69, 10, 10, 0.35), 0 0 0 1px rgba(239, 68, 68, 0.06);
+
+  color-scheme: dark;
+  color: var(--ws-text);
+  background:
+    radial-gradient(1100px 520px at 70% -10%, rgba(127, 29, 29, 0.22), transparent 60%),
+    radial-gradient(900px 600px at 0% 110%, rgba(30, 41, 59, 0.5), transparent 60%),
+    var(--ws-bg);
+}
+.app-shell h1, .app-shell h2, .app-shell h3 { color: var(--ws-strong); }
+.app-shell .hint, .app-shell .small-text { color: var(--ws-muted); }
+.app-shell .count-num { font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- sidebar */
+.app-shell .app-sidebar {
+  background: linear-gradient(180deg, rgba(2, 6, 23, 0.92), rgba(2, 6, 23, 0.98));
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border-right: 1px solid var(--ws-border);
+}
+.app-shell .sidebar-brand { color: var(--ws-strong); }
+.app-shell .sidebar-brand .dot { box-shadow: 0 0 10px rgba(239, 68, 68, 0.8); }
+.app-shell .app-sidebar .nav-link {
+  margin: 0 10px; padding: 11px 14px; border-left: 0; border-radius: 12px; color: var(--ws-muted);
+  transition: background 0.2s, color 0.2s, box-shadow 0.2s;
+}
+.app-shell .app-sidebar .nav-link:hover { color: var(--ws-strong); background: rgba(30, 41, 59, 0.55); }
+.app-shell .app-sidebar .nav-link.active {
+  color: #fff; background: linear-gradient(90deg, rgba(220, 38, 38, 0.28), rgba(220, 38, 38, 0.08));
+  box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.28), 0 8px 20px -10px rgba(239, 68, 68, 0.45);
+}
+.app-shell .app-sidebar .nav-link.active svg { color: #fca5a5; }
+.app-shell .app-sidebar.collapsed .nav-link { margin: 0 8px; padding: 11px 13px; }
+.app-shell .sidebar-toggle { color: var(--ws-muted); }
+.app-shell .sidebar-toggle:hover { background: rgba(30, 41, 59, 0.55); color: var(--ws-strong); }
+.app-shell .app-sidebar.collapsed [data-tip]:hover::after { background: var(--ws-solid); border: 1px solid var(--ws-border); color: var(--ws-text); }
+
+/* ---------------------------------------------------------------- glass surfaces */
+/* (positioning is left to styles.css - the toolbar is sticky, the others relative - so the accent line below has a box to
+   sit in; the modals render at page level, outside these blurred cards, so backdrop-filter can't trap their fixed layout) */
+.app-shell .ws-bar, .app-shell .rg-bar, .app-shell .ws-card, .app-shell .rg-table-card {
+  background: var(--ws-glass);
+  -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px);
+  border: 1px solid var(--ws-border); border-radius: 16px;
+  box-shadow: var(--ws-card-shadow);
+  transition: border-color 0.3s, box-shadow 0.3s, transform 0.3s;
+  animation: ws-rise 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+.app-shell .ws-bar:hover, .app-shell .rg-bar:hover, .app-shell .ws-card:hover, .app-shell .rg-table-card:hover {
+  border-color: var(--ws-border-hover); box-shadow: var(--ws-card-shadow-hover);
+}
+/* accent lighting: a thin red line fading in along each card's top edge */
+.app-shell .ws-card::before, .app-shell .rg-table-card::before, .app-shell .ws-bar::before, .app-shell .rg-bar::before {
+  content: ""; position: absolute; top: 0; left: 24px; right: 24px; height: 1px; pointer-events: none; z-index: 2;
+  background: linear-gradient(90deg, transparent, rgba(239, 68, 68, 0.55), transparent);
+  opacity: 0.45; transition: opacity 0.3s;
+}
+.app-shell .ws-card:hover::before, .app-shell .rg-table-card:hover::before, .app-shell .ws-bar:hover::before, .app-shell .rg-bar:hover::before { opacity: 1; }
+/* staggered entrance: toolbar, then the cards */
+.app-shell .ws-grid > :nth-child(1) { animation-delay: 0.06s; }
+.app-shell .ws-grid > :nth-child(2) { animation-delay: 0.12s; }
+.app-shell .rg-table-card { animation-delay: 0.08s; }
+@keyframes ws-rise { from { opacity: 0; transform: translateY(10px); } }
+
+.app-shell .ws-card { position: relative; }
+.app-shell .ws-card-head { border-bottom-color: var(--ws-line); }
+.app-shell .ws-card-head h2 { font-size: 15px; letter-spacing: 0.01em; }
+.app-shell .ws-bar-title { color: var(--ws-faint); }
+.app-shell .ws-summary, .app-shell .rg-foot { color: var(--ws-muted); }
+.app-shell .rg-foot { border-top-color: var(--ws-line); }
+.app-shell .batch-text { color: var(--ws-text); }
+.app-shell .batch-bar, .app-shell .progress-bar { background: rgba(30, 41, 59, 0.9); }
+.app-shell .batch-bar-fill, .app-shell .progress-fill { box-shadow: 0 0 10px rgba(239, 68, 68, 0.55); }
+.app-shell .progress-pct, .app-shell .upload-filename { color: var(--ws-muted); }
+.app-shell .import-report { background: rgba(2, 6, 23, 0.4); border-bottom-color: var(--ws-line); color: var(--ws-text); }
+.app-shell .queue-notice { background: rgba(120, 53, 15, 0.25); color: #fcd34d; border-bottom-color: rgba(180, 83, 9, 0.4); }
+.app-shell .err { color: #fca5a5; }
+
+/* ---------------------------------------------------------------- badges (header counters, status) */
+.app-shell .ws-badge {
+  background: rgba(30, 41, 59, 0.55); border-color: var(--ws-border); color: var(--ws-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+.app-shell .ws-badge svg { color: var(--ws-muted); }
+.app-shell .ws-badge.ok { background: rgba(6, 78, 59, 0.35); border-color: rgba(16, 185, 129, 0.35); color: #6ee7b7; }
+.app-shell .ws-dot { background: var(--ws-faint); }
+.app-shell .ws-dot.live { background: #34d399; box-shadow: 0 0 8px rgba(52, 211, 153, 0.9); }
+.app-shell .badge-done { background: rgba(6, 78, 59, 0.35); color: #6ee7b7; border-color: rgba(16, 185, 129, 0.3); }
+.app-shell .badge-processing { background: rgba(120, 53, 15, 0.35); color: #fcd34d; border-color: rgba(245, 158, 11, 0.3); }
+.app-shell .badge-queued { background: rgba(30, 41, 59, 0.7); color: var(--ws-muted); border: 1px solid var(--ws-border); }
+.app-shell .badge-failed { background: rgba(127, 29, 29, 0.35); color: #fca5a5; border-color: rgba(239, 68, 68, 0.3); }
+.app-shell .pill { background: rgba(30, 41, 59, 0.7); color: var(--ws-muted); }
+.app-shell .pill.done { background: rgba(6, 78, 59, 0.35); color: #6ee7b7; }
+.app-shell .pill.error { background: rgba(127, 29, 29, 0.35); color: #fca5a5; }
+.app-shell .ws-tag { background: rgba(30, 41, 59, 0.7); color: var(--ws-muted); }
+.app-shell .ws-tag.ok { background: rgba(6, 78, 59, 0.35); color: #6ee7b7; }
+
+/* ---------------------------------------------------------------- fields & selects */
+.app-shell input, .app-shell select, .app-shell textarea { color-scheme: dark; }
+.app-shell .ws-input, .app-shell .rg-search input, .app-shell .brand-search {
+  background: var(--ws-field); border-color: var(--ws-field-border); color: var(--ws-text);
+}
+.app-shell .ws-input::placeholder, .app-shell .rg-search input::placeholder, .app-shell .brand-search::placeholder { color: var(--ws-faint); }
+.app-shell .ws-input:focus, .app-shell .rg-search input:focus {
+  background: rgba(2, 6, 23, 0.8); border-color: var(--ws-accent); box-shadow: 0 0 0 3px var(--ws-accent-soft);
+}
+.app-shell .rg-search-icon { color: var(--ws-faint); }
+.app-shell .brand-trigger, .app-shell .ws-select select {
+  background: rgba(30, 41, 59, 0.5); border-color: var(--ws-border); color: var(--ws-strong); box-shadow: none;
+}
+.app-shell .brand-trigger:hover, .app-shell .ws-select select:hover { background: rgba(30, 41, 59, 0.8); border-color: var(--ws-border-hover); }
+.app-shell .brand-trigger-label { color: var(--ws-strong); }
+.app-shell .brand-trigger-label svg { color: var(--ws-muted); }
+.app-shell .brand-trigger-label .placeholder, .app-shell .brand-chevron, .app-shell .ws-select-chevron { color: var(--ws-faint); }
+.app-shell .brand-trigger:focus-visible, .app-shell .brand-trigger[aria-expanded="true"] { border-color: var(--ws-accent); box-shadow: 0 0 0 3px var(--ws-accent-soft); }
+
+/* dropdown menus: inline inside the shell (BrandSelect) and portalled to <body> (PillSelect) */
+.app-shell .brand-menu, .brand-menu.portal {
+  background: rgba(11, 18, 34, 0.96); border: 1px solid rgba(51, 65, 85, 0.8); color: #e2e8f0;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(239, 68, 68, 0.05);
+}
+.brand-menu.portal .brand-search { background: rgba(2, 6, 23, 0.55); border-color: #1e293b; color: #e2e8f0; }
+.app-shell .brand-item, .brand-menu.portal .brand-item { color: #cbd5e1; }
+.app-shell .brand-item:hover, .app-shell .brand-item.active, .app-shell .brand-item.selected,
+.brand-menu.portal .brand-item:hover, .brand-menu.portal .brand-item.active, .brand-menu.portal .brand-item.selected {
+  background: rgba(220, 38, 38, 0.16); color: #fca5a5;
+}
+.app-shell .brand-empty, .brand-menu.portal .brand-empty { color: #64748b; }
+
+/* ---------------------------------------------------------------- buttons */
+.app-shell .ws-cta, .app-shell .btn-gradient, .app-shell .rg-editor-btn {
+  box-shadow: 0 8px 20px -8px rgba(239, 68, 68, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.app-shell .ws-cta:hover:not(:disabled), .app-shell .rg-editor-btn:hover { box-shadow: 0 10px 24px -6px rgba(239, 68, 68, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.15); }
+.app-shell .rg-editor-btn { transition: all 0.2s; }
+.app-shell .rg-editor-btn:hover { transform: translateY(-1px); }
+.app-shell .ws-cta-ghost { color: var(--ws-muted); }
+.app-shell .ws-cta-ghost:hover { background: rgba(30, 41, 59, 0.6); color: var(--ws-strong); }
+.app-shell .rg-refresh { background: rgba(30, 41, 59, 0.55); color: var(--ws-text); border: 1px solid var(--ws-border); }
+.app-shell .rg-refresh:hover:not(:disabled) { background: rgba(30, 41, 59, 0.9); border-color: var(--ws-border-hover); }
+.app-shell .btn-outline-dark, .app-shell .hero-outline, .app-shell .hero-cta, .app-shell .mc-browse {
+  background: rgba(30, 41, 59, 0.45); border-color: var(--ws-border-hover); color: var(--ws-text); box-shadow: none;
+}
+.app-shell .btn-outline-dark:hover:not(:disabled), .app-shell .hero-outline:hover:not(:disabled) {
+  background: rgba(30, 41, 59, 0.85); border-color: #475569; color: var(--ws-strong);
+}
+.app-shell .btn-outline-red { background: rgba(127, 29, 29, 0.18); border-color: rgba(239, 68, 68, 0.45); color: #fca5a5; }
+.app-shell .btn-outline-red:hover:not(:disabled) { background: rgba(127, 29, 29, 0.35); border-color: var(--ws-accent); color: #fecaca; box-shadow: 0 8px 20px -10px rgba(239, 68, 68, 0.6); }
+.app-shell .btn.ghost { color: #fca5a5; border-color: rgba(239, 68, 68, 0.45); }
+.app-shell .btn.ghost:hover { background: rgba(127, 29, 29, 0.25); }
+.app-shell .icon-btn { color: var(--ws-faint); }
+.app-shell .icon-btn:hover:not(:disabled), .app-shell .icon-btn:focus-visible { color: #f87171; background: rgba(239, 68, 68, 0.12); }
+.app-shell .row-dl-btn { color: var(--ws-text); }
+
+/* ---------------------------------------------------------------- empty-state heroes & master slots */
+.app-shell .empty-hero { color: var(--ws-muted); }
+.app-shell .empty-hero:hover, .app-shell .empty-hero.drag, .app-shell .empty-hero:focus-visible { background: radial-gradient(420px 260px at 50% 45%, rgba(239, 68, 68, 0.08), transparent 70%); }
+.app-shell .empty-hero.disabled:hover { background: transparent; }
+.app-shell .hero-title { color: var(--ws-strong); }
+.app-shell .hero-help, .app-shell .hero-note { color: var(--ws-muted); }
+.app-shell .empty-hero:hover .hero-cta { border-color: var(--ws-accent); color: #fca5a5; }
+.app-shell .master-card { background: rgba(2, 6, 23, 0.35); border-color: var(--ws-border); transition: all 0.25s; }
+.app-shell .master-card:hover:not(.filled), .app-shell .master-card.drag {
+  border-color: rgba(239, 68, 68, 0.45); background: radial-gradient(260px 200px at 50% 40%, rgba(239, 68, 68, 0.1), rgba(2, 6, 23, 0.35));
+  box-shadow: 0 12px 30px -14px rgba(239, 68, 68, 0.35); transform: translateY(-2px);
+}
+.app-shell .master-card.filled { background: rgba(2, 6, 23, 0.45); }
+.app-shell .mc-icon { background: rgba(239, 68, 68, 0.14); color: #f87171; box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.25); }
+.app-shell .mc-icon.rose { background: rgba(225, 29, 72, 0.14); color: #fb7185; box-shadow: inset 0 0 0 1px rgba(225, 29, 72, 0.25); }
+.app-shell .master-card:hover .mc-icon { box-shadow: inset 0 0 0 1px rgba(239, 68, 68, 0.4), 0 0 18px rgba(239, 68, 68, 0.35); }
+.app-shell .mc-title, .app-shell .mc-filled-head { color: var(--ws-strong); }
+.app-shell .mc-help { color: var(--ws-muted); }
+.app-shell .master-card:hover .mc-browse { border-color: rgba(239, 68, 68, 0.6); color: #fca5a5; }
+.app-shell .master-thumb, .app-shell .master-preview {
+  border-color: var(--ws-border);
+  background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 16px 16px;
+}
+.app-shell .file-badge { background: rgba(2, 6, 23, 0.5); border-color: var(--ws-border); }
+.app-shell .file-badge-name { color: var(--ws-strong); }
+.app-shell .file-badge-size { color: var(--ws-faint); }
+.app-shell .dropzone { border-color: var(--ws-border-hover); color: var(--ws-muted); }
+.app-shell .dropzone.compact { background: rgba(2, 6, 23, 0.4); }
+.app-shell .dropzone:hover, .app-shell .dropzone.drag, .app-shell .dropzone.compact:hover, .app-shell .dropzone.compact.drag { background: rgba(127, 29, 29, 0.14); border-color: rgba(239, 68, 68, 0.5); }
+.app-shell .dropzone-hint { color: var(--ws-faint); }
+.app-shell .preview-missing { color: var(--ws-muted); border-color: var(--ws-border-hover); }
+
+/* ---------------------------------------------------------------- tables */
+.app-shell .ws-table-wrap { border-color: var(--ws-border); box-shadow: none; background: rgba(2, 6, 23, 0.25); }
+.app-shell .ws-card .shops-table th, .app-shell .ws-table-scroll .shops-table th, .app-shell .rg-table th {
+  background: rgba(11, 18, 34, 0.95); color: var(--ws-faint); border-bottom-color: var(--ws-border);
+}
+.app-shell .shops-table td, .app-shell .ws-card .shops-table td, .app-shell .rg-table td { border-bottom-color: var(--ws-line); color: var(--ws-text); }
+.app-shell .ws-card .shops-table tbody tr:hover, .app-shell .rg-table tbody tr:hover { background: var(--ws-row-hover); }
+.app-shell .ws-card .shops-table td input, .app-shell .ws-card .shops-table td select { color: var(--ws-text); }
+.app-shell .ws-card .shops-table td select option { background: var(--ws-solid); color: var(--ws-text); }
+.app-shell .ws-card .shops-table td input:hover:not(:disabled), .app-shell .ws-card .shops-table td select:hover:not(:disabled) { border-color: var(--ws-border-hover); }
+.app-shell .ws-card .shops-table td input:focus:not(:disabled), .app-shell .ws-card .shops-table td select:focus:not(:disabled) {
+  background: var(--ws-field); border-color: var(--ws-accent); box-shadow: 0 0 0 3px var(--ws-accent-soft);
+}
+.app-shell .ws-card .shops-table td input:disabled, .app-shell .ws-card .shops-table td select:disabled { color: var(--ws-muted); }
+.app-shell .ws-card .shops-table tr.new-shop-row td { background: rgba(30, 41, 59, 0.3); }
+.app-shell .ws-card .shops-table tr.new-shop-row input, .app-shell .ws-card .shops-table tr.new-shop-row select { background: var(--ws-field); border-color: var(--ws-field-border); }
+.app-shell .ws-empty { color: var(--ws-faint); }
+.app-shell .rg-thumb { border-color: var(--ws-border); background: #0f172a; box-shadow: none; }
+.app-shell .rg-brand { color: var(--ws-muted); }
+.app-shell .rg-name { color: var(--ws-strong); }
+.app-shell .rg-sub, .app-shell .rg-date { color: var(--ws-faint); }
+.app-shell .rg-dims { background: rgba(30, 41, 59, 0.55); border-color: var(--ws-border); color: var(--ws-text); }
+.app-shell .rg-segment { background: rgba(2, 6, 23, 0.45); border-color: var(--ws-border); }
+.app-shell .rg-segment a { color: var(--ws-muted); }
+.app-shell .rg-segment a:hover { color: #fca5a5; background: rgba(239, 68, 68, 0.12); }
+/* the asset table fitted the viewport only with room to spare: tighter cells and a narrower details column keep the
+   Editor column on screen at common laptop widths (the table still scrolls sideways below that) */
+.app-shell .rg-table th, .app-shell .rg-table td { padding-left: 12px; padding-right: 12px; }
+.app-shell .rg-details { max-width: 220px; }
+
+/* ---------------------------------------------------------------- modals (ExportModal / PrintFileModal / GenerateZipModal) */
+/* backdrop: a dim, blurred wash (backdrop-blur-md); card: slate glass with its own blur, a glowing red top edge and a
+   faint red halo. Enter/exit motion is framer-motion (components/modalMotion.js). */
+.app-shell .xm-back { background: rgba(11, 15, 23, 0.75); -webkit-backdrop-filter: blur(12px); backdrop-filter: blur(12px); }
+.app-shell .xm {
+  background: rgba(15, 23, 42, 0.85); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  color: var(--ws-text); border: 1px solid rgba(51, 65, 85, 0.8); border-top-color: rgba(239, 68, 68, 0.5); border-radius: 16px;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 0 30px rgba(185, 28, 28, 0.15);
+}
+.app-shell .xm-head h2 { color: var(--ws-strong); }
+.app-shell .xm-head, .app-shell .xm-foot { border-color: var(--ws-border); }
+.app-shell .xm-foot { background: rgba(2, 6, 23, 0.5); }
+.app-shell .xm-sub, .app-shell .xm-note, .app-shell .xm-foot-hint, .app-shell .xm-field-label, .app-shell .xm-pick small,
+.app-shell .xm-file-name small, .app-shell .xm-size, .app-shell .pf-no, .app-shell .pf-size, .app-shell .pf-sq { color: var(--ws-muted); }
+.app-shell .xm-center, .app-shell .xm-progress-line, .app-shell .gz-state, .app-shell .gz-link-line, .app-shell .gz-otp-msg, .app-shell .pf-metrics { color: var(--ws-text); }
+.app-shell .xm-x { color: var(--ws-muted); }
+.app-shell .xm-x:hover, .app-shell .xm-x:focus-visible { background: rgba(30, 41, 59, 0.8); color: var(--ws-strong); }
+.app-shell .xm-card, .app-shell .xm-file, .app-shell .gz-action, .app-shell .pf-list { background: rgba(2, 6, 23, 0.4); border-color: var(--ws-border); }
+.app-shell .xm-card.on { border-color: rgba(239, 68, 68, 0.55); box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.1); }
+.app-shell .xm-opts { border-top-color: var(--ws-border); }
+.app-shell .xm-ico.pdf { background: rgba(127, 29, 29, 0.4); color: #fca5a5; }
+.app-shell .xm-ico.cdr { background: rgba(20, 83, 45, 0.45); color: #86efac; }
+.app-shell .xm-ico.jpeg, .app-shell .xm-ico.png { background: rgba(12, 74, 110, 0.45); color: #7dd3fc; }
+.app-shell .xm-card-dl, .app-shell .xm-btn { background: rgba(30, 41, 59, 0.55); border-color: var(--ws-border-hover); color: var(--ws-text); }
+.app-shell .xm-card-dl:hover:not(:disabled), .app-shell .xm-card-dl:focus-visible { background: rgba(127, 29, 29, 0.25); border-color: var(--ws-accent); color: #fca5a5; }
+.app-shell .xm-btn:hover, .app-shell .xm-btn:focus-visible { border-color: #64748b; color: var(--ws-strong); }
+.app-shell .xm-seg { background: rgba(2, 6, 23, 0.6); }
+.app-shell .xm-seg button { color: var(--ws-muted); }
+.app-shell .xm-seg button.on { background: rgba(30, 41, 59, 0.95); color: #fca5a5; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5); }
+.app-shell .xm-seg button:hover:not(:disabled):not(.on) { color: var(--ws-strong); }
+.app-shell .xm-seg button:disabled { color: #334155; }
+.app-shell .xm-select, .app-shell .pf-input, .app-shell .gz-url, .app-shell .gz-otp { background: var(--ws-field); border-color: var(--ws-field-border); color: var(--ws-text); }
+.app-shell .xm-switch { background: #334155; }
+.app-shell .xm-warn { background: rgba(120, 53, 15, 0.3); color: #fcd34d; }
+.app-shell .xm-ok { color: #6ee7b7; }
+.app-shell .xm-err, .app-shell .xm-size.err { color: #fca5a5; }
+.app-shell .pf-shop { border-bottom-color: var(--ws-line); }
+.app-shell .pf-shop:hover { background: var(--ws-row-hover); }
+.app-shell .pf-shop.on { background: rgba(127, 29, 29, 0.22); }
+.app-shell .pf-metrics { background: rgba(2, 6, 23, 0.5); }
+.app-shell .pf-metrics strong, .app-shell .pf-link { color: #f87171; }
+.app-shell .gz-done { color: #6ee7b7; }
+.app-shell .gz-tick-ring { fill: rgba(6, 78, 59, 0.4); }
+.app-shell .gz-download, .app-shell .gz-link-start { color: var(--ws-text); }
+/* the download link is also a .gz-action: keep its red gradient (the panel background above would otherwise win) */
+.app-shell a.gz-download {
+  color: #fff; border-color: transparent; background: linear-gradient(135deg, #dc2626, #e11d48);
+  box-shadow: 0 10px 24px -8px rgba(239, 68, 68, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+.app-shell .gz-link-start:hover { background: rgba(30, 41, 59, 0.6); }
+.app-shell .gz-link-start svg { color: #60a5fa; }
+.app-shell .gz-link.ready { background: rgba(6, 78, 59, 0.2); border-color: rgba(16, 185, 129, 0.35); }
+.app-shell .gz-link.ready:has(.gz-fallback) { background: rgba(120, 53, 15, 0.2); border-color: rgba(245, 158, 11, 0.35); }
+.app-shell .gz-fallback { background: rgba(120, 53, 15, 0.35); color: #fde68a; }
+.app-shell .gz-fallback.local { background: rgba(124, 45, 18, 0.35); color: #fed7aa; }
+.app-shell .gz-why { color: #a8a29e; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell .ws-bar, .app-shell .rg-bar, .app-shell .ws-card, .app-shell .rg-table-card { animation: none; }
+  .app-shell .master-card:hover:not(.filled), .app-shell .rg-editor-btn:hover { transform: none; }
+}

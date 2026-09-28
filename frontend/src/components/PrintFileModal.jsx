@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { FileText, Image as ImageIcon, Loader2, Printer, X } from "lucide-react";
 import { BOARD_TYPES, filenameFrom, fmtSqft, printTotals, sqFeet, todayISO } from "../utils/printSheet.js";
+import { motion } from "framer-motion";
+import { BACKDROP_MOTION, CARD_MOTION } from "./modalMotion.js";
 import "./ExportModal.css";
 
 /**
@@ -75,8 +77,8 @@ export default function PrintFileModal({ shops, brand, onClose }) {
   }
 
   return (
-    <div className="xm-back" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
-      <div className="xm pf" role="dialog" aria-modal="true" aria-labelledby="pf-title">
+    <motion.div className="xm-back" {...BACKDROP_MOTION} onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <motion.div {...CARD_MOTION} className="xm pf" role="dialog" aria-modal="true" aria-labelledby="pf-title">
         <header className="xm-head">
           <div>
             <h2 id="pf-title">Create Print File Details</h2>
@@ -162,7 +164,7 @@ export default function PrintFileModal({ shops, brand, onClose }) {
             {busy ? "Creating..." : "Create Print File"}
           </button>
         </footer>
-      </div>
-    </div>
+      </motion.div>
+    </motion.div>
   );
 }
