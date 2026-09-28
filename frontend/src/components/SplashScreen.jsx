@@ -52,6 +52,16 @@ export default function SplashScreen({ onStart }) {
   const [arriving, setArriving] = useState(false); // the fade to the workspace
   const [still] = useState(reducedMotion);
   const [cityReady, setCityReady] = useState(false); // the canvas fades in once its first frames (shader compile) are done
+  // height of the title + control block overlaid on the bottom of the full-screen canvas: the camera frames the city above it
+  const [inset, setInset] = useState(0);
+  const contentRef = useRef(null);
+  useEffect(() => {
+    const el = contentRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    const ro = new ResizeObserver(() => setInset(Math.round(el.getBoundingClientRect().height)));
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
   const finished = useRef(false);
   const checkSeq = useRef(0);
   const timer = useRef(null);
@@ -97,6 +107,7 @@ export default function SplashScreen({ onStart }) {
   return (
     <motion.div
       className={"sp3-root" + (leaving ? " leaving" : "")}
+      style={{ "--sp3-inset": `${inset}px` }}
       aria-labelledby="sp3-title"
       // no entrance fade: the screen is opaque from its first paint. A 0 -> 1 fade showed the workspace through it and was
       // replayed a moment later (seen as a black blink, like a video restarting)
@@ -113,7 +124,7 @@ export default function SplashScreen({ onStart }) {
           <CanvasBoundary>
             <Suspense fallback={null}>
               <div className={"sp3-canvas-wrap" + (cityReady ? " ready" : "")}>
-                <CityCanvas leaving={leaving} still={still} onArrive={finish} onReady={() => setCityReady(true)} />
+                <CityCanvas leaving={leaving} still={still} onArrive={finish} onReady={() => setCityReady(true)} inset={inset} />
               </div>
             </Suspense>
           </CanvasBoundary>
@@ -122,7 +133,7 @@ export default function SplashScreen({ onStart }) {
       </div>
 
       {/* the page itself: title + one control, the same height in every state */}
-      <main className="sp3-content">
+      <main className="sp3-content" ref={contentRef}>
         <header className="sp3-header">
           <h1 id="sp3-title" className="sp3-title">Signage Automation Platform</h1>
           <p className="sp3-sub">Enterprise CorelDRAW dual-master processing engine</p>

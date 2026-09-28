@@ -672,14 +672,19 @@ a.btn { text-decoration: none; display: inline-block; }
 /* the title block only fades - it keeps its height, because collapsing it resized the WebGL canvas (and re-allocated the
    bloom render targets) on every frame of the flight, which stuttered */
 .sp3-root.leaving .sp3-content { opacity: 0; pointer-events: none; transition: opacity 0.25s ease; }
-.sp3-stage { position: relative; flex: 1 1 auto; min-height: 140px; }
+/* the 3D stage covers the WHOLE screen, under the title/controls (which are overlaid at the bottom): the camera frames the
+   city above them (CityScene's frameProjection), and the fly-in close-up can then fill the entire screen */
+.sp3-stage { position: absolute; inset: 0; }
 /* the city fades in once its first frames (shader compile, texture upload) are done instead of popping in piecemeal */
 .sp3-canvas-wrap { position: absolute; inset: 0; opacity: 0; transition: opacity 0.6s ease; }
 .sp3-canvas-wrap.ready { opacity: 1; }
 .sp3-canvas { position: absolute !important; inset: 0; }
 /* the poles run into this: the controls always sit on a calm, dark surface */
-.sp3-scrim { position: absolute; left: 0; right: 0; bottom: 0; height: 14%; pointer-events: none; background: linear-gradient(to top, #0A0A0C 0%, rgba(10, 10, 12, 0) 100%); }
-.sp3-content { position: relative; flex: none; display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 4px 16px max(24px, 5vh); text-align: center; max-height: 60vh; }
+/* a calm dark ground under the controls: solid behind them (their measured height, --sp3-inset), fading out just above -
+   and gone for the fly-in, so the close-up is clean edge to edge */
+.sp3-scrim { position: absolute; left: 0; right: 0; bottom: 0; height: calc(var(--sp3-inset, 30vh) + 90px); pointer-events: none; background: linear-gradient(to top, #0A0A0C 0%, #0A0A0C calc(100% - 90px), rgba(10, 10, 12, 0) 100%); transition: opacity 0.35s ease; }
+.sp3-root.leaving .sp3-scrim { opacity: 0; }
+.sp3-content { position: relative; z-index: 1; margin-top: auto; flex: none; display: flex; flex-direction: column; align-items: center; gap: 18px; padding: 4px 16px max(24px, 5vh); text-align: center; max-height: 60vh; }
 .sp3-header { display: flex; flex-direction: column; align-items: center; gap: 6px; }
 .sp3-title { margin: 0; font-size: clamp(22px, 2.6vw, 32px); line-height: 1.2; font-weight: 600; letter-spacing: -0.01em; color: #f8fafc; }
 .sp3-sub { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: 0.12em; text-transform: uppercase; color: #94a3b8; }

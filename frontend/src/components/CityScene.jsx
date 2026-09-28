@@ -886,7 +886,28 @@ const CAMERA_LOOK_Y = 7.6;
 const SWAY_X = 1.2; // amplitude of the sideways drift
 const SWAY_Y = 0.1; // amplitude of the vertical bob
 
-function CameraRig({ leaving, still, onArrive }) {
+const BASE_FOV = 42; // vertical field of view of the VISIBLE picture (the area above the launch controls)
+
+/**
+ * The canvas always covers the whole screen, with the title/controls overlaid on its bottom `inset` px. So the waiting
+ * view keeps its framing - the board centred in the area ABOVE the controls - the camera renders a virtual frame
+ * H + inset tall (setViewOffset) whose field of view is widened so the visible area above the controls spans BASE_FOV:
+ * the camera's axis then lands in the middle of that area, at the same scale as a BASE_FOV shot of it. During the fly-in
+ * `inset` eases to 0 and this becomes an ordinary full-screen BASE_FOV shot, so the close-up fills the entire screen - no
+ * dark band under it (the old "half-black screen": the controls' area was not canvas at all), and no canvas resize mid-
+ * flight (resizing re-allocates the bloom targets every frame, which stuttered).
+ */
+function frameProjection(camera, width, height, inset) {
+  const i = Math.min(Math.max(0, inset), height * 0.6);
+  const fullH = height + i;
+  const half = Math.tan((BASE_FOV * Math.PI) / 360) * (fullH / (height - i));
+  camera.fov = (Math.atan(half) * 360) / Math.PI;
+  camera.aspect = width / fullH;
+  camera.setViewOffset(width, fullH, 0, i, width, height); // also updates the projection matrix
+  return height - i; // the visible picture's height
+}
+
+function CameraRig({ leaving, still, onArrive, inset = 0 }) {
   const { camera, pointer, size } = useThree();
   const look = useRef(new THREE.Vector3(0, CAMERA_LOOK_Y, BOARD.z));
   const inited = useRef(false);
@@ -917,6 +938,8 @@ function CameraRig({ leaving, still, onArrive }) {
       // progress advances by the frame time, capped at 1/30 s: a dropped frame slows the flight a touch instead of jumping it
       f.u = Math.min(1, f.u + Math.min(dt, 1 / 30) / FLIGHT_S);
       const u = f.u;
+      // the picture grows from "above the controls" to the whole screen over the first half of the flight
+      frameProjection(camera, size.width, size.height, inset * (1 - smooth(u / 0.5)));
       camera.position.copy(f.curve.getPointAt(easeInOutCubic(u)));
       // the aim settles on the face centre early (it starts only a little above it) and then holds there
       look.current.lerpVectors(f.look0, tmp.set(0, BOARD.y, BOARD_FACE_Z), smooth(u / 0.45));
@@ -927,7 +950,8 @@ function CameraRig({ leaving, still, onArrive }) {
       }
       return;
     }
-    const d = baseDistance(size.width / Math.max(1, size.height), camera.fov);
+    const visibleH = frameProjection(camera, size.width, size.height, inset);
+    const d = baseDistance(size.width / Math.max(1, visibleH), BASE_FOV);
     const lift = (d - 24) * 0.05; // narrow (portrait) screens stand further back: rise a touch so the road stays in view
     const px = still ? 0 : pointer.x;
     const py = still ? 0 : pointer.y;
@@ -996,7 +1020,7 @@ function WarmUp({ textures, onReady }) {
   return null;
 }
 
-function City({ leaving, still, onArrive, onReady }) {
+function City({ leaving, still, onArrive, onReady, inset }) {
   const logo = useLogo();
   const { glass, glassLit, ramp, halo, beam } = useTextures();
   return (
@@ -1010,12 +1034,12 @@ function City({ leaving, still, onArrive, onReady }) {
       <Train dir={1} z={-1.1} phase={0} still={still} />
       <Train dir={-1} z={1.1} phase={TRAIN_CYCLE / 2} still={still} />
       <Traffic ramp={ramp} beam={beam} still={still} />
-      <CameraRig leaving={leaving} still={still} onArrive={onArrive} />
+      <CameraRig leaving={leaving} still={still} onArrive={onArrive} inset={inset} />
     </>
   );
 }
 
-export default function CityScene({ leaving, still, onArrive, onReady }) {
+export default function CityScene({ leaving, still, onArrive, onReady, inset = 0 }) {
   return (
     <>
       <color attach="background" args={[BG]} />
@@ -1040,7 +1064,7 @@ export default function CityScene({ leaving, still, onArrive, onReady }) {
       </Environment>
       <Stars radius={90} depth={40} count={still ? 300 : 700} factor={3} saturation={0} fade speed={still ? 0 : 0.2} />
       <Suspense fallback={null}>
-        <City leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} />
+        <City leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} inset={inset} />
       </Suspense>
       <EffectComposer multisampling={2}>
         <Bloom mipmapBlur luminanceThreshold={BLOOM_THRESHOLD} luminanceSmoothing={0.2} intensity={0.9} radius={0.72} />

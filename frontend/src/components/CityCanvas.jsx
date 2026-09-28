@@ -9,7 +9,7 @@ import CityScene from "./CityScene.jsx";
  * shader is compiled and two frames have been drawn - the caller keeps the canvas at opacity 0 until then, so nothing pops
  * in piecemeal and the compile hitch happens out of sight.
  */
-export default function CityCanvas({ leaving, still, onArrive, onReady }) {
+export default function CityCanvas({ leaving, still, onArrive, onReady, inset }) {
   return (
     <Canvas
       className="sp3-canvas"
@@ -18,7 +18,7 @@ export default function CityCanvas({ leaving, still, onArrive, onReady }) {
       // no stencil buffer (nothing uses one); the effect composer draws to its own targets
       gl={{ antialias: false, stencil: false, powerPreference: "high-performance" }}
     >
-      <CityScene leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} />
+      <CityScene leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} inset={inset} />
     </Canvas>
   );
 }
