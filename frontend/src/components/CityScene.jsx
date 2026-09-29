@@ -1,4 +1,4 @@
-import { Suspense, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { Suspense, memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Environment, Lightformer, RoundedBox, Stars, useTexture } from "@react-three/drei";
 import { Bloom, EffectComposer, ToneMapping, Vignette } from "@react-three/postprocessing";
@@ -1023,7 +1023,9 @@ function WarmUp({ textures, onReady }) {
 function City({ leaving, still, onArrive, onReady, inset }) {
   const logo = useLogo();
   const { glass, glassLit, ramp, halo, beam } = useTextures();
-  return (
+  // the city itself only depends on its textures and `still`: built once, so a change of `leaving` / `inset` re-renders
+  // the camera rig alone instead of reconciling every mesh of the city
+  const city = useMemo(() => (
     <>
       <WarmUp textures={[logo, glass, glassLit, ramp, halo, beam]} onReady={onReady} />
       <Skyline glass={glass} glassLit={glassLit} logo={logo} halo={halo} />
@@ -1034,12 +1036,22 @@ function City({ leaving, still, onArrive, onReady, inset }) {
       <Train dir={1} z={-1.1} phase={0} still={still} />
       <Train dir={-1} z={1.1} phase={TRAIN_CYCLE / 2} still={still} />
       <Traffic ramp={ramp} beam={beam} still={still} />
+    </>
+  ), [logo, glass, glassLit, ramp, halo, beam, still]); // eslint-disable-line react-hooks/exhaustive-deps -- WarmUp reads onReady once, through a ref
+  return (
+    <>
+      {city}
       <CameraRig leaving={leaving} still={still} onArrive={onArrive} inset={inset} />
     </>
   );
 }
 
-export default function CityScene({ leaving, still, onArrive, onReady, inset = 0 }) {
+/**
+ * Everything that never changes after mount: background, fog, lights, the reflection Environment and the stars. Memoised
+ * (its only prop, `still`, is fixed for the screen's lifetime) because drei's <Environment> re-renders its cube camera - six
+ * extra renders, a visible hitch - every time its `children` prop is a new element, i.e. on every parent re-render.
+ */
+const SceneBase = memo(function SceneBase({ still }) {
   return (
     <>
       <color attach="background" args={[BG]} />
@@ -1063,14 +1075,33 @@ export default function CityScene({ leaving, still, onArrive, onReady, inset = 0
         <Lightformer form="rect" intensity={0.9} position={[0, 3.5, 10]} rotation-y={Math.PI} scale={[44, 8, 1]} color="#51689a" />
       </Environment>
       <Stars radius={90} depth={40} count={still ? 300 : 700} factor={3} saturation={0} fade speed={still ? 0 : 0.2} />
+    </>
+  );
+});
+
+/**
+ * The post-processing chain, memoised with no props: @react-three/postprocessing's EffectComposer rebuilds its EffectPass
+ * (new fullscreen material, shader recompile) whenever its `children` identity changes - which, unmemoised, was every
+ * re-render of the scene (inset, leaving, the splash's own state) and showed as a blink / dropped frame.
+ */
+const PostFX = memo(function PostFX() {
+  return (
+    <EffectComposer multisampling={2}>
+      <Bloom mipmapBlur luminanceThreshold={BLOOM_THRESHOLD} luminanceSmoothing={0.2} intensity={0.9} radius={0.72} />
+      <Vignette offset={0.3} darkness={0.6} />
+      <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
+    </EffectComposer>
+  );
+});
+
+export default function CityScene({ leaving, still, onArrive, onReady, inset = 0 }) {
+  return (
+    <>
+      <SceneBase still={still} />
       <Suspense fallback={null}>
         <City leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} inset={inset} />
       </Suspense>
-      <EffectComposer multisampling={2}>
-        <Bloom mipmapBlur luminanceThreshold={BLOOM_THRESHOLD} luminanceSmoothing={0.2} intensity={0.9} radius={0.72} />
-        <Vignette offset={0.3} darkness={0.6} />
-        <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
-      </EffectComposer>
+      <PostFX />
     </>
   );
 }
