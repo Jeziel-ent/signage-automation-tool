@@ -1,4 +1,4 @@
-import { Component, Suspense, lazy, useEffect, useRef, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import ProfessionalConnectControl from "./ProfessionalConnectControl.jsx";
@@ -58,6 +58,7 @@ export default function SplashScreen({ onStart }) {
   useEffect(() => {
     const el = contentRef.current;
     if (!el || typeof ResizeObserver === "undefined") return undefined;
+    // setInset bails out on an equal value, so only a real height change re-renders the canvas (re-framing the camera)
     const ro = new ResizeObserver(() => setInset(Math.round(el.getBoundingClientRect().height)));
     ro.observe(el);
     return () => ro.disconnect();
@@ -84,6 +85,13 @@ export default function SplashScreen({ onStart }) {
       onStart();
     }, still ? 0 : FADE_MS);
   }
+
+  // stable handlers for the (memoised) canvas: fresh closures each render would re-render the whole WebGL tree on every
+  // state change of this screen. finish() only touches refs and setters, so calling the latest one through a ref is safe.
+  const finishRef = useRef(finish);
+  finishRef.current = finish;
+  const onArrive = useCallback(() => finishRef.current(), []);
+  const onCityReady = useCallback(() => setCityReady(true), []);
 
   function start() {
     if (leaving) return; // a click and a key press can arrive in the same tick
@@ -135,7 +143,7 @@ export default function SplashScreen({ onStart }) {
           <CanvasBoundary>
             <Suspense fallback={null}>
               <div className={"sp3-canvas-wrap" + (cityReady ? " ready" : "")}>
-                <CityCanvas leaving={leaving} still={still} onArrive={finish} onReady={() => setCityReady(true)} inset={inset} />
+                <CityCanvas leaving={leaving} still={still} onArrive={onArrive} onReady={onCityReady} inset={inset} />
               </div>
             </Suspense>
           </CanvasBoundary>
