@@ -17,11 +17,11 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
   const box = useMemo(() => unionBox(nodes), [nodes]);
   const single = nodes.length === 1 ? nodes[0] : null;
   const locked = nodes.some((n) => n.locked || idx.get(n.id).layer.locked);
-  // Inside a PowerClip `text`, `move` and `resize` are accepted (ops.js checkEditable); order/reorder
-  // are not, so only the stacking-order buttons stay disabled there.
+  // Inside a PowerClip `text`, `move`, `resize` and `order` are accepted (ops.js checkEditable): the
+  // stacking buttons restack a clipped object among the clip's own contents. Only a lock disables them.
   const inClip = nodes.some((n) => insidePowerclip(idx, n.id));
   const geomLocked = locked;
-  const orderLocked = locked || inClip;
+  const orderLocked = locked;
 
   const [f, setF] = useState({ w: "", h: "", x: "", y: "" });
   const [lockRatio, setLockRatio] = useState(true);
@@ -147,7 +147,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
               {input("y", "Y")}
             </div>
             <div className="ed-hint">Centre of the selection; origin is the page's bottom-left corner.</div>
-            {inClip && <div className="ed-hint">Stacking order can't be changed inside a PowerClip.</div>}
+            {inClip && single && <div className="ed-hint">Inside a PowerClip - the order buttons restack it among the clip's contents only.</div>}
             {single ? (
               <div className="ed-order">
                 <span>Order</span>
