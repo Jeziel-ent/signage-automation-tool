@@ -18,8 +18,10 @@ Scene shape (all lengths in mm, origin bottom-left like CorelDRAW):
             "children": [node, ...]}                 # group / powerclip
 `children` lists are bottom -> top (draw order). A PowerClip's contents are
 listed for the layers tree, selectable, and can be edited in place: their TEXT
-(`text` op) and their position/size (`move`/`resize`) - see
-`_check_editable`'s `allow_powerclip`. Order/reorder/group/ungroup/delete
+(`text` op), their position/size (`move`/`resize`) and their stacking order
+among their siblings (`order`, or a `reorder` whose parent is the child's own
+current parent - layer-panel drag and drop) - see `_check_editable`'s
+`allow_powerclip`. Group/ungroup/delete, and a `reorder` into or out of a clip,
 still cannot target a PowerClip child (those change what is inside the clip,
 not how it looks). Child coordinates are absolute page coordinates like every
 other node, so a nested move is the same translation as a top-level one - the
@@ -141,10 +143,21 @@ def _top_ids(idx: dict, ids: list[str]) -> list[str]:
     return out
 
 
+def _in_clip(idx: dict, node_id: str) -> bool:
+    """True when some ancestor of `node_id` is a PowerClip."""
+    p = idx[node_id]["parent"]
+    while p is not None:
+        if p.get("kind") == "powerclip":
+            return True
+        p = idx[p["id"]]["parent"]
+    return False
+
+
 def _check_editable(idx: dict, node_id: str, allow_powerclip: bool = False) -> None:
-    """`allow_powerclip=True` is the narrow exception - only `text`, `move` and
-    `resize` pass it, so a PowerClip child can be edited in place without
-    opening up order/reorder/group/ungroup/delete on it (see this module's
+    """`allow_powerclip=True` is the narrow exception - only `text`, `move`,
+    `resize`, `order` and a same-parent `reorder` pass it, so a PowerClip child
+    can be edited in place (and restacked among its siblings) without opening
+    up group/ungroup/delete or moving it out of the clip (see this module's
     docstring)."""
     e = idx[node_id]
     if e["layer"].get("locked"):
@@ -155,7 +168,7 @@ def _check_editable(idx: dict, node_id: str, allow_powerclip: bool = False) -> N
             raise OpError(f"{n['id']!r} is locked")
         p = idx[n["id"]]["parent"]
         if p is not None and p.get("kind") == "powerclip" and not allow_powerclip:
-            raise OpError(f"{node_id!r} is inside a PowerClip - only text, move and resize can be applied to its contents")
+            raise OpError(f"{node_id!r} is inside a PowerClip - only text, move, resize and order can be applied to its contents")
         n = p
 
 
@@ -258,7 +271,8 @@ def _op_order(s, op):
     e = _need(idx, op["id"])
     if e.get("is_layer"):
         raise OpError("cannot reorder a layer with 'order'")
-    _check_editable(idx, op["id"])
+    # a PowerClip child is restacked among its own siblings only (never out of the clip), like CorelDRAW's Order menu
+    _check_editable(idx, op["id"], allow_powerclip=True)
     lst, n = e["list"], e["node"]
     i = lst.index(n)
     mode = op.get("mode")
@@ -274,6 +288,7 @@ def _op_order(s, op):
             lst[i], lst[i - 1] = lst[i - 1], lst[i]
     else:
         raise OpError(f"unknown order mode {mode!r}")
+    _mark_clip_stale(idx, op["id"])
 
 
 def _op_reorder(s, op):
@@ -281,10 +296,17 @@ def _op_reorder(s, op):
     e = _need(idx, op["id"])
     if e.get("is_layer"):
         raise OpError("layers are reordered with 'layer_order'")
-    _check_editable(idx, op["id"])
     dest = _need(idx, op["parent"])
     dn = dest["node"]
-    if not dest.get("is_layer") and dn.get("kind") != "group":
+    # Inside a PowerClip (the object is clipped, or the destination is/sits in a clip) only a restack among the
+    # SAME parent's children is allowed - moving anything into or out of a clip changes what is clipped.
+    cur_parent = e["parent"]["id"] if e["parent"] else e["layer"]["id"]
+    clip_involved = _in_clip(idx, op["id"]) or (not dest.get("is_layer") and (dn.get("kind") == "powerclip" or _in_clip(idx, dn["id"])))
+    same_parent = op["parent"] == cur_parent
+    if clip_involved and not same_parent:
+        raise OpError(f"{op['id']!r} cannot be moved into or out of a PowerClip - only restacked among its siblings")
+    _check_editable(idx, op["id"], allow_powerclip=same_parent)
+    if not dest.get("is_layer") and dn.get("kind") not in ("group", "powerclip"):
         raise OpError(f"{op['parent']!r} is not a layer or group")
     if dest["layer"].get("locked"):
         raise OpError("destination layer is locked")
@@ -300,6 +322,8 @@ def _op_reorder(s, op):
     target.insert(index, node)
     _refresh_chain(s, old_parent)
     _refresh_chain(s, None if dest.get("is_layer") else dn)
+    if clip_involved:
+        _mark_clip_stale(idx, op["id"])
 
 
 def _op_visibility(s, op):

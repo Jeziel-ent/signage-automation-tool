@@ -1,5 +1,5 @@
 {
- "_doc": "Shared by backend/tests/test_scene_ops.py and frontend/src/editor/ops.test.mjs. Expected values are hand-computed, not generated. A tree projection is [id, x, y, w, h] with a 6th element holding the children's projections for groups/powerclips. Tolerance 1e-3. base3/powerclip_cases/powerclip_errors: a PowerClip child (\"pct\", text) can take `text`, `move` and `resize` ops (child coordinates are absolute page coordinates; the container is marked stale) - the narrow exception to PowerClip contents otherwise being read-only. expect_boxes: {id: [x,y,w,h]}.",
+ "_doc": "Shared by backend/tests/test_scene_ops.py and frontend/src/editor/ops.test.mjs. Expected values are hand-computed, not generated. A tree projection is [id, x, y, w, h] with a 6th element holding the children's projections for groups/powerclips. Tolerance 1e-3. base3/powerclip_cases/powerclip_errors: a PowerClip child (\"pct\", text) can take `text`, `move`, `resize` and `order` ops (order restacks among its siblings only; expect_children: {parent or layer id: child ids bottom -> top}) (child coordinates are absolute page coordinates; the container is marked stale) - the narrow exception to PowerClip contents otherwise being read-only. expect_boxes: {id: [x,y,w,h]}.",
  "base": {
   "page": {
    "width": 200,
@@ -1703,6 +1703,150 @@
      10
     ]
    }
+  },
+  {
+   "name": "order front restacks a PowerClip child among its siblings and marks the container stale",
+   "ops": [
+    {
+     "op": "order",
+     "id": "pct",
+     "mode": "front"
+    }
+   ],
+   "expect_children": {
+    "pc": [
+     "pcc",
+     "pct"
+    ]
+   },
+   "expect_stale": [
+    "pc"
+   ]
+  },
+  {
+   "name": "order backward on a PowerClip child swaps it one step down",
+   "ops": [
+    {
+     "op": "order",
+     "id": "pcc",
+     "mode": "backward"
+    }
+   ],
+   "expect_children": {
+    "pc": [
+     "pcc",
+     "pct"
+    ]
+   },
+   "expect_stale": [
+    "pc"
+   ]
+  },
+  {
+   "name": "order back on the bottom PowerClip child changes nothing",
+   "ops": [
+    {
+     "op": "order",
+     "id": "pct",
+     "mode": "back"
+    }
+   ],
+   "expect_children": {
+    "pc": [
+     "pct",
+     "pcc"
+    ]
+   }
+  },
+  {
+   "name": "order forward on a PowerClip child keeps it inside the clip and keeps its box",
+   "ops": [
+    {
+     "op": "order",
+     "id": "pct",
+     "mode": "forward"
+    }
+   ],
+   "expect_children": {
+    "pc": [
+     "pcc",
+     "pct"
+    ],
+    "L1": [
+     "pc"
+    ]
+   },
+   "expect_boxes": {
+    "pct": [
+     15,
+     15,
+     30,
+     10
+    ],
+    "pc": [
+     10,
+     10,
+     50,
+     30
+    ]
+   }
+  },
+  {
+   "name": "reorder restacks a PowerClip child within the same clip (layers-panel drag) and marks the container stale",
+   "ops": [
+    {
+     "op": "reorder",
+     "id": "pct",
+     "parent": "pc",
+     "index": 1
+    }
+   ],
+   "expect_children": {
+    "pc": [
+     "pcc",
+     "pct"
+    ],
+    "L1": [
+     "pc"
+    ]
+   },
+   "expect_boxes": {
+    "pct": [
+     15,
+     15,
+     30,
+     10
+    ],
+    "pc": [
+     10,
+     10,
+     50,
+     30
+    ]
+   },
+   "expect_stale": [
+    "pc"
+   ]
+  },
+  {
+   "name": "reorder to index 0 inside the clip moves a child to the bottom of the clip",
+   "ops": [
+    {
+     "op": "reorder",
+     "id": "pcc",
+     "parent": "pc",
+     "index": 0
+    }
+   ],
+   "expect_children": {
+    "pc": [
+     "pcc",
+     "pct"
+    ]
+   },
+   "expect_stale": [
+    "pc"
+   ]
   }
  ],
  "powerclip_errors": [
@@ -1730,12 +1874,42 @@
    "error": "not a text object"
   },
   {
-   "name": "order is still blocked inside a PowerClip",
+   "name": "reorder OUT of a PowerClip (to the layer) is still blocked",
    "ops": [
     {
-     "op": "order",
+     "op": "reorder",
      "id": "pct",
-     "mode": "front"
+     "parent": "L1",
+     "index": 0
+    }
+   ],
+   "error": "PowerClip"
+  },
+  {
+   "name": "reorder INTO a PowerClip from outside is blocked",
+   "ops": [
+    {
+     "op": "paste",
+     "nodes": [
+      {
+       "id": "x",
+       "kind": "shape",
+       "type": "curve",
+       "x": 70,
+       "y": 70,
+       "w": 5,
+       "h": 5,
+       "visible": true,
+       "locked": false
+      }
+     ],
+     "parent": "L1"
+    },
+    {
+     "op": "reorder",
+     "id": "x",
+     "parent": "pc",
+     "index": 0
     }
    ],
    "error": "PowerClip"

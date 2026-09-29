@@ -380,6 +380,12 @@ class Replayer:
     def _op_order(self, op, before):
         s = self._shape(op["id"])
         {"front": s.OrderToFront, "back": s.OrderToBack, "forward": s.OrderForwardOne, "backward": s.OrderBackOne}[op["mode"]]()
+        # A PowerClip child: the Order* calls are expected to restack it within the clip's own contents
+        # (PowerClip.Shapes), but that is NOT verified live against CorelDRAW - so the clip's order is settled
+        # against the shadow scene afterwards (_settle reads PowerClip.Shapes), and verify() compares it.
+        parent = before[op["id"]]["parent"]
+        if parent is not None and parent.get("kind") == "powerclip":
+            self._settle(parent["id"])
 
     def _op_visibility(self, op, before):
         if op["id"] in self.layers:
@@ -621,9 +627,9 @@ class Replayer:
     def _actual_order(self, parent_id: str) -> list[str | None]:
         # A PowerClip container's own `.Shapes` is empty (or absent) like any non-group shape's - its
         # contents live on `.PowerClip.Shapes` instead (same distinction scene_export.walk_shape
-        # already makes). Settling z-order inside a PowerClip was never exercised before swap_image
-        # (order/reorder/group/ungroup/delete are all refused on a PowerClip's contents by
-        # scene_ops._check_editable), so this had no reason to matter until now.
+        # already makes). Used after swap_image, and after an `order` or same-parent `reorder`
+        # (layers-panel drag) on a PowerClip child - group/ungroup/delete and moving into or out
+        # of a clip are still refused on a PowerClip's contents by scene_ops.
         ghost_sids = {int(s.StaticID) for s in self.ghosts.values()}
         out = []
         container = self._container(parent_id)

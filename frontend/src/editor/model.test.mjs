@@ -84,6 +84,22 @@ test("planDrop: index semantics match scene_ops.reorder", () => {
   assert.deepEqual(out.layers[0].children.find((n) => n.id === "g").children.map((n) => n.id), ["c", "b"]);
 });
 
+test("planDrop: PowerClip contents restack among their siblings only", () => {
+  const B3 = GOLDEN.base3; // L1: [pc]; pc's children bottom -> top: pct, pcc
+  let plan = planDrop(B3, "pct", "pcc", "above");
+  assert.deepEqual(plan, { op: "reorder", id: "pct", parent: "pc", index: 1 });
+  assert.deepEqual(applyOps(B3, [plan]).layers[0].children[0].children.map((n) => n.id), ["pcc", "pct"]);
+  plan = planDrop(B3, "pcc", "pct", "below");
+  assert.deepEqual(applyOps(B3, [plan]).layers[0].children[0].children.map((n) => n.id), ["pcc", "pct"]);
+  // out of the clip, or in from outside: refused
+  assert.equal(planDrop(B3, "pct", "pc", "above"), null);
+  const withLoose = structuredClone(B3);
+  withLoose.layers[0].children.push({ id: "x", kind: "shape", type: "curve", x: 70, y: 70, w: 5, h: 5, visible: true, locked: false });
+  assert.equal(planDrop(withLoose, "x", "pct", "above"), null);
+  assert.equal(planDrop(withLoose, "x", "pc", "into"), null);
+  assert.equal(planDrop(withLoose, "pct", "x", "below"), null);
+});
+
 test("planDrop refuses illegal drops", () => {
   assert.equal(planDrop(BASE, "g", "g", "into"), null);
   assert.equal(planDrop(BASE, "g", "b", "above"), null); // would put g inside itself

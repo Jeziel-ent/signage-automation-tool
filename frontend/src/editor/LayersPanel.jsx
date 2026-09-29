@@ -71,7 +71,10 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
     const rect = e.currentTarget.getBoundingClientRect();
     const y = (e.clientY - rect.top) / rect.height;
     const draggingLayer = dragId.current && idx.get(dragId.current) && idx.get(dragId.current).isLayer;
-    const container = row.isLayer || row.node.kind === "group";
+    // dropping INTO a group can't apply to PowerClip contents (they are only restacked among their siblings), so rows
+    // there, and any row while a clipped object is dragged, split into just above / below
+    const clipDrag = dragId.current && !draggingLayer && idx.get(dragId.current) && insidePowerclip(idx, dragId.current);
+    const container = (row.isLayer || row.node.kind === "group") && !clipDrag && !(!row.isLayer && insidePowerclip(idx, row.id));
     if (container && !draggingLayer && y > 0.25 && y < 0.75) return "into";
     return y < 0.5 ? "above" : "below";
   }
@@ -97,9 +100,9 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
               key={row.id}
               data-row={row.id}
               className={`ed-row${selected ? " selected" : ""}${row.isLayer ? " layer" : ""}${n.visible === false ? " hidden" : ""}${inCtx ? " ctx" : ""}${inClip ? " clip-child" : ""}${dropCls}`}
-              title={inClip ? "Inside a PowerClip - select it to edit its text or move/resize it; it can't be reordered, grouped or deleted separately" : undefined}
+              title={inClip ? "Inside a PowerClip - drag it above/below its siblings to restack it inside the clip; it can't be dragged out of the clip, grouped or deleted separately" : undefined}
               style={{ paddingLeft: 6 + row.depth * 16 }}
-              draggable={row.isLayer || (!row.locked && !inClip)}
+              draggable={row.isLayer || !row.locked}
               onClick={(e) => clickRow(e, row)}
               onDragStart={(e) => { dragId.current = row.id; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", row.id); }}
               onDragOver={(e) => {

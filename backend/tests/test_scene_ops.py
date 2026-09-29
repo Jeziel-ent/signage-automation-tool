@@ -140,6 +140,9 @@ def test_golden_powerclip_text_case(case):
         assert [n["x"], n["y"], n["w"], n["h"]] == pytest.approx(box, abs=TOL), nid
     for nid in case.get("expect_stale", []):
         assert scene_ops.find_node(out, nid).get("stale") is True
+    for pid, want in case.get("expect_children", {}).items():
+        parent = next((l for l in out["layers"] if l["id"] == pid), None) or scene_ops.find_node(out, pid)
+        assert [c["id"] for c in parent["children"]] == want, pid
 
 
 @pytest.mark.parametrize("case", GOLDEN["powerclip_errors"], ids=lambda c: c["name"])

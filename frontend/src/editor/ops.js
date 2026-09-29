@@ -77,9 +77,16 @@ function topIds(idx, ids) {
   return out;
 }
 
-// allowPowerclip=true is the narrow exception - only `text`, `move` and `resize`
-// pass it, so a PowerClip child can be edited in place without opening up
-// order/reorder/group/ungroup/delete on it (see scene_ops.py's docstring).
+// allowPowerclip=true is the narrow exception - only `text`, `move`, `resize`, `order`
+// and a same-parent `reorder` pass it, so a PowerClip child can be edited in place (and
+// restacked among its siblings) without opening up group/ungroup/delete or moving it
+// out of the clip (see scene_ops.py's docstring).
+/** True when some ancestor of `id` is a PowerClip. */
+function inClip(idx, id) {
+  for (let p = idx.get(id).parent; p; p = idx.get(p.id).parent) if (p.kind === "powerclip") return true;
+  return false;
+}
+
 function checkEditable(idx, id, allowPowerclip = false) {
   const e = idx.get(id);
   if (e.layer.locked) throw new OpError(`'${id}' is on a locked layer`);
@@ -87,7 +94,7 @@ function checkEditable(idx, id, allowPowerclip = false) {
   while (n) {
     if (n.locked) throw new OpError(`'${n.id}' is locked`);
     const p = idx.get(n.id).parent;
-    if (p && p.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip - only text, move and resize can be applied to its contents`);
+    if (p && p.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip - only text, move, resize and order can be applied to its contents`);
     n = p;
   }
 }
@@ -207,7 +214,8 @@ const APPLY = {
     const idx = buildIndex(s);
     const e = need(idx, field(op, "id"));
     if (e.isLayer) throw new OpError("cannot reorder a layer with 'order'");
-    checkEditable(idx, op.id);
+    // a PowerClip child is restacked among its own siblings only (never out of the clip), like CorelDRAW's Order menu
+    checkEditable(idx, op.id, true);
     const lst = e.list;
     const i = lst.indexOf(e.node);
     if (op.mode === "front") lst.push(lst.splice(i, 1)[0]);
@@ -217,16 +225,23 @@ const APPLY = {
     } else if (op.mode === "backward") {
       if (i > 0) [lst[i], lst[i - 1]] = [lst[i - 1], lst[i]];
     } else throw new OpError(`unknown order mode '${op.mode}'`);
+    markClipStale(idx, op.id);
   },
 
   reorder(s, op) {
     const idx = buildIndex(s);
     const e = need(idx, field(op, "id"));
     if (e.isLayer) throw new OpError("layers are reordered with 'layer_order'");
-    checkEditable(idx, op.id);
     const dest = need(idx, field(op, "parent"));
     const dn = dest.node;
-    if (!dest.isLayer && dn.kind !== "group") throw new OpError(`'${op.parent}' is not a layer or group`);
+    // Inside a PowerClip (the object is clipped, or the destination is/sits in a clip) only a restack among the
+    // SAME parent's children is allowed - moving anything into or out of a clip changes what is clipped.
+    const curParent = e.parent ? e.parent.id : e.layer.id;
+    const clipInvolved = inClip(idx, op.id) || (!dest.isLayer && (dn.kind === "powerclip" || inClip(idx, dn.id)));
+    const sameParent = op.parent === curParent;
+    if (clipInvolved && !sameParent) throw new OpError(`'${op.id}' cannot be moved into or out of a PowerClip - only restacked among its siblings`);
+    checkEditable(idx, op.id, sameParent);
+    if (!dest.isLayer && dn.kind !== "group" && dn.kind !== "powerclip") throw new OpError(`'${op.parent}' is not a layer or group`);
     if (dest.layer.locked) throw new OpError("destination layer is locked");
     let p = dn;
     while (p && !dest.isLayer) {
@@ -241,6 +256,7 @@ const APPLY = {
     target.splice(index, 0, node);
     refreshChain(s, oldParent);
     refreshChain(s, dest.isLayer ? null : dn);
+    if (clipInvolved) markClipStale(idx, op.id);
   },
 
   visibility(s, op) {

@@ -150,7 +150,7 @@ export function marqueeSelect(scene, ctx, box) {
 // ------------------------------------------------------------- layers tree
 
 /** Flat rows for the layers panel, top of the stack first (Corel's Object Manager order). */
-/** True when `id` sits anywhere inside a PowerClip (contents there only accept the `text` op - see ops.js checkEditable). */
+/** True when `id` sits anywhere inside a PowerClip (contents there accept text/move/resize/order and a same-parent reorder - see ops.js checkEditable). */
 export function insidePowerclip(idx, id) {
   const e = idx.get(id);
   for (let p = e && e.parent; p; p = idx.get(p.id).parent) if (p.kind === "powerclip") return true;
@@ -226,7 +226,12 @@ export function planDrop(scene, dragId, overId, zone) {
     index = zone === "above" ? j + 1 : j; // "above" in the panel = higher in the stack
   }
   if (parentEntry.layer.locked) return null;
-  if (!parentEntry.isLayer && parentEntry.node.kind !== "group") return null;
+  // PowerClip contents: a row can only be restacked among its own siblings (above/below a sibling), never dragged
+  // into or out of a clip - the same rule as ops.js `reorder`.
+  const curParentId = drag.parent ? drag.parent.id : drag.layer.id;
+  const destInClip = !parentEntry.isLayer && (parentEntry.node.kind === "powerclip" || insidePowerclip(idx, parentEntry.node.id));
+  if ((insidePowerclip(idx, dragId) || destInClip) && parentEntry.node.id !== curParentId) return null;
+  if (!parentEntry.isLayer && parentEntry.node.kind !== "group" && parentEntry.node.kind !== "powerclip") return null;
   // not into itself / own descendant
   let p = parentEntry;
   while (p && !p.isLayer) {

@@ -767,12 +767,76 @@ def test_verify_catches_a_powerclip_child_that_did_not_end_up_where_the_edit_say
     assert not result["ok"] and any("x is" in m for m in result["mismatches"])
 
 
-def test_powerclip_child_still_rejects_order_and_delete():
+def test_powerclip_child_still_rejects_reorder_and_delete():
     doc, scene, inner = _doc_with_powerclip_text()
     cid = f"s{inner.StaticID}"
-    for op in ({"op": "order", "id": cid, "mode": "front"}, {"op": "delete", "ids": [cid]}):
+    layer = scene["layers"][-1]["id"]
+    for op in ({"op": "reorder", "id": cid, "parent": layer, "index": 0}, {"op": "delete", "ids": [cid]}):
         with pytest.raises(Exception, match="PowerClip"):
             run([op], doc, scene)
+
+
+def _doc_with_three_powerclip_children():
+    doc = build_doc()
+    top = doc.ActivePage._layers[1]
+    container = FShape(doc, 1, 800, 400, 100, 50)
+    container.parent = top
+    kids = [FShape(doc, 3, 810 + 10 * i, 410, 20, 20) for i in range(3)]   # CorelDRAW order: kids[0] is topmost
+    for k in kids:
+        k.parent = container
+    container.PowerClip = FPowerClip(list(kids))               # a copy: `kids` stays the original order for the asserts
+    top._kids.append(container)
+    scene = {"page": {"width": 1000.0, "height": 500.0}, "layers": scene_export.walk_page(doc.ActivePage)[0]}
+    return doc, scene, container, kids
+
+
+@pytest.mark.parametrize("mode", ["front", "back", "forward", "backward"])
+def test_order_restacks_a_powerclip_child_inside_the_clip(mode):
+    doc, scene, container, kids = _doc_with_three_powerclip_children()
+    mid = kids[1]                                              # the middle one: every mode moves it
+    ops = [{"op": "order", "id": f"s{mid.StaticID}", "mode": mode}]
+    _, r, expected, v = run(ops, doc, scene)
+    assert v["ok"], v
+    assert r.warnings == []
+    pc_id = f"s{container.StaticID}"
+    want = [c["id"] for c in scene_ops.find_node(expected, pc_id)["children"]]        # bottom -> top
+    got = [f"s{s.StaticID}" for s in reversed(container.PowerClip._kids)]
+    assert got == want
+    assert all(k.parent is container for k in kids)            # nothing left the clip
+    assert scene_ops.find_node(expected, pc_id).get("stale") is True
+
+
+@pytest.mark.parametrize("index", [0, 1, 2])
+def test_reorder_restacks_a_powerclip_child_inside_the_clip(index):
+    """Layers-panel drag within a PowerClip: a same-parent `reorder`, settled via PowerClip.Shapes."""
+    doc, scene, container, kids = _doc_with_three_powerclip_children()
+    pc_id = f"s{container.StaticID}"
+    top_kid = kids[0]                                          # topmost; moving it to `index` (bottom -> top)
+    _, r, expected, v = run([{"op": "reorder", "id": f"s{top_kid.StaticID}", "parent": pc_id, "index": index}], doc, scene)
+    assert v["ok"], v
+    assert r.warnings == []
+    want = [c["id"] for c in scene_ops.find_node(expected, pc_id)["children"]]
+    assert want.index(f"s{top_kid.StaticID}") == index
+    assert [f"s{s.StaticID}" for s in reversed(container.PowerClip._kids)] == want
+    assert all(k.parent is container for k in kids)
+
+
+def test_reorder_out_of_a_powerclip_is_refused_before_touching_corel():
+    doc, scene, container, kids = _doc_with_three_powerclip_children()
+    before = list(container.PowerClip._kids)
+    with pytest.raises(Exception, match="PowerClip"):
+        run([{"op": "reorder", "id": f"s{kids[1].StaticID}", "parent": scene["layers"][-1]["id"], "index": 0}], doc, scene)
+    assert container.PowerClip._kids == before
+
+
+def test_order_inside_a_powerclip_is_settled_when_corel_restacks_it_wrongly():
+    """If CorelDRAW's Order* call on a clipped shape did something else (unverified live), the clip's
+    z-order is still brought in line with the edit afterwards."""
+    doc, scene, container, kids = _doc_with_three_powerclip_children()
+    kids[2].OrderForwardOne = lambda: None                     # the call silently does nothing (settling uses OrderToFront)
+    _, r, expected, v = run([{"op": "order", "id": f"s{kids[2].StaticID}", "mode": "forward"}], doc, scene)
+    assert v["ok"], v
+    assert container.PowerClip._kids == [kids[0], kids[2], kids[1]]   # was the bottom one, now one step up
 
 
 # ---- lazily assigned PowerClip ids (found live: the scene's s48 was s208 in the replay document) ----

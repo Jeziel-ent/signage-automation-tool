@@ -117,6 +117,10 @@ for (const c of GOLDEN.powerclip_cases) {
       [n.x, n.y, n.w, n.h].forEach((v, k) => assert.ok(Math.abs(v - box[k]) < TOL, `${id}: ${[n.x, n.y, n.w, n.h]} != ${box}`));
     }
     for (const id of c.expect_stale || []) assert.equal(findNode(out, id).stale, true);
+    for (const [pid, want] of Object.entries(c.expect_children || {})) {
+      const parent = out.layers.find((l) => l.id === pid) || findNode(out, pid);
+      assert.deepEqual(parent.children.map((ch) => ch.id), want, pid);
+    }
   });
 }
 
