@@ -585,6 +585,20 @@ differs by 3.2/255 mean, was 20.3/255 with the empty SVGs); the browser drag its
 was NOT exercised in a real browser this session (no Playwright installed) - only unit tests
 (`model.test.mjs`), the production build and the fake-COM export tests.
 
+**Stacking order inside a PowerClip.** `order` (front/forward/backward/back) is now allowed on a PowerClip child (`_check_editable` /
+`checkEditable` `allow_powerclip`, both engines): it restacks the child among the clip's own contents only - never out of the clip - and marks
+the container `stale`; `reorder`/`group`/`ungroup`/`delete` are still refused there. The Properties panel's Order buttons are enabled for a
+clipped object (only a lock disables them). Replay: `Replayer._op_order` calls the same `Order*` method and then, for a PowerClip child, settles
+the clip's z-order against the shadow scene (`_settle` reads `PowerClip.Shapes`), and `verify()` compares it. **Not verified live in
+CorelDRAW** that `Order*` on a clipped shape restacks within the clip - fake COM only; the settle step and verification cover it if it does
+not. Golden: 4 `powerclip_cases` with a new `expect_children` check, the old "order is blocked" error replaced by "reorder is blocked".
+**Layers-panel drag inside a PowerClip.** Clipped rows are draggable; `planDrop` and the `reorder` op (both engines) accept a reorder whose
+`parent` is the object's CURRENT parent when it is in a clip (or the destination is/sits in one) - i.e. a restack among its siblings, at any
+depth inside the clip - and refuse moving into or out of a clip ("cannot be moved into or out of a PowerClip"); a restack marks the clip
+`stale`. Such rows have no "into" drop zone. Replay: same parent, so `Replayer._op_reorder` only `_settle`s the clip (PowerClip.Shapes); not
+verified live in CorelDRAW. This also closes a gap: dragging an outside object into a group that sits inside a PowerClip used to be accepted
+by the op engines. Tests: 2 golden cases + 1 golden error, a planDrop test (`model.test.mjs`), 4 replay tests.
+
 ### Frontend: `frontend/src/` structure
 
 `main.jsx` wraps the app in `<BrowserRouter>` and imports `theme.css`
@@ -1562,6 +1576,15 @@ also not done (median 0.6-1.7 s per shop; it would make every download slow inst
 | 3 shops in one worker batch | 34.4 s, shop 2 failed ("not connected") | **20.2 s**, all done (shops 2-3: launch 0.0 s) |
 | 4 shops through the API (Convert All) | ~100 s (4 x 25 s) | **30.5 s** (DB completion times 11.2 / 20.3 / 25.4 / 30.5 s) |
 | force-kills, leftover CorelDRW.exe, stale tracked pids | every job | none |
+
+**SaveAs options benchmark (2026-09-29): no gain, nothing changed.** `saveas` is the largest step (median 6.45 s over 60 conversions),
+so `backend/tests/benchmark_saveas.py` (not a pytest test; live CorelDRAW 27, scratch copies only) timed the first save of a freshly
+opened, dirtied copy under each `StructSaveAsOptions` setting - `IncludeCMXData`, `ThumbnailSize` (none / 1K mono), `EmbedICCProfile`,
+`EmbedVBAProject`, `KeepAppearance` on/off - 3 interleaved runs each, on a 9 MB dalmia board and a 124 MB bitmap board. Every variant was
+within +/-1 % of baseline (1.03 s / 5.88 s), wrote the same size, was still v21 (`CDRM`/2100), kept `previews/page1.png` and rendered
+pixel-identical. Fresh options already default to `IncludeCMXData=False`, `EmbedICCProfile=False`. Save time follows file size
+(embedded bitmap data): of the last 60 conversions, boards < 30 MB saved in a median 1.10 s, the heavy ones (median 179 MB) in 9.95 s.
+`app.DisplayAlerts` and `AutoBackupEnabled` do not exist in the typelib; `Optimization`/`EventsEnabled` were already set.
 
 **Stuck "Converting 1 of N" (per-shop time limit + restart recovery).** Found in the database of a stuck session: a batch's
 job 4 last beat step `png`, then the server was restarted - the worker died with it, but its rows stayed `queued`/`converting`
