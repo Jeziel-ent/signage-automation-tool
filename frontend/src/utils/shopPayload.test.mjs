@@ -73,3 +73,10 @@ test("a new/replaced master turns every saved shop back into a fresh draft, keep
   assert.equal(out[1].unit, "ft"); // a server row without `unit` falls back to width_unit
   assert.deepEqual(resetForNewMaster([]), { shops: [], reset: 0 });
 });
+
+test("the local shop name rides along from an import draft into the convert payload", async () => {
+  const { shopPayload: pay, toDraftRow: draft } = await import("./shopPayload.js");
+  const d = draft({ name: "ANISH STORES", shop_name_local: "அனிஷ் ஸ்டோர்ஸ்", width: 8, height: 4, unit: "ft" });
+  assert.equal(pay(d).shop_name_local, "அனிஷ் ஸ்டோர்ஸ்");
+  assert.equal("shop_name_local" in pay(draft({ name: "X", width: 1, height: 1 })), false);
+});

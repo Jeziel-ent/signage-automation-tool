@@ -79,3 +79,23 @@ def _parse_line(line: str) -> ParsedShop | None:
     return ParsedShop(
         name=name, width=float(width_s), height=float(height_s), unit=unit, type=shop_type, line=line,
     )
+
+
+_COPY_SUFFIX = re.compile(r"\s+-\s+copy(?:\s*\(\d+\))?$", re.IGNORECASE)
+
+
+def shop_name_from_filename(filename: str | None) -> str | None:
+    """The shop name inside a designer-style file name ("76 - 36 X 48 Inch - Nonlit - SRI KANNIYAMMAN ... KADAI.cdr"
+    -> "SRI KANNIYAMMAN ... KADAI"), or None when the name does not follow that pattern. A trailing ".cdr" and a
+    Windows "- Copy" suffix are dropped."""
+    t = re.sub(r"\.cdr$", "", (filename or "").strip(), flags=re.IGNORECASE).strip()
+    shop = _parse_line(t) if t else None
+    if shop is None:
+        return None
+    return _COPY_SUFFIX.sub("", shop.name).strip() or None
+
+
+def clean_shop_name(name: str | None) -> str:
+    """The text to print for a shop: a designer file name used as the shop name (an Excel sheet that lists files) is
+    reduced to its shop-name part; anything else is returned stripped."""
+    return shop_name_from_filename(name) or (name or "").strip()

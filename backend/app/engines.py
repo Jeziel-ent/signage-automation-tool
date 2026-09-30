@@ -19,7 +19,8 @@ from pathlib import Path
 
 from . import corel_util
 from .corel_watchdog import Watchdog
-from .layout import MIN_TEXT_PT, Obj, compute_layout, find_contact_ids, find_shopname_ids, load_brand_rule, to_mm
+from .layout import (MIN_TEXT_PT, TAMIL_FONT, Obj, compute_layout, detect_role, find_contact_ids, find_local_partner_ids,
+                     find_shopname_ids, is_tamil, load_brand_rule, to_mm)
 
 logger = logging.getLogger(__name__)
 
@@ -129,6 +130,130 @@ class CorelEngine:
             placed.warnings.append(f"could not set shop-name text: {e}")
             return
         CorelEngine._fit_text(shape, placed.w, placed.warnings)
+
+    CLIP_FOREGROUND_MAX_AREA = 0.9   # of the page: bigger clipped children are backdrop and keep the frame's stretch
+    CLIP_FOREGROUND_MIN_INSIDE = 0.9  # share of the child's box inside the page: art hanging off the page is backdrop
+
+    @classmethod
+    def _undistort_clip_contents(cls, container, sx: float, sy: float, page_w: float, page_h: float,
+                                 warnings: list[str]) -> int:
+        """A page-covering PowerClip (the `bg` role) is stretched to the new page, and CorelDRAW stretches its contents
+        with it - on a board whose shape differs from the master's that squashes the table / product-box composite a
+        real master keeps inside its background clip. Each FOREGROUND child of the clip (smaller than
+        CLIP_FOREGROUND_MAX_AREA of the page and at least CLIP_FOREGROUND_MIN_INSIDE on it - the same rule as
+        orientation_adapter's separable foreground) is re-sized uniformly by the smaller of the two scale factors,
+        centred horizontally where the stretch put it and standing on the same bottom edge, so it keeps its
+        proportions and never grows past the stretched box (i.e. into the logos above it). Backdrop children (the
+        full-bleed texture, art mostly off the page) keep the stretch. Returns how many children were adjusted."""
+        if abs(sx / sy - 1.0) < 0.02:
+            return 0
+        try:
+            clip = container.PowerClip
+            coll = clip.Shapes if clip is not None else None
+        except Exception:
+            coll = None
+        if coll is None:
+            return 0
+        k = min(sx, sy)
+        done = 0
+        for i in range(1, coll.Count + 1):
+            ch = coll.Item(i)
+            try:
+                x, y, w, h = float(ch.LeftX), float(ch.BottomY), float(ch.SizeWidth), float(ch.SizeHeight)
+            except Exception:
+                continue
+            if w <= 0 or h <= 0 or w * h >= cls.CLIP_FOREGROUND_MAX_AREA * page_w * page_h:
+                continue
+            ix = max(0.0, min(x + w, page_w) - max(x, 0.0))
+            iy = max(0.0, min(y + h, page_h) - max(y, 0.0))
+            if ix * iy < cls.CLIP_FOREGROUND_MIN_INSIDE * w * h:
+                continue
+            nw, nh = w / sx * k, h / sy * k   # original size x the uniform factor
+            try:
+                ch.SetSize(nw, nh)
+                ch.LeftX = x + (w - nw) / 2
+                ch.BottomY = y
+            except Exception as e:
+                warnings.append(f"could not keep a clipped object in proportion: {e}")
+                continue
+            done += 1
+        if done:
+            warnings.append(f"kept {done} object(s) inside the background PowerClip in proportion "
+                            f"(frame stretched {sx:.2f} x {sy:.2f})")
+        return done
+
+    @staticmethod
+    def _child_shapes(s) -> list:
+        """Direct children of a group or a PowerClip container ([] for anything else)."""
+        for get in (lambda: s.PowerClip.Shapes, lambda: s.Shapes):
+            try:
+                coll = get()
+                if coll is not None:
+                    return [coll.Item(i) for i in range(1, coll.Count + 1)]
+            except Exception:
+                continue
+        return []
+
+    @classmethod
+    def _replace_nested_shopnames(cls, top_shapes, shop: dict, warnings: list[str]) -> int:
+        """Rewrite shop-name texts nested inside groups / PowerClips: a text named `shopname...` in CorelDRAW's Object
+        Manager, or whose content matches the master's current shop name (either script). The Tamil line stacked
+        next to a matched English one is found the same way as for top-level text (layout.find_local_partner_ids).
+        Text is replaced in place and fitted to its original width. Returns how many texts were rewritten."""
+        name = shop.get("name")
+        local = shop.get("shop_name_local")
+        if not (name or local):
+            return 0
+        hints = [h.strip().lower() for h in (shop.get("master_shop_name"), shop.get("master_shop_name_local")) if h and h.strip()]
+        texts = []  # (shape, Obj) for every nested text shape
+
+        def walk(shape_list, nested):
+            for sh in shape_list:
+                kids = cls._child_shapes(sh)
+                if kids:
+                    walk(kids, True)
+                    continue
+                try:
+                    is_text = int(sh.Type) == cls.SHAPE_TEXT
+                except Exception:
+                    is_text = False
+                if nested and is_text:
+                    t = cls._shape_text(sh)
+                    try:
+                        o = Obj(str(len(texts)), sh.Name or "", "text", float(sh.LeftX), float(sh.BottomY),
+                                float(sh.SizeWidth), float(sh.SizeHeight), t)
+                    except Exception:
+                        continue
+                    texts.append((sh, o))
+
+        walk(top_shapes, False)
+        objs = [o for _, o in texts]
+        ids = {o.id for o in objs if o.name.strip().lower().startswith("shopname")}
+        ids |= {o.id for o in objs if o.text and hints and any(
+            (h in o.text.strip().lower() or o.text.strip().lower() in h) for h in hints)}
+        if local and not shop.get("master_shop_name_local"):
+            ids |= find_local_partner_ids(objs, ids)
+        done = 0
+        for sh, o in texts:
+            if o.id not in ids:
+                continue
+            if is_tamil(o.text) and local:
+                new, font = local, TAMIL_FONT
+            elif is_tamil(o.text):
+                continue  # no local name given: never print the English name in the Tamil line's place
+            else:
+                new, font = (name, TAMIL_FONT if is_tamil(name) else None) if name else (local, TAMIL_FONT)
+            try:
+                story = sh.Text.Story
+                story.Text = new
+                if font:
+                    story.Font = font
+            except Exception as e:
+                warnings.append(f"could not set nested shop-name text: {e}")
+                continue
+            cls._fit_text(sh, o.w, warnings)
+            done += 1
+        return done
 
     @staticmethod
     def _fit_text(shape, target_w_mm: float, warnings: list[str]) -> None:
@@ -257,6 +382,19 @@ class CorelEngine:
                 shopname_ids = find_shopname_ids(
                     objs, shop.get("master_shop_name"), shop.get("master_shop_name_local"),
                 )
+                shopname_ids |= {o.id for o in objs if detect_role(o, page_w, page_h) == "shopname"}
+                # The master's Tamil shop-name line is not known by content (only the English name is, from the master's
+                # file name) - it is the Tamil text stacked next to the matched English line.
+                if not shop.get("master_shop_name_local"):
+                    partners = find_local_partner_ids(objs, shopname_ids)
+                    if shop.get("shop_name_local"):
+                        shopname_ids |= partners
+                    elif partners:
+                        warnings.append("the master's local-language shop name was left unchanged: no local shop name "
+                                        "was given for this shop (add a 'Shop Name (Tamil)' column to the import)")
+                if not shopname_ids and not shop.get("master_shop_name"):
+                    warnings.append("shop name not replaced: the master's current shop name is unknown (set it for the "
+                                    "master, or tag the text 'shopname' in CorelDRAW)")
                 contact_ids = find_contact_ids(objs) if (shop.get("phone") or shop.get("gst")) else set()
                 placed = compute_layout(
                     objs, page_w, page_h, new_w, new_h,
@@ -302,9 +440,12 @@ class CorelEngine:
                     if shape.Locked:
                         p.warnings.append("shape locked; skipped")
                         continue
+                    old_w, old_h = float(shape.SizeWidth), float(shape.SizeHeight)
                     shape.SetSize(p.w, p.h)
                     shape.LeftX = p.x
                     shape.BottomY = p.y
+                    if p.role == "bg" and old_w > 0 and old_h > 0:
+                        self._undistort_clip_contents(shape, p.w / old_w, p.h / old_h, new_w, new_h, p.warnings)
                     if p.bring_to_front:
                         # A duplicated card background (see layout._place_panel_sequence's
                         # `card_from`) stacks directly above the template it was
@@ -338,6 +479,9 @@ class CorelEngine:
                             p.warnings.append(f"could not recolor shape: {e}")
                     if p.text is not None:
                         self._set_replacement_text(shape, p)
+                # Shop-name texts INSIDE a group or PowerClip are not layout objects of their own (only top-level shapes
+                # are); their parent was placed above, so they are rewritten in place.
+                self._replace_nested_shopnames(shapes, shop, warnings)
                 return page_w, page_h, placed
 
             page_w, page_h, placed = step("tile_resize", _resize_and_tile)

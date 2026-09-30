@@ -200,14 +200,17 @@ class Direction(tuple):
     same_orientation = property(lambda self: self[0] == self[1])
 
 
-SQUARE_TOL_MM = 0.01  # sizes arrive in mm after unit conversion: 48 in = 1219.1999999999998 mm but 4 ft = 1219.2 mm
+LANDSCAPE_MASTER_MIN_RATIO = 1.25  # target width / height at or above which the LANDSCAPE master is used
 
 
 def target_orientation(target_w: float, target_h: float) -> str:
-    """'landscape' only if the target is WIDER than tall; square and portrait targets are 'portrait' - the rule used to pick a
-    dual-master template. Widths within SQUARE_TOL_MM of the height count as square, so a mixed-unit square board (48 in x 4 ft)
-    is not tipped into landscape by float noise."""
-    return "landscape" if target_w - target_h > SQUARE_TOL_MM else "portrait"
+    """Which dual-master template a target uses: 'landscape' when width / height >= LANDSCAPE_MASTER_MIN_RATIO (1.25),
+    else 'portrait' - so square and near-square boards (5x5, 6x6, 7x6 ft, 60x75 in) come from the portrait master,
+    which scales to them with far less aspect change than a wide master. Sizes arrive in mm, so a ratio is used rather
+    than an equality test (48 in = 1219.1999999999998 mm but 4 ft = 1219.2 mm)."""
+    if target_h <= 0:
+        return "landscape"
+    return "landscape" if target_w / target_h >= LANDSCAPE_MASTER_MIN_RATIO - 1e-9 else "portrait"
 
 
 def select_master(target_w: float, target_h: float, landscape_id: str | None, portrait_id: str | None) -> tuple[str, str, bool]:

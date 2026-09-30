@@ -3270,6 +3270,48 @@ before the engine, and the orientation adapter is not on this path at all. Tests
 (629 backend total). NOT done: a live Shop 2 conversion checking the rendered layers against the portrait CDR - the
 user's masters are not available here, so the "roof badge at bottom / Tamil card upper-mid" check is still to do by eye.
 
+### Shop-name binding, 1.25 master routing, square/vertical boards (2026-09-30)
+
+Found on the real DARSHAN dual masters (125x48 landscape, 36x48 portrait): (1) the v2 conversion never told the engine
+what the master's own shop name is, so on these untagged masters the shop name was NEVER replaced (every board printed
+"SRI KANNIYAMMAN NATTU MARUNTHU KADAI"); (2) the imported names were whole designer file names ("73 - 60 X 75 Inch -
+Nonlit - SHOP.cdr"); (3) square/vertical boards (6x6 ft, 60x75 in) were TILED - `_tile_plan` tiled whenever a board was
+enlarged > 1.4x on one axis, even with the same shape, so two copies of every logo sat on one stretched background over
+the product box. Fixes:
+- **Master shop name**: `jobs.master_shop_name` / `master_shop_name_local` (migration). Upload fills the English one from a
+  designer-style file name (`batch_import.shop_name_from_filename`) or the optional form fields;
+  `PATCH /api/v2/jobs/{id}/master-shop-name` corrects either. `_convert_job` passes the CHOSEN master's name (falling
+  back to its file name for jobs uploaded before this) as `master_shop_name[_local]`. A `shopname`-tagged shape is used
+  regardless. Report warning when the master's name is unknown.
+- **Tamil line**: the master's Tamil spelling is not known, so `layout.find_local_partner_ids` takes the Tamil text
+  stacked under/over the matched English line or beside it on the same row (portrait DARSHAN: stacked; landscape: same
+  row). It is rewritten only when the shop HAS a local name; otherwise it is left as-is and the report warns (the English
+  name is never printed in the Tamil line's place).
+- **Nested texts**: `CorelEngine._replace_nested_shopnames` rewrites shop-name texts inside groups/PowerClips in place
+  (tag or content match, same partner rule), fitted to their original width.
+- **Import**: `shopImport.js` reads a local-name column (Shop Name (Local)/(Tamil), Local Name, Tamil Name, ...) into
+  `shop_name_local` (shown under the name in the Shops table; carried by drafts and the convert payload; new
+  `shops.shop_name_local` column, PATCH-able). `cleanShopName` / backend `clean_shop_name` reduce a designer file name
+  to its shop name (applied at convert time too, so existing rows print correctly; the output files are then named after
+  the shop name).
+- **Routing**: `orientation_adapter.target_orientation` = landscape when width / height >= 1.25
+  (`LANDSCAPE_MASTER_MIN_RATIO`), else portrait (supersedes "only width > height"): 11x6 ft landscape; 5x5, 6x6, 7x6 ft
+  and 60x75 in portrait. The SQUARE_TOL_MM float guard is gone (a ratio has no such edge).
+- **Tiling**: `_tile_plan` additionally needs the target stretched along the axis > `TILE_MIN_ASPECT_GAIN` (1.15)
+  relative to the other and the target itself >= `TILE_MIN_TARGET_RATIO` (1.25) wide/tall. All four tiled dalmia boards
+  and the 2x6 ft stacked case keep their plan (tested); 60x75/5x5/6x6 from the portrait master and 11x6/7x5 ft from the
+  landscape one no longer tile (11x6 ft used to get y,2).
+- **Background PowerClip**: the `bg` shape is stretched to the new page and CorelDRAW stretches its contents too;
+  `CorelEngine._undistort_clip_contents` re-sizes each foreground child (< 90 % of the page, >= 90 % on it - the
+  table/product composite) uniformly by min(sx, sy), same centre-x and bottom edge. Backdrop children keep the stretch.
+  Recorded as a warning on the bg object.
+- **Not done**: the spec's literal "fit central assets within 0.25H-0.75H" band - with tiling fixed and the composite kept
+  in proportion, the four live boards had no overlap, so no band clamp was added.
+- **Verified live** (CorelDRAW 27, the user's DARSHAN masters, outputs in a scratch dir, DB untouched): 11x6 ft
+  (landscape master), 5x5 ft, 6x6 ft, 60x75 in (portrait master) - 4 boards in 62.7 s, every render viewed: one set of
+  logos, box on an unstretched table, no overlaps, each board's own English + Tamil name. Tests: `test_shop_name_binding.py`
+  (22), `test_dual_master.py` routing cases updated, frontend importer/payload tests (+3). Backend 817, frontend 212.
+
 ### Excel / CSV shop import (Automation page, section 3)
 
 "Import Excel (.xlsx / .csv)" under the Shops header (the sample-template button was removed on request). Parsing is

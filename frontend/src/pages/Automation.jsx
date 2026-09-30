@@ -430,8 +430,8 @@ export default function Automation() {
             {/* two side-by-side upload cards, both always visible (no tab switch); each becomes a file badge once filled */}
             <div className="mc-grid">
               {[
-                ["landscape", landscapeJob, { title: "Landscape Master", help: "Drag & drop .cdr file (Width > Height)", browse: "Browse Landscape", tone: "red" }],
-                ["portrait", portraitJob, { title: "Portrait Master", help: "Drag & drop .cdr file (Width ≤ Height, incl. square)", browse: "Browse Portrait", tone: "rose" }],
+                ["landscape", landscapeJob, { title: "Landscape Master", help: "Drag & drop .cdr file (used for boards W:H ≥ 1.25)", browse: "Browse Landscape", tone: "red" }],
+                ["portrait", portraitJob, { title: "Portrait Master", help: "Drag & drop .cdr file (used for boards W:H < 1.25, incl. square)", browse: "Browse Portrait", tone: "rose" }],
               ].map(([orientation, mjob, card]) =>
                 mjob ? (
                   <div key={orientation} className="master-card filled" data-slot={orientation}>
@@ -693,7 +693,10 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onE
   return (
     <tr data-shop-id={shop.id}>
       <td>{index}</td>
-      <td>{field("name", "Shop name", { type: "text" })}</td>
+      <td>
+        {field("name", "Shop name", { type: "text" })}
+        {shop.shop_name_local ? <div className="shop-local-name" title="Local-language shop name (from the import)">{shop.shop_name_local}</div> : null}
+      </td>
       <td>{field("width", "Width", { type: "number", min: "0", step: "any" })}</td>
       <td>{field("height", "Height", { type: "number", min: "0", step: "any" })}</td>
       <td>

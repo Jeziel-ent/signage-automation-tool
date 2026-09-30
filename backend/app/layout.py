@@ -117,6 +117,8 @@ def detect_role(o: Obj, page_w: float, page_h: float) -> str:
 
 
 TILE_ASPECT_THRESHOLD = 1.4  # new/old dimension ratio above which we tile that axis
+TILE_MIN_ASPECT_GAIN = 1.15   # ...and the target must be this much more stretched along that axis than the other
+TILE_MIN_TARGET_RATIO = 1.25  # ...and itself at least this wide (x tiling) / tall (y tiling) - never square boards
 
 
 def compute_layout(
@@ -288,11 +290,20 @@ def _tile_plan(page_w: float, page_h: float, new_w: float, new_h: float) -> tupl
     slightly overshoots on extreme ratios (a 35x4ft board off a 12x4ft
     master produced 2 real panels but this predicts 3) - a known,
     documented approximation, not an exact match to manual designer choices.
+
+    Tiling needs a real change of SHAPE along the tiling axis, not only a bigger board: the target must be stretched
+    along that axis by more than TILE_MIN_ASPECT_GAIN relative to the other one, and must itself be clearly wide (for
+    side-by-side copies) or clearly tall (for stacked copies) - TILE_MIN_TARGET_RATIO. Without these, enlarging a
+    36x48 in portrait master to 60x75 in (1.67x wider, 1.56x taller - nearly the same shape) or to a 6x6 ft square
+    tiled two copies of every logo side by side on one stretched background, colliding with the product box (seen
+    live). Every tiled dalmia board (180x48, 180x60, 216x48, 240x60 from 120x48) passes both checks unchanged.
     """
     rx, ry = new_w / page_w, new_h / page_h
-    if rx > ry and rx > TILE_ASPECT_THRESHOLD:
+    if (rx > ry and rx > TILE_ASPECT_THRESHOLD and rx / ry > TILE_MIN_ASPECT_GAIN
+            and new_w / new_h >= TILE_MIN_TARGET_RATIO):
         return "x", max(1, round(rx))
-    if ry > rx and ry > TILE_ASPECT_THRESHOLD:
+    if (ry > rx and ry > TILE_ASPECT_THRESHOLD and ry / rx > TILE_MIN_ASPECT_GAIN
+            and new_h / new_w >= TILE_MIN_TARGET_RATIO):
         return "y", max(1, round(ry))
     return None, 1
 
@@ -898,6 +909,37 @@ def find_shopname_ids(objects: list[Obj], *old_names: str | None) -> set[str]:
         if any(t and h and (h in t or t in h) for h in hints):
             matches.add(o.id)
     return matches
+
+
+def find_local_partner_ids(objects: list[Obj], name_ids: set[str]) -> set[str]:
+    """The master's LOCAL-script (Tamil) shop-name line(s) sitting next to an already-found shop-name text.
+
+    Real masters print the shop name twice, English and Tamil, as two stacked text lines (DARSHAN: "SRI KANNIYAMMAN
+    NATTU MARUNTHU KADAI" over "ஸ்ரீ கன்னியம்மன் நாட்டு மருந்து கடை"), but only the English one can be matched by content
+    (the master's Tamil spelling is not known). A Tamil text object counts as the partner when its horizontal centre is
+    within half the wider line's width of a matched line's centre and the vertical gap between them is at most 1.5x
+    the taller line's height (stacked), or when it sits on the same row - centres within the taller line's height -
+    no more than one line-width away (side by side). Returns only ids not already in `name_ids`."""
+    by_id = {o.id: o for o in objects}
+    found = [by_id[i] for i in name_ids if i in by_id]
+    out: set[str] = set()
+    for o in objects:
+        if o.id in name_ids or o.kind != "text" or not is_tamil(o.text):
+            continue
+        for m in found:
+            if is_tamil(m.text):
+                continue
+            dx = abs((o.x + o.w / 2) - (m.x + m.w / 2))
+            gap = max(o.y - (m.y + m.h), m.y - (o.y + o.h), 0.0)
+            stacked = dx <= max(o.w, m.w) / 2 and gap <= 1.5 * max(o.h, m.h)
+            # ...or on the same row, beside it (the landscape DARSHAN master: English left, Tamil right in the footer)
+            dy = abs((o.y + o.h / 2) - (m.y + m.h / 2))
+            hgap = max(o.x - (m.x + m.w), m.x - (o.x + o.w), 0.0)
+            beside = dy <= max(o.h, m.h) and hgap <= max(o.w, m.w)
+            if stacked or beside:
+                out.add(o.id)
+                break
+    return out
 
 
 def _anchor_axis(pos: float, size: float, old: float, new: float) -> float:

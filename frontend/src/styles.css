@@ -280,6 +280,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .queue-notice .icon-btn { font-size: 16px; line-height: 1; color: inherit; }
 .ws-table-scroll { flex: 1; min-height: 0; max-height: 100%; overflow-y: auto; padding: 0 12px 12px; }
 .ws-table-scroll .shops-table th { position: sticky; top: 0; z-index: 1; background: #fff; }
+.shop-local-name { font-size: 11px; color: #64748b; padding: 0 8px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; font-family: "Nirmala UI", system-ui, sans-serif; }
 .ws-empty { text-align: center; color: #94a3b8; padding: 28px 0 !important; }
 
 .btn-gradient {

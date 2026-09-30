@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
-import { detectUnit, mapSheetRows, parseShopFile, parseSize } from "./shopImport.js";
+import { cleanShopName, detectUnit, mapSheetRows, parseShopFile, parseSize } from "./shopImport.js";
 
 const summary = (r) => r.shops.map((s) => [s.name, s.width, s.height, s.unit]);
 const fileOf = (aoa, name = "x.xlsx") => {
@@ -129,4 +129,22 @@ test("real files: a single-column-size .xlsx, a Width/Height .xlsx, a custom-hea
 test("one shared unit: mixed or metric units are converted to inches, a single explicit unit applies to both", () => {
   const r = mapSheetRows([["Shop", "Size"], ["A", "10ft x 48in"], ["B", "300 cm x 100 cm"], ["C", "10 x 4 ft"], ["D", "10*4"], ["E", "1000mm x 500mm"]]);
   assert.deepEqual(summary(r), [["A", 120, 48, "in"], ["B", 118.11, 39.37, "in"], ["C", 10, 4, "ft"], ["D", 10, 4, "in"], ["E", 39.37, 19.69, "in"]]);
+});
+
+test("reads a local / Tamil shop-name column into shop_name_local, never as the English name", async () => {
+  for (const header of ["Shop Name (Local)", "Shop Name Local", "Local Name", "Tamil Name", "Shop Name (Tamil)"]) {
+    const r = mapSheetRows([[header, "Shop Name", "Size"], ["அனிஷ் ஸ்டோர்ஸ்", "ANISH STORES", "8x4 ft"], ["", "KALKEE", "6x6 ft"]]);
+    assert.deepEqual(r.shops.map((s) => [s.name, s.shop_name_local]), [["ANISH STORES", "அனிஷ் ஸ்டோர்ஸ்"], ["KALKEE", undefined]], header);
+  }
+  const f = await parseShopFile(fileOf([["Store Name", "Tamil Name", "Width", "Height"], ["A", "அ", "11 ft", "6 ft"], ["B", "ஆ", "60", "75"]]));
+  assert.deepEqual(f.shops.map((s) => [s.name, s.shop_name_local, s.width, s.height, s.unit]),
+    [["A", "அ", 11, 6, "ft"], ["B", "ஆ", 60, 75, "in"]]);
+});
+
+test("a designer file name in the name column prints as just the shop name", () => {
+  assert.equal(cleanShopName("73 - 60 X 75 Inch - Nonlit - SRI AMBIRAMI PROVISON STORES.cdr"), "SRI AMBIRAMI PROVISON STORES");
+  assert.equal(cleanShopName("66 - 8 X 4 Feet - Nonlit - VASANTHAM ENTERPRISES - Copy.cdr"), "VASANTHAM ENTERPRISES");
+  assert.equal(cleanShopName("Anish - Stores"), "Anish - Stores");
+  const r = mapSheetRows([["Shop Name", "Size"], ["67 - 6 X 6 Feet - Nonlit - KALKEE POOJA STORES.cdr", "6x6 ft"]]);
+  assert.equal(r.shops[0].name, "KALKEE POOJA STORES");
 });

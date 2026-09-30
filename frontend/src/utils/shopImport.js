@@ -9,6 +9,9 @@ const SIZE_HEADER_RE = /size|dimension|board|measurement|recce/i;
 const WIDTH_RE = /width|^w$|breadth|w\s*\(/i;
 const HEIGHT_RE = /height|^h$|length|h\s*\(/i;
 // never a shop-name column, even if the word 'shop'/'store'/'name' appears in it ("Store Size", "Contact Name")
+// the LOCAL-script shop name ("Shop Name (Local)", "Local Name", "Tamil Name", "Shop Name (Tamil)") - read into
+// shop_name_local, never picked as the English name column
+const LOCAL_NAME_RE = /local|tamil|regional|vernacular|native/i;
 const NAME_EXCLUDE_RE = new RegExp(
   [String.raw`phone|mobile|contact|gst|address|e-?mail|sl\.?\s*no|s\.?\s*no|^#$`, SIZE_HEADER_RE.source, WIDTH_RE.source, HEIGHT_RE.source].join("|"),
   "i");
@@ -90,7 +93,8 @@ function findHeaderRow(rows) {
 }
 
 function pickNameColumn(headers, taken) {
-  const cands = headers.map((h, i) => [h, i]).filter(([h, i]) => h && !taken.has(i) && NAME_RE.test(h) && !NAME_EXCLUDE_RE.test(h));
+  const cands = headers.map((h, i) => [h, i])
+    .filter(([h, i]) => h && !taken.has(i) && NAME_RE.test(h) && !NAME_EXCLUDE_RE.test(h) && !LOCAL_NAME_RE.test(h));
   for (const rank of NAME_RANK) {
     const hit = cands.find(([h]) => rank.test(h));
     if (hit) return hit[1];
@@ -98,9 +102,27 @@ function pickNameColumn(headers, taken) {
   return -1;
 }
 
+function pickLocalNameColumn(headers, taken) {
+  return headers.findIndex((h, i) => h && !taken.has(i) && LOCAL_NAME_RE.test(h) && (NAME_RE.test(h) || /tamil/i.test(h))
+    && !NAME_EXCLUDE_RE.test(h));
+}
+
+// A designer file name used as the shop name: "73 - 60 X 75 Inch - Nonlit - SRI AMBIRAMI PROVISON STORES.cdr"
+// -> "SRI AMBIRAMI PROVISON STORES" (everything after the third " - ", like backend batch_import.parse_shop_lines).
+const DESIGN_FILE_RE = /^\s*\d+\s*-\s*\d+(?:\.\d+)?\s*[xX×*]\s*\d+(?:\.\d+)?\s*[a-z'"]*\s*-\s*[^-]+?\s*-\s*(.+?)\s*$/i;
+
+/** The shop name to print from a name cell: a trailing ".cdr" is dropped and a designer file name is reduced to its
+ *  shop-name part; anything else is returned trimmed. */
+export function cleanShopName(v) {
+  let t = cellText(v).replace(/\.cdr$/i, "").trim();
+  const m = DESIGN_FILE_RE.exec(t);
+  if (m) t = m[1].replace(/\s+-\s+copy$/i, "").trim();
+  return t;
+}
+
 /**
  * rows: array of arrays (SheetJS `sheet_to_json(sheet, {header: 1, defval: ""})`). Returns
- *   { shops: [{name, width, height, unit, row}], errors: [{row, reason}], missing: [...], layout }
+ *   { shops: [{name, shop_name_local?, width, height, unit, row}], errors: [{row, reason}], missing: [...], layout }
  * `row` is the 1-based spreadsheet row. `missing` is ["name"] and/or ["size"] when a column cannot be found even by
  * looking at the values - nothing is imported then. `layout` describes what was detected (for the tests/messages).
  */
@@ -157,10 +179,13 @@ export function mapSheetRows(rows) {
     }
   }
 
+  if (nameCol >= 0) taken.add(nameCol);
+  const localCol = pickLocalNameColumn(headers, taken);
+
   const missing = [];
   if (nameCol < 0) missing.push("name");
   if (sizeCol < 0 && widthCol < 0) missing.push("size");
-  const layout = { headerRow: headerRow >= 0 ? headerRow + 1 : null, nameCol, sizeCol, widthCol, heightCol };
+  const layout = { headerRow: headerRow >= 0 ? headerRow + 1 : null, nameCol, localCol, sizeCol, widthCol, heightCol };
   const shops = [];
   const errors = [];
   if (missing.length) return { shops, errors, missing, layout };
@@ -168,7 +193,8 @@ export function mapSheetRows(rows) {
   const hdr = (c) => (c >= 0 ? headers[c] || "" : "");
   const headerUnit = detectUnit(hdr(sizeCol)) || null;
   data.forEach(({ cells, row }) => {
-    const name = cellText(cells[nameCol]);
+    const name = cleanShopName(cells[nameCol]);
+    const local = localCol >= 0 ? cellText(cells[localCol]) : "";
     if (!name) return errors.push({ row, reason: "missing shop name" });
     let dims = null;
     if (sizeCol >= 0) {
@@ -182,7 +208,7 @@ export function mapSheetRows(rows) {
       if (!h) return errors.push({ row, reason: `height must be a number > 0 (got "${cellText(cells[heightCol])}")` });
       dims = resolveUnit(w.value, w.unit, h.value, h.unit);
     }
-    shops.push({ name, ...dims, row });
+    shops.push({ name, ...(local ? { shop_name_local: local } : {}), ...dims, row });
   });
   return { shops, errors, missing, layout };
 }

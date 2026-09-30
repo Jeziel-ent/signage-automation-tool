@@ -1,5 +1,5 @@
 """Dual-master templates: a landscape and a portrait master per brand, the master picked by the TARGET's
-orientation (only width > height = landscape; square and portrait = portrait), and same-orientation fitting (uniform scale + padding) in
+orientation (width / height >= 1.25 = landscape; square, near-square and portrait = portrait), and same-orientation fitting (uniform scale + padding) in
 orientation_adapter. Backend API tests use MockEngine and a throwaway SIGNAGE_DATA."""
 from __future__ import annotations
 
@@ -18,7 +18,12 @@ MM = 25.4
 # ----------------------------------------------------------------- pure routing
 @pytest.mark.parametrize("w,h,want", [(120 * MM, 48 * MM, "landscape"), (30 * MM, 40 * MM, "portrait"),
                                       (40 * MM, 40 * MM, "portrait"),      # square -> portrait
-                                      (100.0, 100.1, "portrait"), (100.1, 100.0, "landscape"),
+                                      (100.0, 100.1, "portrait"), (100.1, 100.0, "portrait"),   # near-square -> portrait
+                                      (125.0, 100.0, "landscape"), (124.9, 100.0, "portrait"),  # the 1.25 threshold
+                                      (11 * 304.8, 6 * 304.8, "landscape"), (5 * 304.8, 5 * 304.8, "portrait"),
+                                      (6 * 304.8, 6 * 304.8, "portrait"), (60 * MM, 75 * MM, "portrait"),
+                                      (7 * 304.8, 6 * 304.8, "portrait"),  # 1.17 - near-square
+                                      (7 * 304.8, 5 * 304.8, "landscape"),  # 1.4
                                       (48 * 25.4, 4 * 304.8, "portrait"),  # 48 in x 4 ft: 1219.1999999999998 vs 1219.2 mm - still square
                                       (4 * 304.8, 48 * 25.4, "portrait")])
 def test_target_orientation_rule(w, h, want):

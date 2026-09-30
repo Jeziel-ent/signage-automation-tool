@@ -5,6 +5,7 @@
 export function shopPayload(x) {
   return {
     name: x.name,
+    ...(x.shop_name_local ? { shop_name_local: x.shop_name_local } : {}),
     width: x.width === "" || x.width == null ? "" : +x.width,
     height: x.height === "" || x.height == null ? "" : +x.height,
     unit: x.unit || "in",
@@ -21,6 +22,7 @@ export function toDraftRow(parsed) {
   return {
     id: `draft-${Date.now().toString(36)}-${draftCounter}`,
     name: parsed.name,
+    ...(parsed.shop_name_local ? { shop_name_local: parsed.shop_name_local } : {}),
     width: parsed.width,
     height: parsed.height,
     unit: parsed.unit || "in",
@@ -40,7 +42,7 @@ export function resetForNewMaster(shops) {
   const out = shops.map((x) => {
     if (isDraft(x) && (x.status === "new" || !x.status)) return x;
     reset += 1;
-    return toDraftRow({ name: x.name, width: x.width, height: x.height, unit: x.unit || x.width_unit || "in" });
+    return toDraftRow({ name: x.name, shop_name_local: x.shop_name_local, width: x.width, height: x.height, unit: x.unit || x.width_unit || "in" });
   });
   return { shops: out, reset };
 }

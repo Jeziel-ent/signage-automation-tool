@@ -25,7 +25,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
-from .batch_import import parse_shop_lines
+from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename
 from .engines import get_engine
 from .layout import to_mm
 
@@ -257,7 +257,11 @@ def _extract_cdr_preview(master_path: Path) -> tuple[Path | None, str | None]:
 
 
 @app.post("/api/v2/upload")
-async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form("landscape")):
+async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form("landscape"),
+                    master_shop_name: str = Form(""), master_shop_name_local: str = Form("")):
+    """`master_shop_name` / `master_shop_name_local`: the shop name the master itself shows (English / local script),
+    which is how conversion finds the text to overwrite on an untagged master. Optional - the English one defaults to
+    the shop name in a designer-style file name ("<code> - W X H unit - type - SHOP NAME.cdr")."""
     if not (master.filename or "").lower().endswith(".cdr"):
         raise HTTPException(400, "Master file must be a .cdr")
     orientation = orientation.strip().lower()
@@ -276,16 +280,32 @@ async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orie
     with open(master_path, "wb") as f:
         shutil.copyfileobj(master.file, f)
 
-    db.create_job(job_id, brand.strip(), master.filename, str(master_path), orientation)
+    db.create_job(job_id, brand.strip(), master.filename, str(master_path), orientation,
+                  master_shop_name.strip() or shop_name_from_filename(master.filename),
+                  master_shop_name_local.strip() or None)
     preview_path, preview_error = _extract_cdr_preview(master_path)
     db.set_job_preview(job_id, str(preview_path) if preview_path else None, preview_error)
 
     return {
         "id": job_id,
         "orientation": orientation,
+        "master_shop_name": db.get_job(job_id).get("master_shop_name"),
         "preview_url": f"/api/v2/jobs/{job_id}/preview" if preview_path else None,
         "preview_error": preview_error,
     }
+
+
+@app.patch("/api/v2/jobs/{job_id}/master-shop-name")
+def v2_set_master_shop_name(job_id: str, payload: dict):
+    """Set / correct the shop name a master shows ({master_shop_name, master_shop_name_local}; blank clears)."""
+    job = db.get_job(job_id)
+    if not job:
+        raise HTTPException(404, "job not found")
+    val = lambda k: (str(payload.get(k) or "")).strip() or None  # noqa: E731
+    db.set_job_master_shop_names(job_id, val("master_shop_name") if "master_shop_name" in payload else job.get("master_shop_name"),
+                                 val("master_shop_name_local") if "master_shop_name_local" in payload
+                                 else job.get("master_shop_name_local"))
+    return db.get_job(job_id)
 
 
 @app.get("/api/v2/jobs/{job_id}")
@@ -353,7 +373,9 @@ def _parse_shop_payload(payload: dict) -> dict:
             "reference": opt("reference"),
             # No upload UI for this yet (see CLAUDE.md "New UI") - accepted so the data model needs no migration later.
             "reference_file_path": opt("reference_file_path"),
-            "phone": opt("phone"), "gst": opt("gst"), "address": opt("address")}
+            "phone": opt("phone"), "gst": opt("gst"), "address": opt("address"),
+            # the local-script (e.g. Tamil) shop name, from an Excel import's "Shop Name (Tamil)"-style column
+            "shop_name_local": opt("shop_name_local")}
 
 
 def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
@@ -361,7 +383,8 @@ def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
     seq_no = len(db.list_shops(job_id)) + 1
     db.create_shop(shop_id, job_id, seq_no, fields["name"], fields["width"], fields["width_unit"], fields["height"],
                    fields["height_unit"], fields["reference"], fields["reference_file_path"], fields["phone"],
-                   fields["gst"], fields["address"], master_ids["landscape_master_id"], master_ids["portrait_master_id"])
+                   fields["gst"], fields["address"], master_ids["landscape_master_id"], master_ids["portrait_master_id"],
+                   fields.get("shop_name_local"))
     return db.get_shop(shop_id)
 
 
@@ -379,7 +402,8 @@ def v2_add_shop(job_id: str, payload: dict):
     return _insert_shop(job_id, fields, _validated_master_ids(payload, job))
 
 
-EDITABLE_SHOP_KEYS = ("name", "width", "width_unit", "height", "height_unit", "unit", "phone", "gst", "address")
+EDITABLE_SHOP_KEYS = ("name", "width", "width_unit", "height", "height_unit", "unit", "phone", "gst", "address",
+                      "shop_name_local")
 
 
 def _apply_shop_edits(shop_row: dict, payload: dict) -> None:
@@ -506,7 +530,7 @@ def _select_shop_master(shop_row: dict, job_row: dict, target_w_mm: float, targe
     """The master file a shop converts from, plus a small record of the choice for the report.
 
     A shop with `landscape_master_id` / `portrait_master_id` uses the master matching the TARGET's orientation
-    (`orientation_adapter.select_master`: only width > height is landscape; square and portrait use portrait) so the layout engine only ever scales
+    (`orientation_adapter.select_master`: width / height >= 1.25 is landscape; square, near-square and portrait use portrait) so the layout engine only ever scales
     and pads within one orientation; a shop with neither keeps using its job's own master, as before."""
     l_id, p_id = shop_row.get("landscape_master_id"), shop_row.get("portrait_master_id")
     if not (l_id or p_id):
@@ -537,7 +561,8 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
     job_row = db.get_job(shop_row["job_id"])
     out_dir = JOBS_V2 / shop_row["job_id"] / "out" / shop_id
     shop_dict = {
-        "name": shop_row["name"],
+        # an imported designer file name ("73 - 60 X 75 Inch - Nonlit - SHOP.cdr") prints as just "SHOP"
+        "name": clean_shop_name(shop_row["name"]),
         "width": to_mm(shop_row["width"], shop_row["width_unit"]),
         "height": to_mm(shop_row["height"], shop_row["height_unit"]),
         "unit": "mm",
@@ -559,7 +584,17 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
         address_lines = [line.strip() for line in shop_row["address"].splitlines() if line.strip()]
         if address_lines:
             shop_dict["address_lines"] = address_lines
+    if shop_row.get("shop_name_local"):
+        shop_dict["shop_name_local"] = shop_row["shop_name_local"]
     master_path, master_used = _select_shop_master(shop_row, job_row, shop_dict["width"], shop_dict["height"])
+    # What the CHOSEN master currently shows as its shop name - how the engine finds the text shape to overwrite on an
+    # untagged master (layout.find_shopname_ids); a `shopname`-tagged shape is used regardless.
+    mrow = db.get_job(master_used["job_id"]) or job_row
+    master_name = mrow.get("master_shop_name") or shop_name_from_filename(mrow.get("master_filename"))
+    if master_name:
+        shop_dict["master_shop_name"] = master_name
+    if mrow.get("master_shop_name_local"):
+        shop_dict["master_shop_name_local"] = mrow["master_shop_name_local"]
     logger.info("Shop %s (%sx%s mm, %s target): Selected master file path -> %s (%s)", shop_id,
                 round(shop_dict["width"], 1), round(shop_dict["height"], 1), master_used.get("orientation"),
                 master_path, master_used.get("reason"))
