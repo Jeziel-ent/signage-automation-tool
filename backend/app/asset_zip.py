@@ -167,3 +167,52 @@ def write_cdr_zip(shops: list[ShopAssets], out_path: Path) -> dict:
             z.write(s.cdr, f"{base}.cdr")
             count += 1
     return {"shops": len(shops), "files": count, "missing": missing}
+
+
+SINGLE_FORMATS = ("cdr", "jpg", "png", "pdf")
+
+
+def pick_single(out_dir: Path, conversion_files: dict | None, exports: list[dict], current_ops: list, fmt: str) -> dict:
+    """The file one shop's row "Download" gives for `fmt` (cdr / jpg / png / pdf) - the same preference as the ZIP
+    (`pick_sources`): the newest finished editor export made from the shop's CURRENT edits, else the conversion's own file.
+
+    Returns {"path": Path | None, "to_jpeg": bool (a PNG to re-encode as JPEG), "source": "editor export" | "conversion" |
+    None, "note": str | None, "reason": str | None (why it is unavailable)}."""
+    out_dir = Path(out_dir)
+    matching = [e for e in exports if e.get("status") == "done" and e.get("files") and e.get("ops") == current_ops]
+
+    def exported(kind):
+        for e in matching:
+            name = e["files"].get(kind)
+            if name and (out_dir / "exports" / e["id"] / name).is_file():
+                return out_dir / "exports" / e["id"] / name
+        return None
+
+    def converted(kind, exts=None):
+        name = (conversion_files or {}).get(kind)
+        p = out_dir / name if name else None
+        return p if p is not None and p.is_file() and (not exts or p.suffix.lower() in exts) else None
+
+    path, to_jpeg = None, False
+    if fmt in ("cdr", "pdf"):
+        path = exported(fmt) or converted(fmt)
+    elif fmt == "png":
+        path = exported("png") or converted("preview", (".png",))
+    elif fmt == "jpg":
+        path = exported("jpeg")
+        if path is None:
+            path = exported("png") or converted("preview", (".png",))
+            to_jpeg = path is not None
+    else:
+        raise ValueError(f"unknown format {fmt!r}")
+    if path is None:
+        reason = {"pdf": "no PDF was made for this board", "cdr": "no CDR was made for this board"}.get(
+            fmt, "no raster image of this board exists (the preview is not a PNG)")
+        return {"path": None, "to_jpeg": False, "source": None, "note": None, "reason": reason}
+    source = "editor export" if "exports" in path.parts else "conversion"
+    notes = []
+    if source == "conversion" and current_ops:
+        notes.append("this board has editor edits that were never exported - this file is the conversion without them")
+    if source == "conversion" and fmt in ("png", "jpg"):
+        notes.append("preview resolution (about 1600 px) - use More export options for a print-resolution image")
+    return {"path": path, "to_jpeg": to_jpeg, "source": source, "note": " · ".join(notes) or None, "reason": None}

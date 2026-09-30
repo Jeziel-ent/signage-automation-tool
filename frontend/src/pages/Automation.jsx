@@ -7,6 +7,7 @@ import AnimatedCount from "../components/AnimatedCount.jsx";
 import ExportModal from "../components/ExportModal.jsx";
 import PrintFileModal from "../components/PrintFileModal.jsx";
 import GenerateZipModal from "../components/GenerateZipModal.jsx";
+import ShopDownloadModal from "../components/ShopDownloadModal.jsx";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 import { parseShopWorkbook } from "../utils/shopImport.js";
 import { BOARD_TYPES, DEFAULT_BOARD_TYPE, applyDefaultUnit, cdrDownloadUrl, followsEnglish, isDraft, nameEditPatch, resetForNewMaster, shopPayload, toDraftRow, withAutoTamil, withFreshAutoTamil } from "../utils/shopPayload.js";
@@ -117,6 +118,7 @@ export default function Automation() {
   const masterGen = useRef(0);
   const [queueNotice, setQueueNotice] = useState("");
   const [exportShop, setExportShop] = useState(null); // the done shop whose Export modal is open
+  const [downloadShop, setDownloadShop] = useState(null); // the done shop whose quick Download popup is open ({...shop, no})
   const [showPrintFile, setShowPrintFile] = useState(false);
   const [showZip, setShowZip] = useState(false); // the Generate ZIP modal
 
@@ -680,7 +682,7 @@ export default function Automation() {
                         onDelete={() => deleteShop(s.id)}
                         onConvert={() => convertShop(s.id)}
                         onOpen={() => openEditor(s)}
-                        onExport={() => setExportShop(s)}
+                        onExport={() => setDownloadShop({ ...s, no: i + 1 })}
                         stepEstimates={stepEstimates}
                       />
                     ))}
@@ -741,6 +743,19 @@ export default function Automation() {
       </AnimatePresence>
       <AnimatePresence>
         {showPrintFile && <PrintFileModal key="print" shops={printable} brand={brand} onClose={() => setShowPrintFile(false)} />}
+      </AnimatePresence>
+      <AnimatePresence>
+        {downloadShop && (
+          <ShopDownloadModal
+            key={`dl-${downloadShop.id}`}
+            shop={downloadShop}
+            onClose={() => setDownloadShop(null)}
+            onMoreOptions={() => {
+              setExportShop(downloadShop);
+              setDownloadShop(null);
+            }}
+          />
+        )}
       </AnimatePresence>
       <AnimatePresence>
         {exportShop && (
@@ -1023,7 +1038,7 @@ function ConvertCell({ shop, onConvert, onExport, stepEstimates }) {
         <span className="badge badge-done">
           <CheckCircle2 size={13} /> Completed
         </span>
-        <button className="icon-btn row-dl-btn" onClick={onExport} title="Download / export this shop's files" aria-label={`Export files for ${shop.name}`}>
+        <button className="icon-btn row-dl-btn" onClick={onExport} title="Download Files (CDR, JPG, PNG, PDF)" aria-label={`Download files for ${shop.name}`}>
           <Download size={16} />
         </button>
       </span>

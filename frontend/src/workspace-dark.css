@@ -335,3 +335,9 @@
 .app-shell .sheet-tab.active { background: linear-gradient(to right, #dc2626, #e11d48); border-color: transparent; color: #fff; }
 .app-shell .ta-auto { background: rgba(245, 158, 11, 0.18); color: #fcd34d; }
 .app-shell .sheet-tabs-label { color: #64748b; }
+
+/* Shop row quick Download popup on the dark workspace */
+.app-shell .sd-btn { background: rgba(15, 23, 42, 0.7); border-color: rgba(51, 65, 85, 0.9); color: #e2e8f0; }
+.app-shell .sd-btn:hover:not(.disabled) { background: linear-gradient(to right, #dc2626, #e11d48); border-color: transparent; color: #fff; }
+.app-shell .sd-loading { color: #94a3b8; }
+.app-shell .sd-notes { color: #fcd34d; }

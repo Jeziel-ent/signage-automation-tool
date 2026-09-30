@@ -841,6 +841,67 @@ def v2_shop_file(shop_id: str, filename: str):
     return FileResponse(p, filename=name)
 
 
+def _single_sources(row: dict, fmt: str) -> dict:
+    from . import asset_zip
+
+    out_dir = JOBS_V2 / row["job_id"] / "out" / row["id"]
+    exports = [asset_zip.export_record(db.get_export(e["id"])) for e in db.list_exports(row["id"], limit=20)]
+    return asset_zip.pick_single(out_dir, json.loads(row["files_json"]) if row.get("files_json") else {}, exports,
+                                 db.get_editor_ops(row["id"]), fmt)
+
+
+@app.get("/api/v2/shops/{shop_id}/downloads")
+def v2_shop_downloads(shop_id: str):
+    """What the row's quick Download popup can offer: {cdr|jpg|png|pdf: {available, source, note, reason}}."""
+    from . import asset_zip
+
+    row = db.get_shop(shop_id)
+    if not row:
+        raise HTTPException(404, "shop not found")
+    if row["status"] != "done":
+        raise HTTPException(409, "this shop has not been converted yet")
+    out = {}
+    for fmt in asset_zip.SINGLE_FORMATS:
+        src = _single_sources(row, fmt)
+        out[fmt] = {"available": src["path"] is not None, "source": src["source"], "note": src["note"], "reason": src["reason"]}
+    return out
+
+
+@app.get("/api/v2/shops/{shop_id}/download/{fmt}")
+def v2_shop_download(shop_id: str, fmt: str, no: int | None = None):
+    """One file of one converted shop, named "<S.no> - <W> X <H> <Unit> - <Type> - <SHOP>.<ext>" (`no` = the row's S.no in
+    the queue, default its seq_no). CDR/PDF/PNG are served as they are; a JPG is an editor export's JPEG, else the best PNG
+    re-encoded as JPEG quality 95 on white (CorelDRAW's pixels, like the ZIP's JPG). 404 when that format does not exist."""
+    from . import asset_zip
+
+    fmt = fmt.lower()
+    if fmt not in asset_zip.SINGLE_FORMATS:
+        raise HTTPException(422, "format must be one of cdr, jpg, png, pdf")
+    row = db.get_shop(shop_id)
+    if not row:
+        raise HTTPException(404, "shop not found")
+    if row["status"] != "done":
+        raise HTTPException(409, "this shop has not been converted yet")
+    src = _single_sources(row, fmt)
+    if src["path"] is None:
+        raise HTTPException(404, src["reason"])
+    name = f"{file_naming.shop_basename(row, no if no and no > 0 else None)}.{fmt}"
+    if not src["to_jpeg"]:
+        return FileResponse(src["path"], filename=name)
+    from PIL import Image                         # lazily, like every other Pillow use in the app
+
+    Image.MAX_IMAGE_PIXELS = None
+    tmp = tempfile.NamedTemporaryFile(prefix="shop_jpg_", suffix=".jpg", delete=False)
+    tmp.close()
+    with Image.open(src["path"]) as im:
+        rgba = im.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, (255, 255, 255))
+        flat.paste(rgba, mask=rgba.split()[-1])
+        flat.save(tmp.name, "JPEG", quality=95, subsampling=0, dpi=im.info.get("dpi", (72, 72)))
+    return FileResponse(tmp.name, media_type="image/jpeg", filename=name,
+                        background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
+
+
 THUMB_MAX_PX = 240  # long side; the Recently generated thumbnail is 56x36 CSS px (x2 for high-DPI, x1.1 on hover)
 
 

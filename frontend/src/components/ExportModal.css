@@ -170,3 +170,21 @@ a.gz-download:hover { filter: brightness(1.05); }
 .gz-form-row .xm-note { margin-right: auto; }
 .gz-otp-msg { margin: 0; font-size: 14px; color: #334155; }
 .gz-otp { font: 600 22px ui-monospace, Consolas, monospace; letter-spacing: 0.3em; text-align: center; text-transform: uppercase; max-width: 240px; }
+
+/* Shop row quick Download popup (ShopDownloadModal) */
+.xm.sd { width: min(440px, calc(100vw - 32px)); }
+.sd .xm-sub strong { color: inherit; }
+.sd-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.sd-btn {
+  display: flex; align-items: center; gap: 8px; padding: 11px 12px; border-radius: 10px; border: 1px solid #e2e8f0;
+  background: #f8fafc; color: #1e293b; font-size: 13px; font-weight: 600; text-decoration: none; transition: all 0.15s;
+}
+.sd-btn span { flex: 1; }
+.sd-btn:hover:not(.disabled) { background: #dc2626; border-color: #dc2626; color: #fff; }
+.sd-btn.disabled { opacity: 0.5; cursor: not-allowed; font-weight: 500; }
+.sd-dl { opacity: 0.7; }
+.sd-loading { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #64748b; }
+.sd-loading .spin { animation: sd-spin 0.9s linear infinite; }
+@keyframes sd-spin { to { transform: rotate(360deg); } }
+.sd-notes { margin: 12px 0 0; padding-left: 18px; font-size: 12px; color: #92400e; }
+.sd-notes li + li { margin-top: 4px; }
