@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { Building2, CheckCircle2, Download, ExternalLink, FileCode2, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
 import UploadDropzone from "../components/UploadDropzone.jsx";
@@ -825,11 +825,13 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onE
   return (
     <tr data-shop-id={shop.id}>
       <td>{index}</td>
-      <td className="name-cell">{field("name", "Shop name (English)", { type: "text", title: shop.name || undefined })}</td>
+      <td className="name-cell">
+        <NameField value={shop.name} label="Shop name (English)" disabled={locked} onChange={(v) => onEdit({ name: v })} onBlur={() => onSave()} />
+      </td>
       <td>
         <div className="ta-cell">
-          {field("shop_name_local", "Shop name (Tamil)", { type: "text", className: "ta-input" + (shop.ta_auto ? " auto" : ""), lang: "ta", placeholder: "\u2014",
-            title: shop.shop_name_local || undefined })}
+          <NameField value={shop.shop_name_local} label="Shop name (Tamil)" disabled={locked} lang="ta" placeholder={"\u2014"}
+            className={"ta-input" + (shop.ta_auto ? " auto" : "")} onChange={(v) => onEdit({ shop_name_local: v })} onBlur={() => onSave()} />
           {shop.ta_auto && shop.shop_name_local ? <span className="ta-auto" title="Written automatically from the English name - check it; typing here makes it yours">auto</span> : null}
         </div>
       </td>
@@ -884,6 +886,56 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onE
         </button>
       </td>
     </tr>
+  );
+}
+
+// A shop-name cell: a one-line text box that WRAPS a long name onto more lines (growing in height) instead of cutting it
+// off, so English and Tamil names are always fully readable. Enter confirms (blur) instead of adding a line, and line
+// breaks in pasted text become spaces - a shop name is one line.
+function NameField({ value, label, disabled, onChange, onBlur, className = "", lang, placeholder }) {
+  const ref = useRef(null);
+  const fit = () => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    // scrollHeight is the content + padding; the box is border-box, so its borders are added or the last line is clipped
+    el.style.height = `${el.scrollHeight + (el.offsetHeight - el.clientHeight)}px`;
+  };
+  useLayoutEffect(fit, [value]);
+  useEffect(() => {
+    // re-fit when the column width changes (window resize, sidebar collapse, sheet tab switch)
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return undefined;
+    let w = el.clientWidth;
+    const ro = new ResizeObserver(() => {
+      if (el.clientWidth !== w) {
+        w = el.clientWidth;
+        fit();
+      }
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <textarea
+      ref={ref}
+      rows={1}
+      className={"name-input " + className}
+      value={value ?? ""}
+      disabled={disabled}
+      aria-label={label}
+      lang={lang}
+      placeholder={placeholder}
+      title={value || undefined}
+      onChange={(e) => onChange(e.target.value.replace(/[\r\n]+/g, " "))}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          e.currentTarget.blur();
+        }
+      }}
+      onBlur={onBlur}
+    />
   );
 }
 

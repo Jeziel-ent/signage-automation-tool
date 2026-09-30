@@ -278,7 +278,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .import-report ul { margin: 4px 0 0; padding-left: 18px; }
 .queue-notice { display: flex; align-items: center; justify-content: space-between; gap: 8px; background: #fffbeb; color: #92400e; border-bottom-color: #fde68a; }
 .queue-notice .icon-btn { font-size: 16px; line-height: 1; color: inherit; }
-.ws-table-scroll { flex: 1; min-height: 0; max-height: 100%; overflow-y: auto; padding: 0 12px 12px; }
+.ws-table-scroll { flex: 1; min-height: 0; max-height: 100%; overflow-y: auto; overflow-x: auto; padding: 0 12px 12px; }
 .ws-table-scroll .shops-table th { position: sticky; top: 0; z-index: 1; background: #fff; }
 .shop-local-name { font-size: 11px; color: #64748b; padding: 0 8px 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 220px; font-family: "Nirmala UI", system-ui, sans-serif; }
 .ws-empty { text-align: center; color: #94a3b8; padding: 28px 0 !important; }
@@ -334,14 +334,22 @@ a.btn { text-decoration: none; display: inline-block; }
 .ws-card .shops-table tbody tr { transition: background-color 0.15s; }
 .ws-card .shops-table tbody tr:hover { background: rgba(248, 250, 252, 0.6); }
 .ws-card .shops-table tbody tr:last-child td { border-bottom: none; }
-.ws-card .shops-table td input, .ws-card .shops-table td select {
+.ws-card .shops-table td input, .ws-card .shops-table td select, .ws-card .shops-table td textarea.name-input {
   width: 100%; background: transparent; border: 1px solid transparent; color: #1e293b; font-size: 14px;
   border-radius: 8px; padding: 4px 8px; outline: none; transition: all 0.15s;
 }
 .ws-card .shops-table td select { width: auto; min-width: 68px; }
-.ws-card .shops-table td input:hover:not(:disabled), .ws-card .shops-table td select:hover:not(:disabled) { border-color: #e2e8f0; }
-.ws-card .shops-table td input:focus:not(:disabled), .ws-card .shops-table td select:focus:not(:disabled) { border-color: #ef4444; background: #fff; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12); }
-.ws-card .shops-table td input:disabled, .ws-card .shops-table td select:disabled { color: #64748b; cursor: default; }
+.ws-card .shops-table td input:hover:not(:disabled), .ws-card .shops-table td select:hover:not(:disabled),
+.ws-card .shops-table td textarea.name-input:hover:not(:disabled) { border-color: #e2e8f0; }
+.ws-card .shops-table td input:focus:not(:disabled), .ws-card .shops-table td select:focus:not(:disabled),
+.ws-card .shops-table td textarea.name-input:focus:not(:disabled) { border-color: #ef4444; background: #fff; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.12); }
+.ws-card .shops-table td input:disabled, .ws-card .shops-table td select:disabled,
+.ws-card .shops-table td textarea.name-input:disabled { color: #64748b; cursor: default; }
+/* shop names wrap instead of truncating; the box grows with the text (NameField) */
+.shops-table textarea.name-input {
+  display: block; resize: none; overflow: hidden; font-family: inherit; line-height: 1.4; min-height: 30px;
+  white-space: pre-wrap; overflow-wrap: anywhere; vertical-align: middle;
+}
 .ws-card .shops-table tr.new-shop-row td { background: #f8fafc; }
 .ws-card .shops-table tr.new-shop-row input, .ws-card .shops-table tr.new-shop-row select { border-color: #e2e8f0; background: #fff; }
 
@@ -366,7 +374,9 @@ a.btn { text-decoration: none; display: inline-block; }
 
 /* column sizing: the shop name gets the slack, width/height stay compact */
 .ws-card .shops-table { table-layout: auto; }
-.ws-card .shops-table td:nth-child(2), .ws-card .shops-table th:nth-child(2) { min-width: 180px; width: 40%; }
+/* the two shop-name columns share the spare width equally, so Tamil names (which run wider than English) are not squeezed */
+.ws-card .shops-table td:nth-child(2), .ws-card .shops-table th:nth-child(2) { min-width: 160px; width: 28%; }
+.ws-card .shops-table td:nth-child(3), .ws-card .shops-table th:nth-child(3) { min-width: 200px; width: 32%; }
 .ws-card .shops-table td:nth-child(3), .ws-card .shops-table td:nth-child(4) { min-width: 76px; width: 84px; }
 
 
@@ -798,8 +808,10 @@ a.btn { text-decoration: none; display: inline-block; }
 .ws-queue { min-height: 460px; }
 .ws-queue .ws-table-scroll { max-height: calc(100vh - 260px); min-height: 240px; }
 @media (max-width: 760px) { .ws-masters .mc-grid { grid-template-columns: 1fr; } }
-.shops-table .ta-input { font-family: "Nirmala UI", "Latha", system-ui, sans-serif; min-width: 150px; }
-.shops-table td:nth-child(2) input { min-width: 170px; }
+/* Tamil name: upright, same weight and size as the English name; Nirmala UI ships with Windows, the rest are fallbacks */
+.shops-table .ta-input { font-family: "Nirmala UI", "Mukta Malar", "Noto Sans Tamil", "Latha", "Segoe UI", sans-serif; font-style: normal; }
+.shops-table textarea.name-input { font-weight: 500; } /* English and Tamil names: same medium weight */
+
 .shops-table .type-select { min-width: 118px; }
 
 /* ---- Shops Queue: Excel sheet tabs, English/Tamil font pickers, the "auto" Tamil name tag */
@@ -812,7 +824,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .sheet-tab.active { background: #dc2626; border-color: #dc2626; color: #fff; }
 .sheet-count { font-size: 11px; font-weight: 700; opacity: 0.75; }
 .ta-cell { position: relative; }
-.shops-table .ta-input.auto { font-style: italic; padding-right: 42px; }
+.ws-card .shops-table td textarea.ta-input.auto { padding-right: 50px; } /* room for the "auto" tag; the name itself stays upright */
 .ta-auto {
   position: absolute; right: 6px; top: 50%; transform: translateY(-50%); pointer-events: none;
   font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; padding: 1px 5px; border-radius: 6px;
@@ -820,7 +832,7 @@ a.btn { text-decoration: none; display: inline-block; }
 }
 
 /* Shops Queue polish: long names truncate (full text in the tooltip), row hover, the sheet-count label */
-.shops-table td.name-cell input, .shops-table .ta-input { text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
+/* no ellipsis: a name longer than its cell scrolls inside the input (full text also in the tooltip) */
 .sheet-tabs { align-items: center; }
 .sheet-tabs-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #94a3b8; margin-right: 4px; }
 .sheet-tab.active .sheet-count { background: rgba(255, 255, 255, 0.22); }

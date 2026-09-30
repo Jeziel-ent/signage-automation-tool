@@ -220,13 +220,17 @@
 }
 .app-shell .shops-table td, .app-shell .ws-card .shops-table td, .app-shell .rg-table td { border-bottom-color: var(--ws-line); color: var(--ws-text); }
 .app-shell .ws-card .shops-table tbody tr:hover, .app-shell .rg-table tbody tr:hover { background: var(--ws-row-hover); }
-.app-shell .ws-card .shops-table td input, .app-shell .ws-card .shops-table td select { color: var(--ws-text); }
+.app-shell .ws-card .shops-table td input, .app-shell .ws-card .shops-table td select,
+.app-shell .ws-card .shops-table td textarea.name-input { color: var(--ws-text); }
 .app-shell .ws-card .shops-table td select option { background: var(--ws-solid); color: var(--ws-text); }
-.app-shell .ws-card .shops-table td input:hover:not(:disabled), .app-shell .ws-card .shops-table td select:hover:not(:disabled) { border-color: var(--ws-border-hover); }
-.app-shell .ws-card .shops-table td input:focus:not(:disabled), .app-shell .ws-card .shops-table td select:focus:not(:disabled) {
+.app-shell .ws-card .shops-table td input:hover:not(:disabled), .app-shell .ws-card .shops-table td select:hover:not(:disabled),
+.app-shell .ws-card .shops-table td textarea.name-input:hover:not(:disabled) { border-color: var(--ws-border-hover); }
+.app-shell .ws-card .shops-table td input:focus:not(:disabled), .app-shell .ws-card .shops-table td select:focus:not(:disabled),
+.app-shell .ws-card .shops-table td textarea.name-input:focus:not(:disabled) {
   background: var(--ws-field); border-color: var(--ws-accent); box-shadow: 0 0 0 3px var(--ws-accent-soft);
 }
-.app-shell .ws-card .shops-table td input:disabled, .app-shell .ws-card .shops-table td select:disabled { color: var(--ws-muted); }
+.app-shell .ws-card .shops-table td input:disabled, .app-shell .ws-card .shops-table td select:disabled,
+.app-shell .ws-card .shops-table td textarea.name-input:disabled { color: var(--ws-muted); }
 .app-shell .ws-card .shops-table tr.new-shop-row td { background: rgba(30, 41, 59, 0.3); }
 .app-shell .ws-card .shops-table tr.new-shop-row input, .app-shell .ws-card .shops-table tr.new-shop-row select { background: var(--ws-field); border-color: var(--ws-field-border); }
 .app-shell .ws-empty { color: var(--ws-faint); }
