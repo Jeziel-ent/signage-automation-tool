@@ -339,19 +339,22 @@ def test_export_zip_bundles_every_file_under_the_shop_name(client):
     final = _wait_export(client, job, shop, started["export_id"])
     r = client.get(f"/api/editor/{job}/{shop}/exports/{started['export_id']}/zip")
     assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
-    assert r.headers["content-disposition"].endswith('_Signage_Export.zip"') or "_Signage_Export.zip" in r.headers["content-disposition"]
+    from tests.test_file_naming import _download_name
+    cd = _download_name(r)
+    assert " X " in cd and " - Nonlit - " in cd and cd.endswith(".zip"), cd
     z = zipfile.ZipFile(io.BytesIO(r.content))
-    assert sorted(z.namelist()) == sorted(final["files"].values())
+    assert len(z.namelist()) == len(final["files"])
+    stem = cd[:-len(".zip")]
+    assert sorted(z.namelist()) == sorted(f"{stem}{ext}" for ext in (".cdr", ".pdf", ".png", ".jpg"))
     png = next(n for n in z.namelist() if n.endswith(".png"))
     assert z.read(png)[:4] == b"\x89PNG"
 
 
-def test_export_zip_name_is_filename_safe_and_keeps_other_scripts():
+def test_export_zip_name_follows_the_standard_file_name():
     from app.main import _zip_name
-    assert _zip_name("Sri Kumar / Sons: #1") == "Sri_Kumar_Sons_1_Signage_Export.zip"
-    # every Tamil vowel sign and the virama survive (\w alone dropped them)
-    assert _zip_name("\u0bb8\u0bcd\u0bb0\u0bc0 \u0b95\u0bbe\u0bb0\u0bcd") == "\u0bb8\u0bcd\u0bb0\u0bc0_\u0b95\u0bbe\u0bb0\u0bcd_Signage_Export.zip"
-    assert _zip_name("  ") == "Shop_Signage_Export.zip"
+    row = {"seq_no": 76, "width": 125, "width_unit": "in", "height": 48, "height_unit": "in", "board_type": None,
+           "name": "SRI KANNIYAMMAN NATTU MARUNTHU KADAI"}
+    assert _zip_name(row) == "76 - 125 X 48 Inch - Nonlit - SRI KANNIYAMMAN NATTU MARUNTHU KADAI.zip"
 
 
 def test_export_zip_refuses_an_unfinished_export(client):

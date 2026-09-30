@@ -32,7 +32,7 @@ test("an imported sheet becomes editable draft rows with every table field, enti
   const rows = parsed.shops.map(toDraftRow);
   assert.equal(rows.length, 2);
   assert.ok(rows.every(isDraft) && new Set(rows.map((r) => r.id)).size === 2);
-  assert.deepEqual(Object.keys(rows[0]).sort(), ["height", "id", "name", "progress_pct", "status", "unit", "width"]);
+  assert.deepEqual(Object.keys(rows[0]).sort(), ["height", "id", "name", "progress_pct", "status", "unit", "unitSource", "width"]);
   assert.deepEqual([rows[1].width, rows[1].height, rows[1].unit], [12, 4, "ft"]);
   assert.equal(rows[0].status, "new");
   assert.equal(isDraft({ id: "a1b2c3" }), false);
@@ -79,4 +79,45 @@ test("the local shop name rides along from an import draft into the convert payl
   const d = draft({ name: "ANISH STORES", shop_name_local: "அனிஷ் ஸ்டோர்ஸ்", width: 8, height: 4, unit: "ft" });
   assert.equal(pay(d).shop_name_local, "அனிஷ் ஸ்டோர்ஸ்");
   assert.equal("shop_name_local" in pay(draft({ name: "X", width: 1, height: 1 })), false);
+});
+
+test("applyDefaultUnit: only rows that took the default and are still editable change", async () => {
+  const { applyDefaultUnit, toDraftRow } = await import("./shopPayload.js");
+  const rows = [
+    toDraftRow({ name: "default", width: 10, height: 4, unit: "in", unitSource: "default" }),
+    toDraftRow({ name: "excel", width: 120, height: 48, unit: "in", unitSource: "excel" }),
+    { ...toDraftRow({ name: "manual", width: 5, height: 2, unit: "in", unitSource: "default" }), unitSource: "manual" },
+    { id: "srv1", name: "saved default", width: 8, height: 3, unit: "in", unitSource: "default", status: "failed" },
+    { id: "srv2", name: "converted", width: 8, height: 3, unit: "in", unitSource: "default", status: "done" },
+    { id: "srv3", name: "loaded from server", width: 8, height: 3, unit: "in", status: "new" },
+  ];
+  const { shops, changed } = applyDefaultUnit(rows, "ft");
+  assert.deepEqual(shops.map((x) => [x.name, x.unit]), [
+    ["default", "ft"], ["excel", "in"], ["manual", "in"], ["saved default", "ft"], ["converted", "in"], ["loaded from server", "in"],
+  ]);
+  assert.deepEqual(changed, [rows[0].id, "srv1"]);
+  assert.equal(shops[0].width, 10); // numbers are kept: the default says what they mean
+  assert.deepEqual(applyDefaultUnit(shops, "ft").changed, []); // already ft: nothing to do
+});
+
+test("toDraftRow keeps unitSource; resetForNewMaster carries it over", async () => {
+  const { toDraftRow } = await import("./shopPayload.js");
+  const d = toDraftRow({ name: "A", width: 1, height: 1, unit: "ft", unitSource: "default" });
+  assert.equal(d.unitSource, "default");
+  const { shops } = resetForNewMaster([{ id: "s1", name: "A", width: 1, height: 1, unit: "ft", unitSource: "excel", status: "done" }]);
+  assert.equal(shops[0].unitSource, "excel");
+  assert.equal(toDraftRow({ name: "B", width: 1, height: 1 }).unitSource, undefined);
+});
+
+test("board type: normalised spellings, carried by drafts and the payload; Tamil name clears with an empty string", async () => {
+  const { normalizeBoardType, toDraftRow: draft, shopPayload: pay, cdrDownloadUrl } = await import("./shopPayload.js");
+  assert.equal(normalizeBoardType("NON LIT"), "Nonlit");
+  assert.equal(normalizeBoardType("one-way vision"), "OneWayVision");
+  assert.equal(normalizeBoardType("2 Nos Double Side GSB"), "2 Nos Double Side GSB");
+  assert.equal(normalizeBoardType(""), "");
+  const d = draft({ name: "A", width: 1, height: 1, board_type: "Backlit" });
+  assert.equal(pay(d).board_type, "Backlit");
+  assert.equal("board_type" in pay(draft({ name: "B", width: 1, height: 1 })), false);
+  assert.equal(pay({ name: "C", width: 1, height: 1, shop_name_local: null }).shop_name_local, "");
+  assert.equal(cdrDownloadUrl([{ id: "a1", no: 1 }, { id: "b2", no: 3 }]), "/api/v2/download-cdrs?ids=a1%2Cb2&nos=1%2C3");
 });

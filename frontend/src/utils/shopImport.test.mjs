@@ -101,7 +101,7 @@ test("a title above the header row is skipped; row numbers are spreadsheet rows;
 
 test("only name / width / height are read (phone, GST, address columns are ignored)", () => {
   const r = mapSheetRows([["Shop Name", "Size", "Phone", "GST", "Address"], ["A", "10*4", "9876543210", "G1", "Somewhere"]]);
-  assert.deepEqual(Object.keys(r.shops[0]).sort(), ["height", "name", "row", "unit", "width"]);
+  assert.deepEqual(Object.keys(r.shops[0]).sort(), ["height", "name", "row", "unit", "unitSource", "width"]);
 });
 
 test("no usable columns -> missing is reported and nothing is imported", () => {
@@ -147,4 +147,100 @@ test("a designer file name in the name column prints as just the shop name", () 
   assert.equal(cleanShopName("Anish - Stores"), "Anish - Stores");
   const r = mapSheetRows([["Shop Name", "Size"], ["67 - 6 X 6 Feet - Nonlit - KALKEE POOJA STORES.cdr", "6x6 ft"]]);
   assert.equal(r.shops[0].name, "KALKEE POOJA STORES");
+});
+
+test("Default Unit: a sheet with no unit anywhere takes it, and the rows are tagged as following it", () => {
+  const rows = [["Shop Name", "Size"], ["A", "10*4"], ["B", "12 x 5"]];
+  const ft = mapSheetRows(rows, { defaultUnit: "ft" });
+  assert.deepEqual(summary(ft), [["A", 10, 4, "ft"], ["B", 12, 5, "ft"]]);
+  assert.deepEqual(ft.shops.map((s) => s.unitSource), ["default", "default"]);
+  // no option -> inches, exactly as before
+  assert.deepEqual(summary(mapSheetRows(rows)), [["A", 10, 4, "in"], ["B", 12, 5, "in"]]);
+  // an invalid default falls back to inches
+  assert.equal(mapSheetRows(rows, { defaultUnit: "cm" }).shops[0].unit, "in");
+});
+
+test("Default Unit never overrides a unit the file gives: in the cell, a header hint or a Unit column", () => {
+  const cell = mapSheetRows([["Shop Name", "Size"], ["A", "120 x 48 in"], ["B", "10*4"]], { defaultUnit: "ft" });
+  assert.deepEqual(summary(cell), [["A", 120, 48, "in"], ["B", 10, 4, "ft"]]);
+  assert.deepEqual(cell.shops.map((s) => s.unitSource), ["excel", "default"]);
+  const header = mapSheetRows([["Shop Name", "Size (inches)"], ["A", "120*48"]], { defaultUnit: "ft" });
+  assert.deepEqual(summary(header), [["A", 120, 48, "in"]]);
+  assert.equal(header.shops[0].unitSource, "excel");
+  const wh = mapSheetRows([["Shop", "Width (ft)", "Height (ft)"], ["A", "10", "4"]], { defaultUnit: "in" });
+  assert.deepEqual(summary(wh), [["A", 10, 4, "ft"]]);
+});
+
+test("a separate Unit / UOM column sets each row's unit; a blank unit cell falls back to the default", () => {
+  const r = mapSheetRows([
+    ["S.No", "Shop Name", "Width", "Height", "Unit"],
+    [1, "A", "10", "4", "Feet"],
+    [2, "B", "120", "48", "Inches"],
+    [3, "C", "8", "3", ""],
+    [4, "D", "96", "36", "in"],
+  ], { defaultUnit: "ft" });
+  assert.equal(r.layout.unitCol, 4);
+  assert.deepEqual(summary(r), [["A", 10, 4, "ft"], ["B", 120, 48, "in"], ["C", 8, 3, "ft"], ["D", 96, 36, "in"]]);
+  assert.deepEqual(r.shops.map((s) => s.unitSource), ["excel", "excel", "default", "excel"]);
+  // with a combined Size column too, and a unit written in the cell beating the Unit column
+  const c = mapSheetRows([["Shop Name", "Size", "UOM"], ["A", "10*4", "ft"], ["B", "120*48 in", "ft"]], { defaultUnit: "in" });
+  assert.deepEqual(summary(c), [["A", 10, 4, "ft"], ["B", 120, 48, "in"]]);
+});
+
+test("a 'Units' column of quantities is not mistaken for a unit column", () => {
+  const r = mapSheetRows([["Shop Name", "Size", "Units"], ["A", "10*4", "2"], ["B", "12*5", "1"]], { defaultUnit: "ft" });
+  assert.equal(r.layout.unitCol, -1);
+  assert.deepEqual(summary(r), [["A", 10, 4, "ft"], ["B", 12, 5, "ft"]]);
+});
+
+test("combined sizes: every common spelling, thousands separators, comma only for a bare size", async () => {
+  const { parseSize } = await import("./shopImport.js");
+  const p = (s) => { const r = parseSize(s, null); return r && [r.width, r.height, r.width_unit, r.height_unit]; };
+  assert.deepEqual(p("10*4"), [10, 4, null, null]);
+  assert.deepEqual(p("10x4"), [10, 4, null, null]);
+  assert.deepEqual(p("10 X 4 FT"), [10, 4, "ft", "ft"]);
+  assert.deepEqual(p("120x48 IN"), [120, 48, "in", "in"]);
+  assert.deepEqual(p("10' x 4'"), [10, 4, "ft", "ft"]);
+  assert.deepEqual(p('120" x 48"'), [120, 48, "in", "in"]);
+  assert.deepEqual(p("10.5 × 4.2"), [10.5, 4.2, null, null]);
+  assert.deepEqual(p("3,000 x 1,200 mm"), [3000, 1200, "mm", "mm"]);
+  assert.deepEqual(p("10, 4"), [10, 4, null, null]);
+  assert.equal(p("No 5, 3rd Cross"), null);
+});
+
+test("vendor / actual width headers, a title block and a two-row Size > Width | Height header", async () => {
+  const { mapSheetRows } = await import("./shopImport.js");
+  const a = mapSheetRows([["Project X"], [], ["Vendor Name", "Actual Width", "Actual Height"], ["A", "10", "4"]]);
+  assert.deepEqual(a.missing, []);
+  assert.deepEqual(a.shops.map((s) => [s.name, s.width, s.height]), [["A", 10, 4]]);
+  const b = mapSheetRows([
+    ["Signage list"], [""],
+    ["S.No", "Shop Name", "Size", "", "Unit"],
+    ["", "", "Width", "Height", ""],
+    [1, "Sri Kumar", "12", "5", "ft"],
+    [2, "Anish", "120", "48", "in"],
+  ]);
+  assert.deepEqual(b.missing, []);
+  assert.deepEqual(b.shops.map((s) => [s.name, s.width, s.height, s.unit]), [["Sri Kumar", 12, 5, "ft"], ["Anish", 120, 48, "in"]]);
+  const c = mapSheetRows([["Shop", "Ht", "Wd"], ["X", "4", "10"]]);
+  assert.deepEqual(c.shops.map((s) => [s.width, s.height]), [[10, 4]]);
+});
+
+test("parseShopFile skips a cover sheet and reads the sheet that holds the shops", async () => {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Summary"], ["Total boards", 2]]), "Cover");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Shop Name", "Board Size"], ["A", "10 X 4 FT"], ["B", "120x48 IN"]]), "Shops");
+  const { parseShopFile } = await import("./shopImport.js");
+  const r = await parseShopFile(new File([XLSX.write(wb, { type: "array", bookType: "xlsx" })], "w.xlsx"));
+  assert.equal(r.sheet, "Shops");
+  assert.deepEqual(r.shops.map((s) => [s.name, s.width, s.height, s.unit]), [["A", 10, 4, "ft"], ["B", 120, 48, "in"]]);
+});
+
+test("board type from a Type column or from a designer file name in the name column", async () => {
+  const { mapSheetRows } = await import("./shopImport.js");
+  const a = mapSheetRows([["Shop Name", "Size", "Type of Board"], ["A", "10x4", "front lit"], ["B", "10x4", ""]]);
+  assert.deepEqual(a.shops.map((s) => [s.name, s.board_type]), [["A", "Frontlit"], ["B", undefined]]);
+  const b = mapSheetRows([["Shop Name", "Size"], ["76 - 125 X 48 Inch - Nonlit - SRI KANNIYAMMAN.cdr", "125x48"]]);
+  assert.deepEqual(b.shops.map((s) => [s.name, s.board_type]), [["SRI KANNIYAMMAN", "Nonlit"]]);
 });

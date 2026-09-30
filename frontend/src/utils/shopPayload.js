@@ -5,7 +5,9 @@
 export function shopPayload(x) {
   return {
     name: x.name,
-    ...(x.shop_name_local ? { shop_name_local: x.shop_name_local } : {}),
+    // sent whenever the row has the field, so clearing the Tamil name in the table clears it on the server too
+    ...(x.shop_name_local || "shop_name_local" in x ? { shop_name_local: x.shop_name_local || "" } : {}),
+    ...(x.board_type ? { board_type: x.board_type } : {}),
     width: x.width === "" || x.width == null ? "" : +x.width,
     height: x.height === "" || x.height == null ? "" : +x.height,
     unit: x.unit || "in",
@@ -23,9 +25,13 @@ export function toDraftRow(parsed) {
     id: `draft-${Date.now().toString(36)}-${draftCounter}`,
     name: parsed.name,
     ...(parsed.shop_name_local ? { shop_name_local: parsed.shop_name_local } : {}),
+    ...(parsed.board_type ? { board_type: parsed.board_type } : {}),
     width: parsed.width,
     height: parsed.height,
     unit: parsed.unit || "in",
+    // where the unit came from: "excel" (the file said), "default" (the page's Default Unit - follows its changes) or
+    // "manual" (picked by hand); absent on rows loaded from the server, which the Default Unit never touches
+    ...(parsed.unitSource ? { unitSource: parsed.unitSource } : {}),
     status: "new",
     progress_pct: 0,
   };
@@ -42,7 +48,44 @@ export function resetForNewMaster(shops) {
   const out = shops.map((x) => {
     if (isDraft(x) && (x.status === "new" || !x.status)) return x;
     reset += 1;
-    return toDraftRow({ name: x.name, shop_name_local: x.shop_name_local, width: x.width, height: x.height, unit: x.unit || x.width_unit || "in" });
+    return toDraftRow({ name: x.name, shop_name_local: x.shop_name_local, board_type: x.board_type, width: x.width, height: x.height, unit: x.unit || x.width_unit || "in", unitSource: x.unitSource });
   });
   return { shops: out, reset };
+}
+
+/** Rows the Default Unit may change: they took the default (unitSource "default") and are still editable - not yet
+ *  converted or in the queue. Units read from the Excel file, picked by hand, or on rows loaded from the server are never
+ *  touched. */
+export const followsDefaultUnit = (x) => x.unitSource === "default" && (x.status === "new" || x.status === "failed" || !x.status);
+
+/** The Shops queue after the Default Unit changes to `unit`: every row that follows it takes the new unit (numbers are
+ *  kept - the default says what the typed numbers MEAN). Returns { shops, changed } - `changed` = ids whose unit changed. */
+export function applyDefaultUnit(shops, unit) {
+  const changed = [];
+  const out = shops.map((x) => {
+    if (!followsDefaultUnit(x) || x.unit === unit) return x;
+    changed.push(x.id);
+    return { ...x, unit };
+  });
+  return { shops: out, changed };
+}
+/** "Type of board" choices in the Shops table (the designers' own file names use these). A value from an import that is
+ *  not in the list is kept and offered as an extra choice. */
+export const BOARD_TYPES = ["Nonlit", "Frontlit", "Backlit", "Lit", "OneWayVision", "GSB", "ACP", "Vinyl"];
+export const DEFAULT_BOARD_TYPE = "Nonlit";
+
+/** A type spelt any way ("non lit", "NONLIT", "one way vision") -> the list's spelling; unknown -> trimmed as given. */
+export function normalizeBoardType(v) {
+  const t = String(v ?? "").trim();
+  if (!t) return "";
+  const key = t.toLowerCase().replace(/[\s_-]+/g, "");
+  const alias = { nonlight: "Nonlit", nonlite: "Nonlit", frontlight: "Frontlit", backlight: "Backlit", owv: "OneWayVision", glowsignboard: "GSB" };
+  return BOARD_TYPES.find((b) => b.toLowerCase() === key) || alias[key] || t;
+}
+
+/** "Download All CDRs": the GET that streams one ZIP of the CDRs of `shops` ({id, no} - converted rows). */
+export function cdrDownloadUrl(shops) {
+  const ids = shops.map((x) => x.id).join(",");
+  const nos = shops.map((x) => x.no).join(",");
+  return `/api/v2/download-cdrs?ids=${encodeURIComponent(ids)}&nos=${encodeURIComponent(nos)}`;
 }

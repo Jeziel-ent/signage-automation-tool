@@ -25,6 +25,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
+from . import file_naming
 from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename
 from .engines import get_engine
 from .layout import to_mm
@@ -375,7 +376,9 @@ def _parse_shop_payload(payload: dict) -> dict:
             "reference_file_path": opt("reference_file_path"),
             "phone": opt("phone"), "gst": opt("gst"), "address": opt("address"),
             # the local-script (e.g. Tamil) shop name, from an Excel import's "Shop Name (Tamil)"-style column
-            "shop_name_local": opt("shop_name_local")}
+            "shop_name_local": opt("shop_name_local"),
+            # "Type of board" (Nonlit / Frontlit / ...): shown in the table, part of every export's file name
+            "board_type": opt("board_type")}
 
 
 def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
@@ -384,7 +387,7 @@ def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
     db.create_shop(shop_id, job_id, seq_no, fields["name"], fields["width"], fields["width_unit"], fields["height"],
                    fields["height_unit"], fields["reference"], fields["reference_file_path"], fields["phone"],
                    fields["gst"], fields["address"], master_ids["landscape_master_id"], master_ids["portrait_master_id"],
-                   fields.get("shop_name_local"))
+                   fields.get("shop_name_local"), fields.get("board_type"))
     return db.get_shop(shop_id)
 
 
@@ -399,11 +402,13 @@ def v2_add_shop(job_id: str, payload: dict):
         raise HTTPException(400, "invalid shop: need name, width>0, height>0, unit in mm/cm/in/ft")
     # Dual-master templates (optional): the ids of two uploaded masters (each an /api/v2/upload job). They must
     # exist, belong to this job's brand and have been uploaded as the orientation they are used for.
-    return _insert_shop(job_id, fields, _validated_master_ids(payload, job))
+    row = _insert_shop(job_id, fields, _validated_master_ids(payload, job))
+    _apply_sno(row["id"], payload)
+    return db.get_shop(row["id"])
 
 
 EDITABLE_SHOP_KEYS = ("name", "width", "width_unit", "height", "height_unit", "unit", "phone", "gst", "address",
-                      "shop_name_local")
+                      "shop_name_local", "board_type")
 
 
 def _apply_shop_edits(shop_row: dict, payload: dict) -> None:
@@ -567,6 +572,8 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
         "height": to_mm(shop_row["height"], shop_row["height_unit"]),
         "unit": "mm",
         "brand": job_row["brand"],
+        # every output file is named "<S.no> - <W> X <H> <Unit> - <Type> - <SHOP NAME>.<ext>" (file_naming.py)
+        "file_base": file_naming.shop_basename(shop_row),
     }
     # Optional per-shop contact fields (see CLAUDE.md "Per-shop content
     # replacement") - only included when actually set, matching the old
@@ -715,6 +722,16 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         _store_convert_result(sid, retry, master_used)
 
 
+def _apply_sno(shop_id: str, payload: dict | None) -> None:
+    """`sno` in a body = the row's S.no in the Shops table; output files are numbered by it (file_naming)."""
+    try:
+        sno = int((payload or {}).get("sno") or 0)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "sno must be a positive whole number")
+    if sno > 0:
+        db.set_shop_seq_no(shop_id, sno)
+
+
 @app.post("/api/v2/shops/{shop_id}/convert")
 def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
     """Queue a conversion. An optional body `{landscape_master_id, portrait_master_id}` (re)sets the shop's dual
@@ -731,6 +748,7 @@ def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
     # had not landed yet.
     if payload and any(k in payload for k in EDITABLE_SHOP_KEYS):
         _apply_shop_edits(row, payload)
+    _apply_sno(shop_id, payload)
     if payload and (payload.get("landscape_master_id") or payload.get("portrait_master_id")):
         ids = _validated_master_ids(payload, db.get_job(row["job_id"]))
         db.set_shop_masters(shop_id, ids["landscape_master_id"], ids["portrait_master_id"])
@@ -810,7 +828,10 @@ def v2_shop_file(shop_id: str, filename: str):
     p = (out_dir / filename).resolve()
     if out_dir not in p.parents or not p.is_file():
         raise HTTPException(404)
-    return FileResponse(p)
+    # downloaded under the standard name ("76 - 125 X 48 Inch - Nonlit - SHOP.cdr"), also for boards converted before
+    # the on-disk files were named that way; the report JSON keeps its own name
+    name = p.name if p.name.endswith("_report.json") else f"{file_naming.shop_basename(row)}{p.suffix}"
+    return FileResponse(p, filename=name)
 
 
 THUMB_MAX_PX = 240  # long side; the Recently generated thumbnail is 56x36 CSS px (x2 for high-DPI, x1.1 on hover)
@@ -1018,7 +1039,8 @@ def export_zip(body: AssetZipRequest):
         exports = [asset_zip.export_record(db.get_export(e["id"])) for e in db.list_exports(sid, limit=20)]
         src = asset_zip.pick_sources(out_dir, json.loads(row["files_json"]) if row.get("files_json") else {},
                                      exports, db.get_editor_ops(sid))
-        shops.append(asset_zip.ShopAssets(no=int(numbers.get(sid) or row["seq_no"]), name=row["name"],
+        no = int(numbers.get(sid) or row["seq_no"])
+        shops.append(asset_zip.ShopAssets(no=no, name=row["name"], stem=file_naming.shop_basename(row, no),
                                            cdr=src["cdr"], pdf=src["pdf"], image=src["image"], notes=src["notes"]))
     tmp = Path(tempfile.mkdtemp(prefix="asset_zip_"))
     try:
@@ -1031,6 +1053,53 @@ def export_zip(body: AssetZipRequest):
         _asset_zips[token] = _BuiltZip(tmp, time.time())
     summary["bytes"] = (tmp / asset_zip.ZIP_NAME).stat().st_size
     return {"token": token, "download": f"/api/export-zip/{token}", "summary": summary}
+
+
+CDR_ZIP_NAME = "All_CDR_Files.zip"
+
+
+@app.get("/api/v2/download-cdrs")
+def v2_download_cdrs(ids: str, nos: str | None = None):
+    """"Download All CDRs": one ZIP of the CDR (vector source) of every listed converted shop, each under its standard
+    name ("01 - 125 X 48 Inch - Nonlit - SHOP.cdr"). `ids` = comma-separated shop ids; `nos` = their S.no in the queue,
+    same order (default: each shop's seq_no). The CDR is the newest editor export made from the shop's current edits,
+    else the conversion's own file - the same rule as Generate ZIP. A plain GET so the browser streams it to disk (CDRs
+    are 9-300 MB); the temp archive is deleted once sent. 409 when none of the shops has a CDR."""
+    from . import asset_zip
+
+    shop_ids = [s for s in dict.fromkeys(x.strip() for x in ids.split(",")) if s]
+    if not shop_ids:
+        raise HTTPException(422, "no shops given")
+    if len(shop_ids) > 500:
+        raise HTTPException(422, "at most 500 shops per download")
+    try:
+        numbers = [int(x) for x in nos.split(",")] if nos else []
+    except ValueError:
+        raise HTTPException(422, "nos must be whole numbers")
+    shops = []
+    for k, sid in enumerate(shop_ids):
+        row = db.get_shop(sid)
+        if not row:
+            raise HTTPException(404, f"shop {sid} not found")
+        if row["status"] != "done":
+            continue
+        out_dir = JOBS_V2 / row["job_id"] / "out" / sid
+        exports = [asset_zip.export_record(db.get_export(e["id"])) for e in db.list_exports(sid, limit=20)]
+        src = asset_zip.pick_sources(out_dir, json.loads(row["files_json"]) if row.get("files_json") else {},
+                                     exports, db.get_editor_ops(sid))
+        no = numbers[k] if k < len(numbers) and numbers[k] > 0 else row["seq_no"]
+        shops.append(asset_zip.ShopAssets(no=no, name=row["name"], stem=file_naming.shop_basename(row, no), cdr=src["cdr"]))
+    if not any(s.cdr for s in shops):
+        raise HTTPException(409, "none of these shops has a converted CDR yet")
+    tmp = tempfile.NamedTemporaryFile(prefix="cdrs_", suffix=".zip", delete=False)
+    tmp.close()
+    try:
+        asset_zip.write_cdr_zip(shops, Path(tmp.name))
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    return FileResponse(tmp.name, media_type="application/zip", filename=CDR_ZIP_NAME,
+                        background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
 
 
 @app.get("/api/export-zip/{token}")
@@ -1796,7 +1865,7 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
                 "cdr": str(JOBS_V2 / job_id / "out" / shop_id / files["cdr"]),
                 "scene": str(_scene_dir(job_id, shop_id) / "scene.json"),
                 "ops": ops, "formats": formats, "options": options,
-                "out_dir": str(out_dir), "base_name": shop_row["name"],
+                "out_dir": str(out_dir), "base_name": file_naming.shop_basename(shop_row),
                 "assets_dir": str(_product_assets_dir(job_id, shop_id)),
                 "font_subs": db.get_font_substitutions(shop_id),     # permanent "Missing Font" choices
             }
@@ -1915,18 +1984,19 @@ def editor_export_list(job_id: str, shop_id: str):
             for r in db.list_exports(shop_id)]
 
 
-def _zip_name(shop_name: str) -> str:
-    """`{ShopName}_Signage_Export.zip` with the shop name reduced to filename-safe characters (letters of any script,
-    digits, dot, dash) - spaces and everything else become underscores. Combining marks are letters here: `\\w` alone
-    drops Tamil vowel signs and the virama, mangling the name."""
-    safe = re.sub(r"[^\w.\-\u0300-\u036f\u0900-\u0dff]+", "_", (shop_name or "").strip(),
-                  flags=re.UNICODE).strip("._") or "Shop"
-    return f"{safe}_Signage_Export.zip"
+def _std_ext(p: Path) -> str:
+    """The extension a downloaded file gets: `.jpeg` is spelt `.jpg` like the designers' files."""
+    return ".jpg" if p.suffix.lower() in (".jpeg", ".jpg") else p.suffix.lower()
+
+
+def _zip_name(shop: dict) -> str:
+    """A shop's export ZIP is named like its files: `76 - 125 X 48 Inch - Nonlit - SHOP NAME.zip` (file_naming.py)."""
+    return f"{file_naming.shop_basename(shop)}.zip"
 
 
 @app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/zip")
 def editor_export_zip(job_id: str, shop_id: str, export_id: str):
-    """Every generated file of one export (cdr/pdf/png/jpeg) in a single `{ShopName}_Signage_Export.zip`. Built on
+    """Every generated file of one export (cdr/pdf/png/jpeg) in a single `<S.no> - <size> - <type> - <SHOP>.zip`. Built on
     the server rather than in the browser: a CDR is often 100-300 MB and would have to sit in browser memory to be
     zipped client-side. Members are STORED, not deflated - a CDR/PNG/JPEG/PDF is already compressed, so deflating
     only costs time. The temp archive is deleted once it has been sent."""
@@ -1941,17 +2011,19 @@ def editor_export_zip(job_id: str, shop_id: str, export_id: str):
     tmp = tempfile.NamedTemporaryFile(prefix="export_", suffix=".zip", delete=False)
     tmp.close()
     with zipfile.ZipFile(tmp.name, "w", zipfile.ZIP_STORED) as z:
+        stem = file_naming.shop_basename(shop)
         for m in members:
-            z.write(m, arcname=m.name)
-    return FileResponse(tmp.name, media_type="application/zip", filename=_zip_name(shop["name"]),
+            z.write(m, arcname=f"{stem}{_std_ext(m)}")
+    return FileResponse(tmp.name, media_type="application/zip", filename=_zip_name(shop),
                         background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
 
 
 @app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/files/{filename}")
 def editor_export_file(job_id: str, shop_id: str, export_id: str, filename: str):
+    shop = _editor_shop(job_id, shop_id)
     _export_row(job_id, shop_id, export_id)
     base = _export_dir(job_id, shop_id, export_id).resolve()
     p = (base / filename).resolve()
     if base not in p.parents or not p.is_file():
         raise HTTPException(404)
-    return FileResponse(p, filename=p.name)
+    return FileResponse(p, filename=f"{file_naming.shop_basename(shop)}{_std_ext(p)}")

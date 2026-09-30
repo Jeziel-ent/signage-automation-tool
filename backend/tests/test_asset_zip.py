@@ -89,10 +89,12 @@ def test_endpoint_packs_the_selected_shops(client):
     assert 'filename="Signage_Assets_Export.zip"' in r.headers["content-disposition"]
     assert len(r.content) == summary["bytes"]
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
-    assert "CDR&PDF/cdr/01_Sri_Kumar.cdr" in names and "CDR&PDF/cdr/02_Sri_Kumar.cdr" in names
+    a_ = "1 - 214 X 36 Inch - Nonlit - Sri Kumar"
+    b_ = "2 - 180 X 36 Inch - Nonlit - Sri Kumar"
+    assert f"CDR&PDF/cdr/{a_}.cdr" in names and f"CDR&PDF/cdr/{b_}.cdr" in names
     assert summary["shops"] == 2
     # MockEngine: no PDF and an SVG preview - reported, not faked
-    assert "CDR&PDF/pdf/01_Sri_Kumar.pdf" in summary["missing"] and "01_Sri_Kumar.jpg" in summary["missing"]
+    assert f"CDR&PDF/pdf/{a_}.pdf" in summary["missing"] and f"{a_}.jpg" in summary["missing"]
 
 
 def test_endpoint_uses_an_export_of_the_current_edits(client, monkeypatch):
@@ -110,7 +112,8 @@ def test_endpoint_uses_an_export_of_the_current_edits(client, monkeypatch):
         "ops_json": json.dumps(ops)})
     built = client.post("/api/export-zip", json={"shop_ids": [shop["id"]]}).json()
     z = zipfile.ZipFile(io.BytesIO(client.get(built["download"]).content))
-    base = az.member_base(main.db.get_shop(shop["id"])["seq_no"], "Sri Kumar")
+    from app.file_naming import shop_basename
+    base = shop_basename(main.db.get_shop(shop["id"]))
     assert z.read(f"CDR&PDF/pdf/{base}.pdf") == b"%PDF-edited" and f"{base}.jpg" in z.namelist()
     notes = built["summary"]["notes"]
     assert len(notes) == 1 and "cdr" in notes[0]            # the CDR came from the conversion, without the edits

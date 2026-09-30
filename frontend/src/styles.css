@@ -746,7 +746,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .btn-outline-red:hover:not(:disabled) { background: #fef2f2; border-color: #dc2626; transform: translateY(-1px); }
 .btn-outline-red:disabled { opacity: 0.45; cursor: not-allowed; }
 .ws-summary { margin-right: 0; }
-.ws-card-foot .btn-outline-dark { margin-right: auto; } /* Create Print File + Download ZIP on the left, Convert All on the right */
+.ws-card-foot .foot-split { margin-right: auto; } /* Create Print File, Generate ZIP, Download All CDRs on the left; Convert All on the right */
 .btn-outline-dark {
   display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 12px;
   border: 1px solid #cbd5e1; background: #fff; color: #0f172a; font-weight: 600; font-size: 14px; cursor: pointer;
@@ -777,3 +777,27 @@ a.btn { text-decoration: none; display: inline-block; }
 .pcc-link { align-self: center; background: none; border: 0; padding: 2px 4px; color: #94a3b8; font-size: 11px; text-decoration: underline; text-underline-offset: 3px; cursor: pointer; }
 .pcc-link:hover:not(:disabled) { color: #e2e8f0; }
 @media (prefers-reduced-motion: reduce) { .pcc-spin, .pcc-enter { animation: none; } .pcc-arrow { transition: none; } }
+
+/* Shops table: the page's Default Unit as a compact select inside the UNIT column header (Automation.jsx changeDefaultUnit) */
+.unit-th-inner { display: inline-flex; align-items: center; gap: 6px; }
+.unit-th select {
+  font: inherit; font-size: 11.5px; font-weight: 600; text-transform: none; letter-spacing: 0; padding: 2px 4px; min-width: 0; width: auto;
+  border-radius: 6px; border: 1px solid #e2e8f0; background: #f8fafc; color: #1e293b; cursor: pointer;
+}
+.unit-th select:focus { outline: none; border-color: #ef4444; box-shadow: 0 0 0 2px rgba(239, 68, 68, 0.2); }
+/* ---- Automation: stacked layout - Master Templates on top (two cards side by side), the Shops Queue full width below.
+   Only .app-main scrolls; the queue's table scrolls inside its card. */
+.ws-stack { display: flex; flex-direction: column; gap: 24px; }
+.ws-stack > .ws-card { flex: none; }
+.ws-masters .mc-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ws-masters .master-card { min-height: 190px; }
+.ws-masters .master-card.filled { flex-direction: row; flex-wrap: wrap; align-items: center; }
+.ws-masters .master-card.filled .mc-filled-head { flex-basis: 100%; }
+.ws-masters .master-card.filled .master-thumb { flex: 1 1 260px; height: 150px; min-height: 0; }
+.ws-masters .master-card.filled .file-badge { flex: 1 1 220px; }
+.ws-queue { min-height: 460px; }
+.ws-queue .ws-table-scroll { max-height: calc(100vh - 260px); min-height: 240px; }
+@media (max-width: 760px) { .ws-masters .mc-grid { grid-template-columns: 1fr; } }
+.shops-table .ta-input { font-family: "Nirmala UI", "Latha", system-ui, sans-serif; min-width: 150px; }
+.shops-table td:nth-child(2) input { min-width: 170px; }
+.shops-table .type-select { min-width: 118px; }

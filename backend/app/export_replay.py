@@ -911,7 +911,9 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
     timings: dict[str, float] = {}
     files: dict[str, str] = {}
     report: dict = {"formats": formats, "options": opts, "ops": len(ops), "warnings": warnings, "timings_s": timings}
-    base = safe_name(base_name)
+    # the caller passes the standard file stem ("76 - 125 X 48 Inch - Nonlit - SHOP", file_naming.py); spaces are kept
+    from .file_naming import safe_filename
+    base = safe_filename(base_name) or safe_name(base_name)
 
     pythoncom.CoInitialize()
     corel_util.cleanup_orphaned_instances()

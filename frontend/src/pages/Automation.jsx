@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Building2, CheckCircle2, Download, ExternalLink, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
+import { Building2, CheckCircle2, Download, ExternalLink, FileCode2, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
 import UploadDropzone from "../components/UploadDropzone.jsx";
 import BrandSelect from "../components/BrandSelect.jsx";
 import AnimatedCount from "../components/AnimatedCount.jsx";
@@ -9,14 +9,26 @@ import PrintFileModal from "../components/PrintFileModal.jsx";
 import GenerateZipModal from "../components/GenerateZipModal.jsx";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 import { parseShopFile } from "../utils/shopImport.js";
-import { isDraft, resetForNewMaster, shopPayload, toDraftRow } from "../utils/shopPayload.js";
+import { BOARD_TYPES, DEFAULT_BOARD_TYPE, applyDefaultUnit, cdrDownloadUrl, isDraft, resetForNewMaster, shopPayload, toDraftRow } from "../utils/shopPayload.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
 import { batchStats, fmtEta, monotonicProgress, recordFinishes, smoothEta } from "../utils/batchStats.js";
 import { fmtBytes } from "../utils/fileSize.js";
 
 const UNITS = ["in", "ft"];
 // One shared unit per board (applies to both width and height); the server stores it on both dimensions.
-const emptyShopForm = () => ({ name: "", width: "", height: "", unit: "in" });
+const emptyShopForm = (unit = "in") => ({ name: "", shop_name_local: "", width: "", height: "", unit, board_type: DEFAULT_BOARD_TYPE });
+
+// The page's Default Unit: what a size means when nothing says otherwise - an Excel row with no unit anywhere, and a new
+// manually added shop. Remembered in this browser.
+const DEFAULT_UNIT_KEY = "signage.defaultUnit";
+function readDefaultUnit() {
+  try {
+    const u = localStorage.getItem(DEFAULT_UNIT_KEY);
+    return u === "ft" || u === "in" ? u : "in";
+  } catch {
+    return "in"; // storage blocked: inches, as before
+  }
+}
 
 // CorelEngine's own named steps (see backend/app/engines.py's step() closure
 // and CLAUDE.md "Production hardening"), each with the cumulative percent
@@ -46,7 +58,8 @@ export default function Automation() {
   const [portraitJob, setPortraitJob] = useState(null);
   const job = landscapeJob || portraitJob;
   const [shops, setShops] = useState([]);
-  const [shopForm, setShopForm] = useState(emptyShopForm());
+  const [defaultUnit, setDefaultUnit] = useState(readDefaultUnit);
+  const [shopForm, setShopForm] = useState(() => emptyShopForm(readDefaultUnit()));
   const [shopError, setShopError] = useState("");
   const [stepEstimates, setStepEstimates] = useState({});
   // One timer polls every converting/queued shop in a single request (GET /api/v2/shop-statuses) - not one timer + one
@@ -157,6 +170,7 @@ export default function Automation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...shopPayload(f),
+        sno: shops.length + 1, // the S.no this row gets - output files are numbered by it
         landscape_master_id: landscapeJob?.id || null,
         portrait_master_id: portraitJob?.id || null,
       }),
@@ -168,7 +182,7 @@ export default function Automation() {
     }
     const shop = await r.json();
     setShops((s) => [...s, { ...shop, unit: shop.width_unit }]);
-    setShopForm(emptyShopForm());
+    setShopForm(emptyShopForm(defaultUnit));
     setShowAddRow(false);
   }
 
@@ -185,7 +199,7 @@ export default function Automation() {
     setImporting(true);
     setImportReport(null);
     try {
-      const parsed = await parseShopFile(file);
+      const parsed = await parseShopFile(file, { defaultUnit });
       if (parsed.missing.length) {
         setImportReport({ file: file.name, added: 0, errors: [], note: `Could not find the ${parsed.missing.map((m) => (m === "size" ? "size (a Size column like 10*4, or Width and Height columns)" : "shop name")).join(" or the ")}.` });
         return;
@@ -195,7 +209,8 @@ export default function Automation() {
       const errors = [...parsed.errors].sort((a, b) => (a.row ?? 0) - (b.row ?? 0));
       const added = parsed.shops.length;
       if (added) setShops((s) => [...s, ...parsed.shops.map(toDraftRow)]);
-      setImportReport({ file: file.name, added, errors, note: parsed.shops.length + parsed.errors.length === 0 ? "No data rows found." : "" });
+      const defaulted = parsed.shops.filter((x) => x.unitSource === "default").length;
+      setImportReport({ file: file.name, added, errors, defaulted, unit: defaultUnit, note: parsed.shops.length + parsed.errors.length === 0 ? "No data rows found." : "" });
     } catch (e) {
       setImportReport({ file: file.name, added: 0, errors: [], note: `Import failed: ${e.message}` });
     } finally {
@@ -231,7 +246,28 @@ export default function Automation() {
   }
 
   function editShop(shopId, patch) {
-    setShops((s) => s.map((x) => (x.id === shopId ? { ...x, ...patch } : x)));
+    // a unit picked by hand is an override: the Default Unit no longer changes that row
+    const p = "unit" in patch ? { ...patch, unitSource: "manual" } : patch;
+    setShops((s) => s.map((x) => (x.id === shopId ? { ...x, ...p } : x)));
+  }
+
+  // Changing the Default Unit re-labels every row that took the default (an Excel row with no unit, not yet converted) -
+  // never a unit read from the file, picked by hand, or on a converted/queued shop - and the new-shop form. Saved rows
+  // are PATCHed like any inline edit; drafts change locally.
+  function changeDefaultUnit(unit) {
+    if (unit === defaultUnit) return;
+    setDefaultUnit(unit);
+    try {
+      localStorage.setItem(DEFAULT_UNIT_KEY, unit);
+    } catch {
+      /* storage blocked: the choice lasts for this page only */
+    }
+    const { shops: next, changed } = applyDefaultUnit(shops, unit);
+    if (changed.length) {
+      setShops(next);
+      changed.filter((id) => !isDraft({ id })).forEach((id) => saveShop(id, { unit }));
+    }
+    setShopForm((f) => ({ ...f, unit }));
   }
 
   // Persist an inline edit when the field loses focus / a unit changes (convert also re-sends everything, so a
@@ -261,7 +297,9 @@ export default function Automation() {
     if (!current) return null;
     setShopError("");
     const gen = masterGen.current;
-    const masters = { landscape_master_id: landscapeJob?.id || null, portrait_master_id: portraitJob?.id || null };
+    // the row's S.no in the table goes with it: every output file is named "<S.no> - <W> X <H> <Unit> - <Type> - <NAME>"
+    const masters = { landscape_master_id: landscapeJob?.id || null, portrait_master_id: portraitJob?.id || null,
+      sno: shops.findIndex((x) => x.id === shopId) + 1 };
     let id = shopId;
     if (isDraft(current)) {
       // First save: create the shop from the row's CURRENT (possibly edited) values, then convert that.
@@ -420,9 +458,9 @@ export default function Automation() {
         </div>
       </header>
 
-      <div className="ws-grid">
-        {/* LEFT - master templates */}
-        <section className="ws-card ws-col-5" aria-label="Master Templates">
+      <div className="ws-stack">
+        {/* TOP - master templates, the two cards side by side */}
+        <section className="ws-card ws-masters" aria-label="Master Templates">
           <div className="ws-card-head">
             <h2>Master Templates</h2>
           </div>
@@ -472,11 +510,12 @@ export default function Automation() {
           </div>
         </section>
 
-        {/* RIGHT - shops queue */}
-        <section className="ws-card ws-col-7" aria-label="Shops Queue">
+        {/* BOTTOM - shops queue, full width */}
+        <section className="ws-card ws-queue" aria-label="Shops Queue">
           <div className="ws-card-head">
             <h2>Shops Queue</h2>
             <div className="ws-actions">
+
               <input
                 ref={importInputRef}
                 type="file"
@@ -514,6 +553,12 @@ export default function Automation() {
                   {importReport.errors.length > 0 && (
                     <div>{importReport.errors.length} row{importReport.errors.length === 1 ? "" : "s"} skipped:</div>
                   )}
+                  {importReport.defaulted > 0 && (
+                    <div>
+                      {importReport.defaulted === importReport.added ? "No unit found in the sheet" : `No unit found for ${importReport.defaulted} row${importReport.defaulted === 1 ? "" : "s"}`}
+                      {" - using the default unit ("}{defaultUnit}{"). The Unit dropdown in the table header changes them."}
+                    </div>
+                  )}
                   {importReport.note && <div className="err">{importReport.note}</div>}
                   {importReport.errors.length > 0 && (
                     <ul className="err">
@@ -545,13 +590,26 @@ export default function Automation() {
                   <thead>
                     <tr>
                       <th>S.no</th>
-                      <th>Shop name</th>
+                      <th>Shop name (EN)</th>
+                      <th>Shop name (TA)</th>
                       <th>Width</th>
                       <th>Height</th>
-                      <th>Unit</th>
+                      <th className="unit-th">
+                    {/* the page's Default Unit: rows whose size had no unit (and new manual shops) follow it; a unit read
+                        from the sheet or picked in a row keeps its own value */}
+                    <span className="unit-th-inner">
+                      <span>Unit</span>
+                      <select value={defaultUnit} onChange={(e) => changeDefaultUnit(e.target.value)} aria-label="Default unit"
+                        title="Default unit for rows without one in the sheet (and for new shops). Units read from the sheet or picked in a row are kept.">
+                        <option value="ft">ft</option>
+                        <option value="in">in</option>
+                      </select>
+                    </span>
+                  </th>
+                      <th>Type of board</th>
                       <th>Convert</th>
                       <th>Editor</th>
-                      <th aria-label="Remove"></th>
+                      <th>Delete</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -601,6 +659,14 @@ export default function Automation() {
                     >
                       <FolderArchive size={15} /> Generate ZIP
                     </button>
+                    <button
+                      className="btn-outline-dark foot-split"
+                      onClick={() => downloadUrl(cdrDownloadUrl(printable))}
+                      disabled={!printable.length}
+                      title={printable.length ? "The CDR (vector source) of every converted shop in one ZIP" : "Convert at least one shop first"}
+                    >
+                      <FileCode2 size={15} /> Download All CDRs
+                    </button>
                     {convertible.length > 0 && (
                       <button className="btn-gradient" onClick={convertAll}>
                         <Play size={15} /> Convert All ({convertible.length})
@@ -633,6 +699,16 @@ export default function Automation() {
       </AnimatePresence>
     </div>
   );
+}
+
+// Start a download without leaving the page (the server names the file).
+function downloadUrl(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 // Empty state of the Shops Queue: an upload hero (click or drop a sheet) with the quick-start actions.
@@ -693,10 +769,8 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onE
   return (
     <tr data-shop-id={shop.id}>
       <td>{index}</td>
-      <td>
-        {field("name", "Shop name", { type: "text" })}
-        {shop.shop_name_local ? <div className="shop-local-name" title="Local-language shop name (from the import)">{shop.shop_name_local}</div> : null}
-      </td>
+      <td>{field("name", "Shop name (English)", { type: "text" })}</td>
+      <td>{field("shop_name_local", "Shop name (Tamil)", { type: "text", className: "ta-input", lang: "ta", placeholder: "—" })}</td>
       <td>{field("width", "Width", { type: "number", min: "0", step: "any" })}</td>
       <td>{field("height", "Height", { type: "number", min: "0", step: "any" })}</td>
       <td>
@@ -713,6 +787,16 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onE
             <option key={u}>{u}</option>
           ))}
         </select>
+      </td>
+      <td>
+        <BoardTypeSelect
+          value={shop.board_type}
+          disabled={locked}
+          onChange={(v) => {
+            onEdit({ board_type: v });
+            onSave({ board_type: v });
+          }}
+        />
       </td>
       <td>
         <ConvertCell shop={shop} onConvert={onConvert} onExport={onExport} stepEstimates={stepEstimates} />
@@ -741,12 +825,28 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onE
   );
 }
 
+// "Type of board": the standard list plus the row's own value when an import brought another one ("2 Nos Double Side GSB").
+function BoardTypeSelect({ value, disabled, onChange }) {
+  const v = value || DEFAULT_BOARD_TYPE;
+  const options = BOARD_TYPES.includes(v) ? BOARD_TYPES : [...BOARD_TYPES, v];
+  return (
+    <select className="type-select" value={v} disabled={disabled} aria-label="Type of board" onChange={(e) => onChange(e.target.value)}>
+      {options.map((t) => (
+        <option key={t} value={t}>{t}</option>
+      ))}
+    </select>
+  );
+}
+
 function NewShopRow({ seqNo, form, setForm, onAdd, onCancel }) {
   return (
     <tr className="new-shop-row">
       <td>{seqNo}</td>
       <td>
         <input autoFocus placeholder="Shop name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} onKeyDown={(e) => e.key === "Enter" && onAdd()} />
+      </td>
+      <td>
+        <input className="ta-input" lang="ta" placeholder="Tamil name (optional)" value={form.shop_name_local} onChange={(e) => setForm({ ...form, shop_name_local: e.target.value })} onKeyDown={(e) => e.key === "Enter" && onAdd()} />
       </td>
       <td>
         <input type="number" min="0" step="any" value={form.width} onChange={(e) => setForm({ ...form, width: e.target.value })} />
@@ -760,6 +860,9 @@ function NewShopRow({ seqNo, form, setForm, onAdd, onCancel }) {
             <option key={u}>{u}</option>
           ))}
         </select>
+      </td>
+      <td>
+        <BoardTypeSelect value={form.board_type} onChange={(v) => setForm({ ...form, board_type: v })} />
       </td>
       <td colSpan={3}>
         <button className="btn" onClick={onAdd}>

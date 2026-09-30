@@ -1,8 +1,10 @@
 """`Signage_Assets_Export.zip` for the Shops queue's "Download ZIP" button: every selected converted shop as
 
-    01_SHOP_NAME.jpg        (root: an image of the board)
-    CDR&PDF/cdr/01_SHOP_NAME.cdr
-    CDR&PDF/pdf/01_SHOP_NAME.pdf
+    01 - 125 X 48 Inch - Nonlit - SHOP NAME.jpg        (root: an image of the board)
+    CDR&PDF/cdr/01 - 125 X 48 Inch - Nonlit - SHOP NAME.cdr
+    CDR&PDF/pdf/01 - 125 X 48 Inch - Nonlit - SHOP NAME.pdf
+
+(the standard name from file_naming.py when the caller gives `stem`; else `01_SHOP_NAME`)
 
 Which file stands for a shop, per format (`pick_sources`): the newest finished editor export that has that format AND was
 made from the edits the shop has now (its `ops` equal the saved op list) - so a board edited and exported in the editor
@@ -36,10 +38,11 @@ class ShopAssets:
     pdf: Path | None = None
     image: Path | None = None            # a PNG or JPEG to become the root .jpg
     notes: list[str] = field(default_factory=list)
+    stem: str | None = None              # "01 - 125 X 48 Inch - Nonlit - SHOP" (file_naming.shop_basename)
 
     @property
     def base(self) -> str:
-        return member_base(self.no, self.name)
+        return self.stem or member_base(self.no, self.name)
 
 
 def member_base(no: int, name: str) -> str:
@@ -115,7 +118,7 @@ def write_zip(shops: list[ShopAssets], out_path: Path) -> dict:
             base = s.base
             n = 2
             while base in used:                  # two shops with the same number and name
-                base = f"{s.base}_{n}"
+                base = f"{s.base} ({n})" if s.stem else f"{s.base}_{n}"
                 n += 1
             used.add(base)
             notes += [f"{base}: {t}" for t in s.notes]
@@ -145,3 +148,22 @@ def export_record(row: dict) -> dict:
     return {"id": row["id"], "status": row["status"],
             "files": json.loads(row["files_json"]) if row.get("files_json") else {},
             "ops": json.loads(row["ops_json"]) if row.get("ops_json") else []}
+
+
+def write_cdr_zip(shops: list[ShopAssets], out_path: Path) -> dict:
+    """"Download All CDRs": just the CDR of every shop, at the archive root under its standard name. STORED (a CDR is
+    itself a zip). Returns {"shops", "files", "missing": [names]}."""
+    missing, count, used = [], 0, set()
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+        for s in shops:
+            base, n = s.base, 2
+            while base in used:
+                base = f"{s.base} ({n})"
+                n += 1
+            used.add(base)
+            if s.cdr is None:
+                missing.append(f"{base}.cdr")
+                continue
+            z.write(s.cdr, f"{base}.cdr")
+            count += 1
+    return {"shops": len(shops), "files": count, "missing": missing}

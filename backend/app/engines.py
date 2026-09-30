@@ -29,6 +29,13 @@ def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name).strip("_") or "shop"
 
 
+def _output_base(shop: dict) -> str:
+    """Output file stem: the caller's `file_base` ("76 - 125 X 48 Inch - Nonlit - SHOP", see file_naming.py) when given,
+    else the shop name made filesystem-safe (the old /api/jobs flow and the dev tools)."""
+    base = str(shop.get("file_base") or "").strip()
+    return base or _safe(shop["name"])
+
+
 def _report(page, new, placed, timings=None, warnings=None, free_ram_gb=None) -> dict:
     report = {
         "original_page_mm": {"w": page[0], "h": page[1]},
@@ -305,7 +312,7 @@ class CorelEngine:
     def _process(self, master_path: Path, shop: dict, out_dir: Path, on_step=None) -> dict:
         new_w = to_mm(shop["width"], shop["unit"])
         new_h = to_mm(shop["height"], shop["unit"])
-        base = _safe(shop["name"])
+        base = _output_base(shop)
         out_dir.mkdir(parents=True, exist_ok=True)
         # SaveAs/PublishToPDF/ExportBitmap need absolute paths just like OpenDocument
         # does (see CLAUDE.md) - a relative path here was reproduced live to make
@@ -555,7 +562,7 @@ class MockEngine:
     def process(self, master_path: Path, shop: dict, out_dir: Path) -> dict:
         new_w = to_mm(shop["width"], shop["unit"])
         new_h = to_mm(shop["height"], shop["unit"])
-        base = _safe(shop["name"])
+        base = _output_base(shop)
         out_dir.mkdir(parents=True, exist_ok=True)
         pw, ph = self.DEMO_PAGE
         placed = compute_layout(self.DEMO, pw, ph, new_w, new_h,
