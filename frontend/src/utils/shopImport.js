@@ -279,3 +279,19 @@ export async function parseShopFile(file, opts = {}) {
   }
   return first || { shops: [], errors: [], missing: ["name", "size"], layout: {} };
 }
+
+/** Every sheet of a workbook: { sheets: [{ name, shops, errors, missing, layout }] } in workbook order. Each shop carries
+ *  `sheet_name`, so the Shops Queue can show one tab per sheet. Sheets with no shops (a cover page) are kept in the list
+ *  with their `missing` reason, and the caller reports them. */
+export async function parseShopWorkbook(file, opts = {}) {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const multi = wb.SheetNames.length > 1;
+  const sheets = wb.SheetNames.map((name) => {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "", raw: false, blankrows: true });
+    const res = mapSheetRows(rows, opts);
+    // a CSV (or a one-sheet workbook) has no meaningful sheet name to show as a tab
+    return { name, ...res, shops: res.shops.map((s) => (multi ? { ...s, sheet_name: name } : s)) };
+  });
+  return { sheets };
+}

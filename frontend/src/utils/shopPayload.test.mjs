@@ -121,3 +121,27 @@ test("board type: normalised spellings, carried by drafts and the payload; Tamil
   assert.equal(pay({ name: "C", width: 1, height: 1, shop_name_local: null }).shop_name_local, "");
   assert.equal(cdrDownloadUrl([{ id: "a1", no: 1 }, { id: "b2", no: 3 }]), "/api/v2/download-cdrs?ids=a1%2Cb2&nos=1%2C3");
 });
+
+test("auto Tamil: filled on import, follows English edits (deferred while typing) until typed over; no font fields sent", async () => {
+  const { withAutoTamil, nameEditPatch, toDraftRow: draft, shopPayload: pay, withFreshAutoTamil, followsEnglish } = await import("./shopPayload.js");
+  const row = draft(withAutoTamil({ name: "ANISH STORES", width: 8, height: 4, unit: "ft", sheet_name: "Chennai" }));
+  assert.equal(row.shop_name_local, "அனிஷ் ஸ்டோர்ஸ்");
+  assert.equal(row.ta_auto, true);
+  assert.equal(pay(row).sheet_name, "Chennai");
+  assert.equal(withAutoTamil({ name: "X", shop_name_local: "எக்ஸ்" }).ta_auto, undefined); // the sheet's own Tamil is kept
+  // immediate (non-deferred) patch
+  assert.deepEqual(nameEditPatch(row, { name: "KAVITHA STORES" }), { name: "KAVITHA STORES", shop_name_local: "கவிதா ஸ்டோர்ஸ்", ta_auto: true });
+  // deferred while typing: the Tamil name is left for the debounce timer ...
+  const typing = { ...row, ...nameEditPatch(row, { name: "KAVITHA STORES" }, { deferTamil: true }) };
+  assert.equal(typing.shop_name_local, "அனிஷ் ஸ்டோர்ஸ்");
+  // ... which (or blur-save / convert) brings it up to date
+  assert.equal(withFreshAutoTamil(typing).shop_name_local, "கவிதா ஸ்டோர்ஸ்");
+  const typed = { ...row, ...nameEditPatch(row, { shop_name_local: "கவிதா" }) };
+  assert.equal(typed.ta_auto, false);
+  assert.equal(followsEnglish(typed), false);
+  assert.deepEqual(nameEditPatch(typed, { name: "OTHER" }), { name: "OTHER" });          // the designer's Tamil is never overwritten
+  assert.equal(withFreshAutoTamil({ ...typed, name: "OTHER" }).shop_name_local, "கவிதா");
+  // conversions keep the master's fonts: font fields a row may still carry are never sent
+  const body = pay({ name: "A", width: 1, height: 1, font_en: "Arial", font_ta: "Latha" });
+  assert.equal("font_en" in body || "font_ta" in body, false);
+});

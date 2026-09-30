@@ -275,3 +275,23 @@ body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 .ed-fontsub-duration input { margin-top: 3px; accent-color: var(--color-red); }
 .ed-fonts-btn { font: inherit; background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline dotted; }
 .ed-fonts-webonly { color: var(--color-warn); }
+
+/* Text tab: bold / italic / underline, alignment, line + letter spacing */
+.ed-textfmt { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+.ed-fmt-row { display: flex; gap: 8px; flex-wrap: wrap; justify-content: space-between; }
+.ed-seg { display: inline-flex; border: 1px solid var(--color-gray-300, #cbd5e1); border-radius: 8px; padding: 2px; gap: 2px; }
+.ed-seg-btn {
+  min-width: 28px; height: 26px; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px;
+  background: transparent; color: inherit; cursor: pointer; font: inherit; font-size: 13px;
+}
+.ed-seg-btn:hover:not(:disabled) { background: rgba(148, 163, 184, 0.18); }
+.ed-seg-btn.on { background: #dc2626; color: #fff; }
+.ed-seg-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.ed-seg-btn.fmt-bold { font-weight: 800; }
+.ed-seg-btn.fmt-italic { font-style: italic; font-family: Georgia, serif; }
+.ed-seg-btn.fmt-underline { text-decoration: underline; }
+.ed-fmt-num { display: flex; align-items: center; gap: 4px; }
+.ed-fmt-num input { flex: 1; min-width: 0; }
+.ed-fmt-num em { font-style: normal; font-size: 11px; opacity: 0.7; }
+.ed-fmt-err { color: #dc2626; font-size: 11px; }
+.ed-props:has(.ed-textfmt) { max-height: 400px; } /* the Text tab's formatting rows fit without scrolling; other tabs keep 300px */

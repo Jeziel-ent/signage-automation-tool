@@ -29,6 +29,25 @@ def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name).strip("_") or "shop"
 
 
+def name_font(text: str | None, shop: dict) -> str | None:
+    """The font to set on a replaced shop-name text: only an EXPLICIT override (`font_ta` for Tamil text, `font_en` for
+    anything else - an API caller's choice); otherwise None, i.e. only the text is replaced and the master's own font, size
+    and attributes stay. (Fonts are changed in the Signage Editor, not in the queue.) A Tamil replacement whose master font
+    cannot draw Tamil at all is still switched by corel_util.ensure_tamil_font_renders, or it would print tofu boxes."""
+    if not text:
+        return None
+    chosen = shop.get("font_ta") if is_tamil(text) else shop.get("font_en")
+    return (str(chosen).strip() or None) if chosen else None
+
+
+def apply_name_fonts(placed, shop: dict) -> None:
+    """Replaced shop names keep the master's font unless the shop carries an explicit override (see `name_font`) - this also
+    drops layout's own Tamil default (layout.TAMIL_FONT), so the master's Tamil font is kept when it can draw Tamil."""
+    for p in placed:
+        if p.role == "shopname" and p.text:
+            p.font = name_font(p.text, shop)
+
+
 def _output_base(shop: dict) -> str:
     """Output file stem: the caller's `file_base` ("76 - 125 X 48 Inch - Nonlit - SHOP", see file_naming.py) when given,
     else the shop name made filesystem-safe (the old /api/jobs flow and the dev tools)."""
@@ -136,6 +155,8 @@ class CorelEngine:
         except Exception as e:
             placed.warnings.append(f"could not set shop-name text: {e}")
             return
+        # the master's font is kept - unless it is Tamil text in a font that has no Tamil letters (tofu boxes otherwise)
+        corel_util.ensure_tamil_font_renders(shape, placed.text, placed.warnings)
         CorelEngine._fit_text(shape, placed.w, placed.warnings)
 
     CLIP_FOREGROUND_MAX_AREA = 0.9   # of the page: bigger clipped children are backdrop and keep the frame's stretch
@@ -250,11 +271,15 @@ class CorelEngine:
                 continue  # no local name given: never print the English name in the Tamil line's place
             else:
                 new, font = (name, TAMIL_FONT if is_tamil(name) else None) if name else (local, TAMIL_FONT)
+            font = name_font(new, shop)       # only an explicit override - the master's font is kept otherwise
             try:
                 story = sh.Text.Story
                 story.Text = new
                 if font:
                     story.Font = font
+                    if story.Font != font:
+                        warnings.append(f"font '{font}' not available to CorelDRAW; the nested shop name kept its font")
+                corel_util.ensure_tamil_font_renders(sh, new, warnings)
             except Exception as e:
                 warnings.append(f"could not set nested shop-name text: {e}")
                 continue
@@ -416,6 +441,7 @@ class CorelEngine:
                     address_lines=shop.get("address_lines"),
                     contact_ids=contact_ids,
                 )
+                apply_name_fonts(placed, shop)
 
                 page.SetSize(new_w, new_h)
                 reused_base_ids: set[str] = set()

@@ -75,6 +75,38 @@ def _children(container) -> list:
     return [shapes.Item(i) for i in range(1, int(shapes.Count) + 1)]
 
 
+# cdrAlignment, from the CorelDRAW typelib (note: Right is 2, Center 3): 0 none (= left), 1 left, 2 right, 3 center,
+# 4 full justify, 5 force justify, 6 mixed (runs differ - reported as unknown)
+ALIGN_FROM_COREL = {0: "left", 1: "left", 2: "right", 3: "center", 4: "justify", 5: "justify"}
+ALIGN_TO_COREL = {"left": 1, "right": 2, "center": 3, "justify": 4}
+LINE_SPACING_PERCENT_OF_CHAR_HEIGHT = 0      # cdrLineSpacingType.cdrPercentOfCharacterHeightLineSpacing
+
+
+def text_format(story) -> dict:
+    """The paragraph formatting the editor's Text tab shows: align, bold, italic, underline, line_spacing (% of character
+    height), char_spacing (% of a space). A value CorelDRAW cannot give as one number (mixed runs, another line-spacing
+    unit) is left out, so the panel shows it as unknown instead of a wrong default."""
+    out = {}
+    align = ALIGN_FROM_COREL.get(_safe(lambda: int(story.Alignment)))
+    if align:
+        out["align"] = align
+    for key, prop in (("bold", "Bold"), ("italic", "Italic")):
+        v = _safe(lambda prop=prop: getattr(story, prop))
+        if isinstance(v, bool):
+            out[key] = v
+    ul = _safe(lambda: int(story.Underline))           # cdrFontLine: 0 none, 1+ a line style
+    if ul is not None and ul >= 0:
+        out["underline"] = ul != 0
+    if _safe(lambda: int(story.LineSpacingType)) == LINE_SPACING_PERCENT_OF_CHAR_HEIGHT:
+        v = _safe(lambda: float(story.LineSpacing))
+        if v is not None:
+            out["line_spacing"] = round(v, 2)
+    v = _safe(lambda: float(story.CharSpacing))
+    if v is not None:
+        out["char_spacing"] = round(v, 2)
+    return out
+
+
 def _text_info(shape) -> dict:
     story = shape.Text.Story
     return {
@@ -83,6 +115,7 @@ def _text_info(shape) -> dict:
         "content": _safe(lambda: story.Text, ""),
         "font": _safe(lambda: story.Font),       # None when a run mixes fonts
         "size_pt": _safe(lambda: float(story.Size)),
+        **text_format(story),
     }
 
 
@@ -294,6 +327,31 @@ def _export_leaf(doc, node: dict, shape, img_dir: Path) -> None:
         _safe(lambda: doc.ClearSelection())
 
 
+# COM errors that mean CorelDRAW itself is gone (crashed, killed, or disconnected) - not that one shape could not be
+# exported. Every later call fails the same way, so the build must stop instead of caching a scene whose remaining objects
+# have no images (they would be listed in Layers but draw nothing on the canvas).
+SERVER_GONE_HRESULTS = (
+    -2147023174,  # RPC_S_SERVER_UNAVAILABLE: "The RPC server is unavailable."
+    -2147023170,  # RPC_S_CALL_FAILED: "The remote procedure call failed."
+    -2147417848,  # RPC_E_DISCONNECTED: "The object invoked has disconnected from its clients."
+    -2147418111,  # RPC_E_CALL_REJECTED issued by a dying server
+)
+
+
+class CorelGone(RuntimeError):
+    """CorelDRAW stopped during a scene export; nothing was written."""
+
+
+def server_gone(err) -> bool:
+    """True when `err` (an exception, or a recorded failure string) is one of SERVER_GONE_HRESULTS."""
+    if isinstance(err, BaseException):
+        code = err.args[0] if err.args else None
+        if isinstance(code, int) and code in SERVER_GONE_HRESULTS:
+            return True
+        err = str(err)
+    return any(str(code) in str(err) for code in SERVER_GONE_HRESULTS)
+
+
 def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = None,
                  run: Callable | None = None) -> dict:
     """Walks an open document, renders every leaf image + a full-page reference
@@ -330,6 +388,9 @@ def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = Non
         except Exception as e:  # one bad shape must not sink the whole scene
             if type(e).__name__ == "CorelTimeout":
                 raise
+            if server_gone(e):   # ...but CorelDRAW disappearing does: stop, write nothing, let the editor retry
+                raise CorelGone(f"CorelDRAW stopped while exporting the board (at object {n} of {total}: {e}). "
+                                "Nothing was saved - open the editor again to rebuild it.") from e
             failed.append(f"{node['id']}: {e}")
 
     step("page_image")
@@ -351,6 +412,9 @@ def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = Non
     except Exception as e:
         if type(e).__name__ == "CorelTimeout":
             raise
+        if server_gone(e):
+            raise CorelGone(f"CorelDRAW stopped while rendering the page preview ({e}). Nothing was saved - "
+                            "open the editor again to rebuild it.") from e
         failed.append(f"page image: {e}")
 
     scene = {

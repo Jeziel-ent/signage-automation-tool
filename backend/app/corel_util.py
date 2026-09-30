@@ -790,6 +790,28 @@ def run_with_timeout(fn, pid: int | None, op_name: str, timeout: float | None = 
 # full installed-font list (querying that per shape would mean a PowerShell
 # round-trip per text object), just the ones this codebase already trusts.
 _KNOWN_TAMIL_FONTS = {"nirmala ui", "nirmala text"}
+_tamil_capable: dict[str, bool] = {}
+
+
+def font_renders_tamil(name: str | None) -> bool:
+    """True when the installed font `name` really contains Unicode Tamil (read from its file's character map, fonts.py), so
+    Tamil text set in it prints correctly and the master's choice can be kept. False for fonts without Tamil (e.g. "Arial",
+    which prints tofu boxes unless Windows font-linking happens to step in) and for fonts that are not installed."""
+    key = (name or "").strip().lower()
+    if not key:
+        return False
+    if key in _KNOWN_TAMIL_FONTS:
+        return True
+    if key not in _tamil_capable:
+        ok = False
+        try:
+            from . import fonts
+            path = fonts.font_file(name)
+            ok = bool(path and fonts.font_has_tamil(str(path)))
+        except Exception:
+            ok = False
+        _tamil_capable[key] = ok
+    return _tamil_capable[key]
 
 
 def ensure_tamil_font_renders(shape, text: str | None, warnings: list[str]) -> None:
@@ -828,7 +850,9 @@ def ensure_tamil_font_renders(shape, text: str | None, warnings: list[str]) -> N
     try:
         story = shape.Text.Story
         current = (story.Font or "").strip().lower()
-        if current in _KNOWN_TAMIL_FONTS:
+        # the master's own font is kept whenever it can draw Tamil (Nirmala, Latha, Arima Madurai, ...) - only a font that
+        # cannot (Arial & co., or one not installed here) is replaced, because it would print tofu boxes
+        if font_renders_tamil(story.Font):
             return
         story.Font = TAMIL_FONT
         if story.Font != TAMIL_FONT:

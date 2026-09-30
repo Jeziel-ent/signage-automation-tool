@@ -155,3 +155,17 @@ for (const c of GOLDEN.product_errors) {
     assert.throws(() => applyOps(GOLDEN.product_base, c.ops), (e) => e instanceof OpError && e.message.includes(c.error));
   });
 }
+
+for (const c of GOLDEN.text_format_cases) {
+  test(`golden text format: ${c.name}`, () => {
+    const t = findNode(applyOps(GOLDEN.base, c.ops), "t");
+    assert.deepEqual(t.text, c.expect_text);
+    assert.equal(!!t.stale, c.expect_stale);
+  });
+}
+
+for (const c of GOLDEN.text_format_errors) {
+  test(`golden text format error: ${c.name}`, () => {
+    assert.throws(() => applyOps(GOLDEN.base, c.ops), (e) => e instanceof OpError && e.message.includes(c.error));
+  });
+}

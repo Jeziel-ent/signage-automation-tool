@@ -128,6 +128,11 @@ _MIGRATIONS = [
     # "Type of board" (Nonlit / Frontlit / Backlit / ...): shown in the Shops table and part of every export's file
     # name (file_naming.signage_basename). NULL = the default type.
     ("shops", "board_type", "ALTER TABLE shops ADD COLUMN board_type TEXT"),
+    # Fonts for the replaced English / Tamil shop names (NULL = keep the master's font for English, layout.TAMIL_FONT
+    # for Tamil) and the Excel sheet a row was imported from (the Shops Queue's sheet tabs).
+    ("shops", "font_en", "ALTER TABLE shops ADD COLUMN font_en TEXT"),
+    ("shops", "font_ta", "ALTER TABLE shops ADD COLUMN font_ta TEXT"),
+    ("shops", "sheet_name", "ALTER TABLE shops ADD COLUMN sheet_name TEXT"),
 ]
 
 
@@ -212,7 +217,8 @@ def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float,
                  reference_file_path: str | None = None, phone: str | None = None,
                  gst: str | None = None, address: str | None = None,
                  landscape_master_id: str | None = None, portrait_master_id: str | None = None,
-                 shop_name_local: str | None = None, board_type: str | None = None) -> None:
+                 shop_name_local: str | None = None, board_type: str | None = None,
+                 font_en: str | None = None, font_ta: str | None = None, sheet_name: str | None = None) -> None:
     """`reference` is the free-text note shown in the UI today.
     `reference_file_path`, if given, is a path to an uploaded reference
     file - the data model supports it (per review feedback) ahead of any
@@ -230,11 +236,11 @@ def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float,
             """INSERT INTO shops
                (id, job_id, seq_no, name, width, width_unit, height, height_unit,
                 reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
-                shop_name_local, board_type, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
+                shop_name_local, board_type, font_en, font_ta, sheet_name, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
             (shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
              reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
-             shop_name_local, board_type, time.time()),
+             shop_name_local, board_type, font_en, font_ta, sheet_name, time.time()),
         )
 
 
@@ -255,9 +261,10 @@ def update_shop_fields(shop_id: str, f: dict) -> None:
     with _conn() as conn:
         conn.execute(
             """UPDATE shops SET name = ?, width = ?, width_unit = ?, height = ?, height_unit = ?,
-               phone = ?, gst = ?, address = ?, shop_name_local = ?, board_type = ? WHERE id = ?""",
+               phone = ?, gst = ?, address = ?, shop_name_local = ?, board_type = ?, font_en = ?, font_ta = ?,
+               sheet_name = ? WHERE id = ?""",
             (f["name"], f["width"], f["width_unit"], f["height"], f["height_unit"], f["phone"], f["gst"], f["address"],
-             f.get("shop_name_local"), f.get("board_type"), shop_id))
+             f.get("shop_name_local"), f.get("board_type"), f.get("font_en"), f.get("font_ta"), f.get("sheet_name"), shop_id))
 
 
 def set_shop_seq_no(shop_id: str, seq_no: int) -> None:

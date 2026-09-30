@@ -378,7 +378,11 @@ def _parse_shop_payload(payload: dict) -> dict:
             # the local-script (e.g. Tamil) shop name, from an Excel import's "Shop Name (Tamil)"-style column
             "shop_name_local": opt("shop_name_local"),
             # "Type of board" (Nonlit / Frontlit / ...): shown in the table, part of every export's file name
-            "board_type": opt("board_type")}
+            "board_type": opt("board_type"),
+            # fonts for the replaced English / Tamil shop names (blank = the master's own / layout.TAMIL_FONT)
+            "font_en": opt("font_en"), "font_ta": opt("font_ta"),
+            # the Excel sheet the row came from (the Shops Queue's sheet tabs)
+            "sheet_name": opt("sheet_name")}
 
 
 def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
@@ -387,7 +391,8 @@ def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
     db.create_shop(shop_id, job_id, seq_no, fields["name"], fields["width"], fields["width_unit"], fields["height"],
                    fields["height_unit"], fields["reference"], fields["reference_file_path"], fields["phone"],
                    fields["gst"], fields["address"], master_ids["landscape_master_id"], master_ids["portrait_master_id"],
-                   fields.get("shop_name_local"), fields.get("board_type"))
+                   fields.get("shop_name_local"), fields.get("board_type"), fields.get("font_en"), fields.get("font_ta"),
+                   fields.get("sheet_name"))
     return db.get_shop(shop_id)
 
 
@@ -408,7 +413,7 @@ def v2_add_shop(job_id: str, payload: dict):
 
 
 EDITABLE_SHOP_KEYS = ("name", "width", "width_unit", "height", "height_unit", "unit", "phone", "gst", "address",
-                      "shop_name_local", "board_type")
+                      "shop_name_local", "board_type", "font_en", "font_ta", "sheet_name")
 
 
 def _apply_shop_edits(shop_row: dict, payload: dict) -> None:
@@ -593,6 +598,8 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
             shop_dict["address_lines"] = address_lines
     if shop_row.get("shop_name_local"):
         shop_dict["shop_name_local"] = shop_row["shop_name_local"]
+    # No font_en / font_ta from the queue: conversions keep the master's own fonts (fonts are changed in the Signage Editor).
+    # Values a row may still carry from the old queue font pickers are deliberately NOT forwarded.
     master_path, master_used = _select_shop_master(shop_row, job_row, shop_dict["width"], shop_dict["height"])
     # What the CHOSEN master currently shows as its shop name - how the engine finds the text shape to overwrite on an
     # untagged master (layout.find_shopname_ids); a `shopname`-tagged shape is used regardless.
@@ -1496,6 +1503,13 @@ def _needs_powerclip_images(scene: dict) -> bool:
     return any(n.get("kind") == "powerclip" for n in scene_ops.iter_nodes(scene))
 
 
+def _scene_cut_short(scene: dict) -> bool:
+    """A scene cached while CorelDRAW died part-way (before scene_export stopped doing that): every object after the crash
+    has no image, so it is listed in Layers but draws nothing on the canvas. Rebuild it once; a crash during the rebuild
+    now fails the build instead of caching it again."""
+    return any(scene_export.server_gone(f) for f in (scene.get("stats") or {}).get("image_failures") or [])
+
+
 @app.get("/api/editor/{job_id}/{shop_id}/scene")
 def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool = False):
     _editor_shop(job_id, shop_id)
@@ -1508,7 +1522,7 @@ def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool =
             raise HTTPException(503 if state.get("low_memory") else 500, state["error"])
         if scene_path.is_file() and not rebuild:
             scene = json.loads(scene_path.read_text(encoding="utf-8"))
-            if _needs_powerclip_images(scene):
+            if _needs_powerclip_images(scene) or _scene_cut_short(scene):
                 _scene_builds[shop_id] = {"status": "building"}
                 _pool.submit(_scene_build_worker, job_id, shop_id)
                 return JSONResponse({"status": "building", "step": "queued", "progress_pct": 1}, status_code=202)
@@ -1763,6 +1777,15 @@ def font_substitute_delete(shop_id: str, original_font: str):
         raise HTTPException(404, "shop not found")
     return {"deleted": db.delete_font_substitution(shop_id, original_font.strip()),
             "substitutions": db.get_font_substitutions(shop_id)}
+
+
+@app.get("/api/v2/fonts")
+def api_v2_fonts(refresh: bool = False):
+    """Installed fonts for the Shops Queue's English / Tamil font pickers: {available, all_fonts, english_fonts, tamil_fonts,
+    tamil_detection}. Read from Windows (the same list CorelDRAW sees), NOT by launching CorelDRAW through COM: a Dispatch
+    starts a hidden CorelDRAW (seconds and hundreds of MB) and would compete with a running conversion for the one CorelDRAW
+    this app allows at a time. Tamil support is read from each font file's character map (fonts.tamil_fonts)."""
+    return fonts.script_fonts(refresh)
 
 
 @app.get("/api/fonts")

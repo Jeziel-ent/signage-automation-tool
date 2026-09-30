@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { buildIndex } from "./ops.js";
+import { AlignCenter, AlignJustify, AlignLeft, AlignRight } from "lucide-react";
+import { CHAR_SPACING_RANGE, LINE_SPACING_RANGE, buildIndex } from "./ops.js";
 import { insidePowerclip, unionBox } from "./model.js";
 import { fromUnit, toUnit, UNITS } from "./units.js";
 
@@ -239,11 +240,82 @@ function TextFields({ node, locked, onCommit, fonts, onTextPreview }) {
           <input value={size} disabled={locked} inputMode="decimal" onChange={(e) => setSize(e.target.value)} onBlur={() => { const v = parseFloat(size); if (v > 0 && v !== t.size_pt) push({ size_pt: v }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
         </label>
       </div>
+      <TextFormat t={t} locked={locked} push={push} />
       {fontError && <div className="ed-warn ed-warn-error">{fontError}</div>}
       {!fontError && t.font && !installed(t.font) && (
         <div className="ed-warn">This board's font "{t.font}" is not installed here - CorelDRAW is substituting another one.</div>
       )}
       {node.stale && <div className="ed-hint">Live preview active - Save and Generate will re-render this exactly through CorelDRAW.</div>}
+    </div>
+  );
+}
+
+const ALIGNS = [
+  ["left", AlignLeft, "Align left"],
+  ["center", AlignCenter, "Align centre"],
+  ["right", AlignRight, "Align right"],
+  ["justify", AlignJustify, "Justify"],
+];
+
+/** A spacing field: commits on blur / Enter when the number is valid and changed; out of range -> an inline message, no op. */
+function SpacingField({ label, value, fallback, range, unitLabel, locked, onSet, title }) {
+  const shown = value != null ? String(+Number(value).toFixed(2)) : "";
+  const [v, setV] = useState(shown);
+  const [err, setErr] = useState("");
+  useEffect(() => setV(shown), [shown]);
+  const apply = () => {
+    if (v.trim() === "" || v === shown) return setErr("");
+    const n = Number(v);
+    if (!Number.isFinite(n) || n < range[0] || n > range[1]) {
+      setErr(`${range[0]} to ${range[1]}`);
+      return;
+    }
+    setErr("");
+    onSet(n);
+  };
+  return (
+    <label className="ed-field" title={title}>
+      <span>{label}</span>
+      <span className="ed-fmt-num">
+        <input value={v} placeholder={String(fallback)} disabled={locked} inputMode="decimal" aria-label={label}
+          onChange={(e) => setV(e.target.value)} onBlur={apply} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+        <em>{unitLabel}</em>
+      </span>
+      {err && <small className="ed-fmt-err">{err}</small>}
+    </label>
+  );
+}
+
+/** Bold / italic / underline, alignment, line and letter spacing of the selected text. Every change is one `text` op (undoable,
+ *  autosaved, replayed through CorelDRAW's Story on export); the canvas previews it live. A value the board's CorelDRAW text could
+ *  not report as one number (mixed runs, scenes exported before this existed) shows as unset. */
+function TextFormat({ t, locked, push }) {
+  return (
+    <div className="ed-textfmt">
+      <div className="ed-fmt-row">
+        <div className="ed-seg" role="group" aria-label="Text style">
+          {[["bold", "B", "Bold"], ["italic", "I", "Italic"], ["underline", "U", "Underline"]].map(([key, glyph, name]) => (
+            <button key={key} type="button" className={"ed-seg-btn fmt-" + key + (t[key] ? " on" : "")} aria-pressed={!!t[key]} title={name}
+              aria-label={name} disabled={locked} onClick={() => push({ [key]: !t[key] })}>
+              {glyph}
+            </button>
+          ))}
+        </div>
+        <div className="ed-seg" role="group" aria-label="Alignment">
+          {ALIGNS.map(([key, Icon, name]) => (
+            <button key={key} type="button" className={"ed-seg-btn" + (t.align === key ? " on" : "")} aria-pressed={t.align === key}
+              title={name} aria-label={name} disabled={locked} onClick={() => t.align !== key && push({ align: key })}>
+              <Icon size={14} />
+            </button>
+          ))}
+        </div>
+      </div>
+      <div className="ed-grid2">
+        <SpacingField label="Line spacing" value={t.line_spacing} fallback={100} range={LINE_SPACING_RANGE} unitLabel="%" locked={locked}
+          title="Distance between lines, % of the character height (CorelDRAW's default 100%)" onSet={(n) => push({ line_spacing: n })} />
+        <SpacingField label="Letter spacing" value={t.char_spacing} fallback={0} range={CHAR_SPACING_RANGE} unitLabel="%" locked={locked}
+          title="Extra space between characters, % of a space's width (CorelDRAW's default 0%)" onSet={(n) => push({ char_spacing: n })} />
+      </div>
     </div>
   );
 }

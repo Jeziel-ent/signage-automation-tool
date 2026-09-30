@@ -244,3 +244,20 @@ test("board type from a Type column or from a designer file name in the name col
   const b = mapSheetRows([["Shop Name", "Size"], ["76 - 125 X 48 Inch - Nonlit - SRI KANNIYAMMAN.cdr", "125x48"]]);
   assert.deepEqual(b.shops.map((s) => [s.name, s.board_type]), [["SRI KANNIYAMMAN", "Nonlit"]]);
 });
+
+test("parseShopWorkbook: every sheet with shops, each row tagged with its sheet; a cover sheet reported as missing", async () => {
+  const XLSX = await import("xlsx");
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Summary"], ["Boards", 3]]), "Cover");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Shop Name", "Size"], ["A", "10x4 ft"], ["B", "12x4 ft"]]), "Chennai");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["Shop Name", "Width", "Height"], ["C", "120", "48"]]), "Madurai");
+  const { parseShopWorkbook } = await import("./shopImport.js");
+  const { sheets } = await parseShopWorkbook(new File([XLSX.write(wb, { type: "array", bookType: "xlsx" })], "w.xlsx"));
+  assert.deepEqual(sheets.map((s) => [s.name, s.shops.length, s.missing.length > 0]), [["Cover", 0, true], ["Chennai", 2, false], ["Madurai", 1, false]]);
+  assert.deepEqual(sheets[1].shops.map((s) => [s.name, s.sheet_name]), [["A", "Chennai"], ["B", "Chennai"]]);
+  // a one-sheet workbook / CSV: no sheet names (no tabs)
+  const one = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(one, XLSX.utils.aoa_to_sheet([["Shop Name", "Size"], ["A", "10x4"]]), "Sheet1");
+  const r = await parseShopWorkbook(new File([XLSX.write(one, { type: "array", bookType: "xlsx" })], "o.xlsx"));
+  assert.equal(r.sheets[0].shops[0].sheet_name, undefined);
+});

@@ -151,6 +151,37 @@ function scaleSubtree(node, frm, to) {
   go(node);
 }
 
+// Paragraph formatting a `text` op may also carry - mirrors scene_ops._apply_text_format line for line.
+export const TEXT_ALIGNS = ["left", "center", "right", "justify"];
+export const LINE_SPACING_RANGE = [10, 1000]; // % of the character height (CorelDRAW default 100)
+export const CHAR_SPACING_RANGE = [-100, 2000]; // % of a space's width between characters (CorelDRAW default 0)
+
+function applyTextFormat(t, op) {
+  let changed = false;
+  if (op.align != null) {
+    if (!TEXT_ALIGNS.includes(op.align)) throw new OpError("align must be one of left, center, right, justify");
+    t.align = op.align;
+    changed = true;
+  }
+  for (const key of ["bold", "italic", "underline"]) {
+    if (op[key] != null) {
+      if (typeof op[key] !== "boolean") throw new OpError(`${key} must be true or false`);
+      t[key] = op[key];
+      changed = true;
+    }
+  }
+  for (const [key, [lo, hi]] of [["line_spacing", LINE_SPACING_RANGE], ["char_spacing", CHAR_SPACING_RANGE]]) {
+    if (op[key] != null) {
+      const v = Number(op[key]);
+      if (!Number.isFinite(v) || typeof op[key] === "boolean") throw new OpError(`${key} must be a number`);
+      if (!(v >= lo && v <= hi)) throw new OpError(`${key} must be between ${lo} and ${hi}`);
+      t[key] = r(v);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
 /** Where a box goes when the selection box `frm` is mapped onto `to` (used for live drag previews). */
 export function mapBox(box, frm, to) {
   const sx = frm.w > MIN_SIZE ? to.w / frm.w : 1;
@@ -320,6 +351,7 @@ const APPLY = {
       n.text.size_pt = r(size);
       n.stale = true;
     }
+    if (applyTextFormat(n.text, op)) n.stale = true;
   },
 
   delete(s, op) {

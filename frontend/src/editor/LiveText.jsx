@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { fitTransform, textStyle } from "./textFormat.js";
 
 // The canvas shows CorelDRAW's own render of each shape, which can't be re-typeset in the browser. A text object whose content or font
 // was changed (while typing, or after the `text` op) is drawn instead as a real SVG <text>: in the object's own box, fitted to the box
@@ -72,6 +73,8 @@ export default function LiveText({ node, content, font, origLines = 1, pageH, as
   const fontSize = 100; // measuring size, in viewBox units; the fit transform scales it to the box
   const family = `"${font || node.text.font || ""}", ${FALLBACK_FONTS}`;
   const { w, h } = node;
+  const style = textStyle(node.text);
+  const styleKey = JSON.stringify(style);
 
   useLayoutEffect(() => {
     let alive = true;
@@ -87,8 +90,7 @@ export default function LiveText({ node, content, font, origLines = 1, pageH, as
       if (!bb || !(bb.width > 0) || !(bb.height > 0)) return setFit(null);
       // The box height belongs to the ORIGINAL text (a text op never changes the box), so fit per line: one line of the new text gets
       // the height one line of the original had. The width follows naturally (a longer name runs wider, as it would in CorelDRAW).
-      const k = (h / Math.max(1, origLines)) / (bb.height / lines.length);
-      setFit(`translate(${w / 2} ${h / 2}) scale(${k}) translate(${-(bb.x + bb.width / 2)} ${-(bb.y + bb.height / 2)})`);
+      setFit(fitTransform(bb, { w, h, lines: lines.length, origLines, fontSize, style }));
     };
     measure();
     // Re-fit whenever a font finishes loading - the board's fonts are fetched in the background (utils/fontLoader.js), possibly after
@@ -100,7 +102,7 @@ export default function LiveText({ node, content, font, origLines = 1, pageH, as
       alive = false;
       if (fonts && fonts.removeEventListener) fonts.removeEventListener("loadingdone", measure);
     };
-  }, [content, family, w, h, origLines, lines.length]);
+  }, [content, family, w, h, origLines, lines.length, styleKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <svg
@@ -120,9 +122,11 @@ export default function LiveText({ node, content, font, origLines = 1, pageH, as
     >
       {outline && <rect width={w} height={h} fill="none" stroke="var(--color-red)" strokeWidth={Math.max(w, h) / 400} strokeDasharray={`${h / 12} ${h / 12}`} opacity="0.7" vectorEffect="non-scaling-stroke" />}
       <g transform={fit || undefined} style={{ visibility: fit ? "visible" : "hidden" }}>
-        <text ref={textRef} textAnchor="middle" xmlLang="ta" fill={color} style={{ fontFamily: family, fontSize }}>
+        <text ref={textRef} textAnchor={style.anchor} xmlLang="ta" fill={color}
+          style={{ fontFamily: family, fontSize, fontWeight: style.fontWeight, fontStyle: style.fontStyle, textDecoration: style.textDecoration,
+            letterSpacing: style.letterSpacingEm ? `${style.letterSpacingEm * fontSize}px` : undefined }}>
           {lines.map((line, i) => (
-            <tspan key={i} x="0" y={i * fontSize * 1.2}>{line || " "}</tspan>
+            <tspan key={i} x="0" y={i * fontSize * style.lineEm}>{line || " "}</tspan>
           ))}
         </text>
       </g>

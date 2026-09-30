@@ -2606,5 +2606,179 @@
    ],
    "error": "unknown id"
   }
+ ],
+ "_text_format_doc": "text op paragraph formatting (align, bold/italic/underline, line_spacing, char_spacing) on base's text node 't'; expect_text is the resulting node's text dict, expect_stale its stale flag",
+ "text_format_cases": [
+  {
+   "name": "align + styles",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "align": "right",
+     "bold": true,
+     "italic": true,
+     "underline": false
+    }
+   ],
+   "expect_stale": true,
+   "expect_text": {
+    "content": "SHOP",
+    "font": "Arial",
+    "size_pt": 20,
+    "align": "right",
+    "bold": true,
+    "italic": true,
+    "underline": false
+   }
+  },
+  {
+   "name": "spacing values are rounded like geometry",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "line_spacing": 125.123456,
+     "char_spacing": -12.5
+    }
+   ],
+   "expect_stale": true,
+   "expect_text": {
+    "content": "SHOP",
+    "font": "Arial",
+    "size_pt": 20,
+    "line_spacing": 125.1235,
+    "char_spacing": -12.5
+   }
+  },
+  {
+   "name": "later op overrides one field and keeps the rest",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "align": "center",
+     "bold": true
+    },
+    {
+     "op": "text",
+     "id": "t",
+     "bold": false,
+     "line_spacing": "150"
+    }
+   ],
+   "expect_stale": true,
+   "expect_text": {
+    "content": "SHOP",
+    "font": "Arial",
+    "size_pt": 20,
+    "align": "center",
+    "bold": false,
+    "line_spacing": 150.0
+   }
+  },
+  {
+   "name": "content and formatting together",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "content": "NEW",
+     "align": "justify",
+     "char_spacing": 20
+    }
+   ],
+   "expect_stale": true,
+   "expect_text": {
+    "content": "NEW",
+    "font": "Arial",
+    "size_pt": 20,
+    "align": "justify",
+    "char_spacing": 20.0
+   }
+  },
+  {
+   "name": "nothing given changes nothing",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t"
+    }
+   ],
+   "expect_stale": false,
+   "expect_text": {
+    "content": "SHOP",
+    "font": "Arial",
+    "size_pt": 20
+   }
+  }
+ ],
+ "text_format_errors": [
+  {
+   "name": "bad align",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "align": "middle"
+    }
+   ],
+   "error": "align must be one of"
+  },
+  {
+   "name": "bold must be boolean",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "bold": 1
+    }
+   ],
+   "error": "bold must be true or false"
+  },
+  {
+   "name": "line spacing too small",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "line_spacing": 5
+    }
+   ],
+   "error": "line_spacing must be between"
+  },
+  {
+   "name": "char spacing too large",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "char_spacing": 5000
+    }
+   ],
+   "error": "char_spacing must be between"
+  },
+  {
+   "name": "spacing not a number",
+   "ops": [
+    {
+     "op": "text",
+     "id": "t",
+     "line_spacing": "wide"
+    }
+   ],
+   "error": "line_spacing must be a number"
+  },
+  {
+   "name": "formatting a non-text object",
+   "ops": [
+    {
+     "op": "text",
+     "id": "b",
+     "bold": true
+    }
+   ],
+   "error": "is not a text object"
+  }
  ]
 }

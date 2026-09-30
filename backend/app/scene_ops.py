@@ -400,6 +400,46 @@ def _op_text(s, op):
             raise OpError("font size must be positive")
         t["size_pt"] = _r(size)
         n["stale"] = True
+    if _apply_text_format(t, op):
+        n["stale"] = True
+
+
+# Paragraph formatting a `text` op may also carry (all optional; replayed through CorelDRAW's Story, see export_replay):
+# align left|center|right|justify, bold/italic/underline on-off, line_spacing = % of the character height (CorelDRAW's
+# default 100), char_spacing = % of a space's width added between characters (CorelDRAW's default 0).
+TEXT_ALIGNS = ("left", "center", "right", "justify")
+LINE_SPACING_RANGE = (10.0, 1000.0)
+CHAR_SPACING_RANGE = (-100.0, 2000.0)
+
+
+def _apply_text_format(t: dict, op: dict) -> bool:
+    changed = False
+    if op.get("align") is not None:
+        if op["align"] not in TEXT_ALIGNS:
+            raise OpError("align must be one of left, center, right, justify")
+        t["align"] = op["align"]
+        changed = True
+    for key in ("bold", "italic", "underline"):
+        if op.get(key) is not None:
+            if not isinstance(op[key], bool):
+                raise OpError(f"{key} must be true or false")
+            t[key] = op[key]
+            changed = True
+    for key, (lo, hi) in (("line_spacing", LINE_SPACING_RANGE), ("char_spacing", CHAR_SPACING_RANGE)):
+        if op.get(key) is not None:
+            try:
+                if isinstance(op[key], bool):
+                    raise TypeError
+                v = float(op[key])
+            except (TypeError, ValueError):
+                raise OpError(f"{key} must be a number")
+            if v != v:
+                raise OpError(f"{key} must be a number")
+            if not (lo <= v <= hi):
+                raise OpError(f"{key} must be between {lo:g} and {hi:g}")
+            t[key] = _r(v)
+            changed = True
+    return changed
 
 
 def _op_delete(s, op):

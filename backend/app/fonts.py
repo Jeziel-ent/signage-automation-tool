@@ -148,3 +148,81 @@ def font_file(family: str):
     if not p.is_file() or not any(p.is_relative_to(Path(f).resolve()) for f in folders):
         return None
     return p
+
+
+# ------------------------------------------------------------- script support (the Shops Queue's font pickers)
+#
+# A font can print the Tamil shop name only if it maps Unicode Tamil: read from the font file's own character map with
+# fontTools (cmap only, lazily). Legacy Tamil fonts (Bamini, TAU-*, TSCu-*) put Tamil glyphs at LATIN code points, so
+# they would print the Unicode name as Latin garbage - they are listed separately, not offered as Tamil fonts.
+
+TAMIL_PROBE = (0x0B95, 0x0BBE, 0x0BCD)          # KA, the AA sign and the virama: enough to write any shop name
+LEGACY_TAMIL_HINTS = ("bamini", "tau-", "tau_", "tscu", "tam-", "tab-", "sentamil", "kavitha")
+UNICODE_TAMIL_HINTS = ("latha", "vijaya", "nirmala", "tamil", "arial unicode")
+_script_cache: dict | None = None
+_cmap_cache: dict[tuple[str, float], bool | None] = {}
+
+
+def font_has_tamil(path: str) -> bool | None:
+    """True/False from the file's cmap; None when it cannot be read (or fontTools is missing)."""
+    import os
+
+    try:
+        key = (path, os.path.getmtime(path))
+    except OSError:
+        return None
+    if key in _cmap_cache:
+        return _cmap_cache[key]
+    result = None
+    try:
+        from fontTools.ttLib import TTCollection, TTFont
+
+        faces = TTCollection(path, lazy=True).fonts if path.lower().endswith(".ttc") else [TTFont(path, lazy=True)]
+        result = any(all(cp in (f.getBestCmap() or {}) for cp in TAMIL_PROBE) for f in faces)
+    except Exception:
+        result = None
+    _cmap_cache[key] = result
+    return result
+
+
+def classify_tamil(families: list[str], file_of) -> tuple[list[str], list[str], str]:
+    """(tamil, legacy_tamil, detection) for installed `families`; `file_of(family)` -> font file path or None.
+    detection = "cmap" when every decision came from a font file, else "cmap+names"."""
+    tamil, legacy, guessed = [], [], False
+    for fam in families:
+        low = fam.casefold()
+        path = file_of(fam)
+        has = font_has_tamil(path) if path else None
+        if has is None:                          # no readable file (or no fontTools): judge by the family name
+            guessed = True
+            has = any(h in low for h in UNICODE_TAMIL_HINTS)
+        if has:
+            tamil.append(fam)
+        elif any(h in low for h in LEGACY_TAMIL_HINTS):
+            legacy.append(fam)
+    return tamil, legacy, ("cmap+names" if guessed else "cmap")
+
+
+def script_fonts(refresh: bool = False) -> dict:
+    """{"available", "all_fonts", "english_fonts", "tamil_fonts", "legacy_tamil_fonts", "tamil_detection", "source"}."""
+    global _script_cache
+    if _script_cache is not None and not refresh:
+        return _script_cache
+    base = installed_fonts(refresh)
+    families = base["fonts"]
+    if not base["available"]:
+        _script_cache = {"available": False, "all_fonts": [], "english_fonts": [], "tamil_fonts": [],
+                         "legacy_tamil_fonts": [], "tamil_detection": "none", "source": base["source"]}
+        return _script_cache
+    try:
+        entries, folders = _registry_entries()
+    except Exception:
+        entries, folders = [], [""]
+
+    def file_of(fam):
+        return resolve_font_file(fam, entries, folders[0]) if entries else None
+
+    tamil, legacy, detection = classify_tamil(families, file_of)
+    _script_cache = {"available": True, "all_fonts": families, "english_fonts": families, "tamil_fonts": tamil,
+                     "legacy_tamil_fonts": legacy, "tamil_detection": detection, "source": base["source"]}
+    return _script_cache

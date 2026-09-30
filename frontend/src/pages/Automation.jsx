@@ -8,18 +8,18 @@ import ExportModal from "../components/ExportModal.jsx";
 import PrintFileModal from "../components/PrintFileModal.jsx";
 import GenerateZipModal from "../components/GenerateZipModal.jsx";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
-import { parseShopFile } from "../utils/shopImport.js";
-import { BOARD_TYPES, DEFAULT_BOARD_TYPE, applyDefaultUnit, cdrDownloadUrl, isDraft, resetForNewMaster, shopPayload, toDraftRow } from "../utils/shopPayload.js";
+import { parseShopWorkbook } from "../utils/shopImport.js";
+import { BOARD_TYPES, DEFAULT_BOARD_TYPE, applyDefaultUnit, cdrDownloadUrl, followsEnglish, isDraft, nameEditPatch, resetForNewMaster, shopPayload, toDraftRow, withAutoTamil, withFreshAutoTamil } from "../utils/shopPayload.js";
+import { toTamil } from "../utils/tamilTranslit.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
 import { batchStats, fmtEta, monotonicProgress, recordFinishes, smoothEta } from "../utils/batchStats.js";
 import { fmtBytes } from "../utils/fileSize.js";
 
 const UNITS = ["in", "ft"];
 // One shared unit per board (applies to both width and height); the server stores it on both dimensions.
-const emptyShopForm = (unit = "in") => ({ name: "", shop_name_local: "", width: "", height: "", unit, board_type: DEFAULT_BOARD_TYPE });
+const TA_DEBOUNCE_MS = 300; // auto-Tamil waits this long after the last keystroke in the English name
+const emptyShopForm = (unit = "in") => ({ name: "", shop_name_local: "", ta_auto: true, width: "", height: "", unit, board_type: DEFAULT_BOARD_TYPE });
 
-// The page's Default Unit: what a size means when nothing says otherwise - an Excel row with no unit anywhere, and a new
-// manually added shop. Remembered in this browser.
 const DEFAULT_UNIT_KEY = "signage.defaultUnit";
 function readDefaultUnit() {
   try {
@@ -59,6 +59,7 @@ export default function Automation() {
   const job = landscapeJob || portraitJob;
   const [shops, setShops] = useState([]);
   const [defaultUnit, setDefaultUnit] = useState(readDefaultUnit);
+  const [activeSheet, setActiveSheet] = useState(""); // Shops Queue sheet tab ("" = all sheets)
   const [shopForm, setShopForm] = useState(() => emptyShopForm(readDefaultUnit()));
   const [shopError, setShopError] = useState("");
   const [stepEstimates, setStepEstimates] = useState({});
@@ -66,6 +67,7 @@ export default function Automation() {
   // request per shop, which a large Convert All turned into dozens of requests a second.
   const polling = useRef(new Set());
   const pollTimer = useRef(null);
+  const taTimers = useRef(new Map()); // shop id -> pending auto-Tamil timer (debounced English typing)
 
   useEffect(() => {
     fetch("/api/v2/brands")
@@ -160,7 +162,7 @@ export default function Automation() {
 
   async function addShop() {
     setShopError("");
-    const f = shopForm;
+    const f = shopForm.ta_auto ? { ...shopForm, shop_name_local: toTamil(shopForm.name) } : shopForm;
     if (!f.name.trim() || !(+f.width > 0) || !(+f.height > 0)) {
       setShopError("Shop name, width and height are required");
       return;
@@ -181,7 +183,7 @@ export default function Automation() {
       return;
     }
     const shop = await r.json();
-    setShops((s) => [...s, { ...shop, unit: shop.width_unit }]);
+    setShops((s) => [...s, { ...shop, unit: shop.width_unit, ta_auto: f.ta_auto && !!f.shop_name_local }]);
     setShopForm(emptyShopForm(defaultUnit));
     setShowAddRow(false);
   }
@@ -199,18 +201,33 @@ export default function Automation() {
     setImporting(true);
     setImportReport(null);
     try {
-      const parsed = await parseShopFile(file, { defaultUnit });
-      if (parsed.missing.length) {
-        setImportReport({ file: file.name, added: 0, errors: [], note: `Could not find the ${parsed.missing.map((m) => (m === "size" ? "size (a Size column like 10*4, or Width and Height columns)" : "shop name")).join(" or the ")}.` });
+      // every sheet of the workbook: each becomes a tab in the Shops Queue (a CSV / one-sheet file has no tabs)
+      const { sheets } = await parseShopWorkbook(file, { defaultUnit });
+      const withShops = sheets.filter((sh) => !sh.missing.length && sh.shops.length);
+      const missingText = (m) => `Could not find the ${m.map((k) => (k === "size" ? "size (a Size column like 10*4, or Width and Height columns)" : "shop name")).join(" or the ")}.`;
+      if (!withShops.length) {
+        const first = sheets.find((sh) => sh.missing.length) || sheets[0];
+        setImportReport({ file: file.name, added: 0, errors: [], note: first && first.missing.length ? missingText(first.missing) : "No data rows found." });
         return;
       }
+      const multi = sheets.length > 1;
       // Browser only - no request is made here. Rows become local drafts in the table (fully editable); a draft is
-      // saved to the server the moment it is converted.
-      const errors = [...parsed.errors].sort((a, b) => (a.row ?? 0) - (b.row ?? 0));
-      const added = parsed.shops.length;
-      if (added) setShops((s) => [...s, ...parsed.shops.map(toDraftRow)]);
-      const defaulted = parsed.shops.filter((x) => x.unitSource === "default").length;
-      setImportReport({ file: file.name, added, errors, defaulted, unit: defaultUnit, note: parsed.shops.length + parsed.errors.length === 0 ? "No data rows found." : "" });
+      // saved to the server the moment it is converted. A row without a Tamil name gets one transliterated from its
+      // English name (editable; marked "auto" until typed over).
+      const parsedShops = withShops.flatMap((sh) => sh.shops).map(withAutoTamil);
+      const errors = withShops
+        .flatMap((sh) => sh.errors.map((e) => ({ ...e, sheet: multi ? sh.name : undefined })))
+        .sort((a, b) => (a.sheet || "").localeCompare(b.sheet || "") || (a.row ?? 0) - (b.row ?? 0));
+      const skippedSheets = multi ? sheets.filter((sh) => !withShops.includes(sh)).map((sh) => sh.name) : [];
+      const added = parsedShops.length;
+      setShops((s) => [...s, ...parsedShops.map(toDraftRow)]);
+      const defaulted = parsedShops.filter((x) => x.unitSource === "default").length;
+      const translated = parsedShops.filter((x) => x.ta_auto).length;
+      setImportReport({
+        file: file.name, added, errors, defaulted, translated, unit: defaultUnit,
+        sheets: multi ? withShops.map((sh) => `${sh.name} (${sh.shops.length})`) : [],
+        note: skippedSheets.length ? `No shop list found on sheet${skippedSheets.length === 1 ? "" : "s"}: ${skippedSheets.join(", ")}` : "",
+      });
     } catch (e) {
       setImportReport({ file: file.name, added: 0, errors: [], note: `Import failed: ${e.message}` });
     } finally {
@@ -248,7 +265,16 @@ export default function Automation() {
   function editShop(shopId, patch) {
     // a unit picked by hand is an override: the Default Unit no longer changes that row
     const p = "unit" in patch ? { ...patch, unitSource: "manual" } : patch;
-    setShops((s) => s.map((x) => (x.id === shopId ? { ...x, ...p } : x)));
+    // typing the English name re-transliterates the Tamil one while it is still automatic - 300 ms after the last keystroke
+    // (nameEditPatch leaves the Tamil name alone here; the timer, blur-save and convert fill it)
+    setShops((s) => s.map((x) => (x.id === shopId ? { ...x, ...nameEditPatch(x, p, { deferTamil: true }) } : x)));
+    if ("name" in p) {
+      clearTimeout(taTimers.current.get(shopId));
+      taTimers.current.set(shopId, setTimeout(() => {
+        taTimers.current.delete(shopId);
+        setShops((s) => s.map((x) => (x.id === shopId && followsEnglish(x) ? withFreshAutoTamil(x) : x)));
+      }, TA_DEBOUNCE_MS));
+    }
   }
 
   // Changing the Default Unit re-labels every row that took the default (an Excel row with no unit, not yet converted) -
@@ -274,7 +300,8 @@ export default function Automation() {
   // conversion never depends on this having landed).
   async function saveShop(shopId, override) {
     if (isDraft({ id: shopId })) return; // a draft lives in the browser until it is converted
-    const x = { ...shops.find((y) => y.id === shopId), ...override };
+    // a pending auto-Tamil update is applied now, so the save carries the Tamil name that matches the English one
+    const x = withFreshAutoTamil({ ...shops.find((y) => y.id === shopId), ...override });
     if (!x.name || !(+x.width > 0) || !(+x.height > 0)) return; // incomplete edit: keep it local, convert will complain
     const r = await fetch(`/api/v2/shops/${shopId}`, {
       method: "PATCH",
@@ -293,7 +320,8 @@ export default function Automation() {
   }
 
   async function convertShop(shopId) {
-    let current = shops.find((x) => x.id === shopId);
+    // conversions keep the master's own fonts (no font fields are sent); a pending auto-Tamil update is applied first
+    let current = withFreshAutoTamil(shops.find((x) => x.id === shopId) || null);
     if (!current) return null;
     setShopError("");
     const gen = masterGen.current;
@@ -337,7 +365,15 @@ export default function Automation() {
     return null;
   }
 
-  const convertible = shops.filter((x) => x.status === "new" || x.status === "failed");
+  // ---- sheet tabs: one per Excel sheet the rows came from (+ "Added manually" for rows without one), shown when there is
+  // more than one group. Convert All works on the tab being viewed; S.no stays the row's position in the whole queue.
+  const NO_SHEET = "\u0000manual";
+  const sheetOf = (x) => x.sheet_name || NO_SHEET;
+  const sheetTabs = [...new Set(shops.map(sheetOf))];
+  const showSheetTabs = sheetTabs.length > 1;
+  const currentSheet = showSheetTabs && sheetTabs.includes(activeSheet) ? activeSheet : "";
+  const inSheet = (x) => !currentSheet || sheetOf(x) === currentSheet;
+  const convertible = shops.filter((x) => inSheet(x) && (x.status === "new" || x.status === "failed"));
   // converted shops for "Create Print File", numbered by their S.no in the table
   const printable = shops.map((x, i) => ({ ...x, no: i + 1 })).filter((x) => x.status === "done" && !isDraft(x));
 
@@ -553,6 +589,12 @@ export default function Automation() {
                   {importReport.errors.length > 0 && (
                     <div>{importReport.errors.length} row{importReport.errors.length === 1 ? "" : "s"} skipped:</div>
                   )}
+                  {importReport.sheets?.length > 0 && <div>Sheets: {importReport.sheets.join(", ")} - one tab each below.</div>}
+                  {importReport.translated > 0 && (
+                    <div>
+                      Tamil names were written automatically for {importReport.translated} shop{importReport.translated === 1 ? "" : "s"} (marked "auto") - please check them.
+                    </div>
+                  )}
                   {importReport.defaulted > 0 && (
                     <div>
                       {importReport.defaulted === importReport.added ? "No unit found in the sheet" : `No unit found for ${importReport.defaulted} row${importReport.defaulted === 1 ? "" : "s"}`}
@@ -563,7 +605,7 @@ export default function Automation() {
                   {importReport.errors.length > 0 && (
                     <ul className="err">
                       {importReport.errors.map((e, i) => (
-                        <li key={i}>Row {e.row}: {e.reason}</li>
+                        <li key={i}>{e.sheet ? `${e.sheet}, row` : "Row"} {e.row}: {e.reason}</li>
                       ))}
                     </ul>
                   )}
@@ -584,6 +626,20 @@ export default function Automation() {
             </div>
           ) : (
             <>
+              {showSheetTabs && (
+                <div className="sheet-tabs" role="tablist" aria-label="Excel sheets">
+                  <span className="sheet-tabs-label">{sheetTabs.filter((t) => t !== NO_SHEET).length} sheet{sheetTabs.filter((t) => t !== NO_SHEET).length === 1 ? "" : "s"}</span>
+                  {["", ...sheetTabs].map((t) => {
+                    const n = t ? shops.filter((x) => sheetOf(x) === t).length : shops.length;
+                    return (
+                      <button key={t || "all"} role="tab" aria-selected={currentSheet === t} className={"sheet-tab" + (currentSheet === t ? " active" : "")}
+                        onClick={() => setActiveSheet(t)} title={t && t !== NO_SHEET ? `Sheet "${t}" of the imported workbook` : undefined}>
+                        {t === "" ? "All sheets" : t === NO_SHEET ? "Added manually" : t} <span className="sheet-count">{n}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
               <div className="ws-table-wrap">
               <div className="ws-table-scroll">
                 <table className="shops-table">
@@ -614,7 +670,7 @@ export default function Automation() {
                   </thead>
                   <tbody>
                     {showAddRow && <NewShopRow seqNo={shops.length + 1} form={shopForm} setForm={setShopForm} onAdd={addShop} onCancel={() => setShowAddRow(false)} />}
-                    {shops.map((s, i) => (
+                    {shops.map((s, i) => inSheet(s) && (
                       <ShopRow
                         key={s.id}
                         index={i + 1}
@@ -769,8 +825,14 @@ function ShopRow({ shop, index, onEdit, onSave, onDelete, onConvert, onOpen, onE
   return (
     <tr data-shop-id={shop.id}>
       <td>{index}</td>
-      <td>{field("name", "Shop name (English)", { type: "text" })}</td>
-      <td>{field("shop_name_local", "Shop name (Tamil)", { type: "text", className: "ta-input", lang: "ta", placeholder: "—" })}</td>
+      <td className="name-cell">{field("name", "Shop name (English)", { type: "text", title: shop.name || undefined })}</td>
+      <td>
+        <div className="ta-cell">
+          {field("shop_name_local", "Shop name (Tamil)", { type: "text", className: "ta-input" + (shop.ta_auto ? " auto" : ""), lang: "ta", placeholder: "\u2014",
+            title: shop.shop_name_local || undefined })}
+          {shop.ta_auto && shop.shop_name_local ? <span className="ta-auto" title="Written automatically from the English name - check it; typing here makes it yours">auto</span> : null}
+        </div>
+      </td>
       <td>{field("width", "Width", { type: "number", min: "0", step: "any" })}</td>
       <td>{field("height", "Height", { type: "number", min: "0", step: "any" })}</td>
       <td>
@@ -839,14 +901,22 @@ function BoardTypeSelect({ value, disabled, onChange }) {
 }
 
 function NewShopRow({ seqNo, form, setForm, onAdd, onCancel }) {
+  // the Tamil name follows the English one 300 ms after typing stops, until it is typed over (form.ta_auto)
+  useEffect(() => {
+    if (!form.ta_auto) return undefined;
+    const t = setTimeout(() => setForm((f) => (f.ta_auto ? { ...f, shop_name_local: toTamil(f.name) } : f)), TA_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+  }, [form.name, form.ta_auto]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <tr className="new-shop-row">
       <td>{seqNo}</td>
       <td>
-        <input autoFocus placeholder="Shop name" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} onKeyDown={(e) => e.key === "Enter" && onAdd()} />
+        <input autoFocus placeholder="Shop name" value={form.name} title={form.name || undefined}
+          onChange={(e) => setForm({ ...form, name: e.target.value })}
+          onKeyDown={(e) => e.key === "Enter" && onAdd()} />
       </td>
       <td>
-        <input className="ta-input" lang="ta" placeholder="Tamil name (optional)" value={form.shop_name_local} onChange={(e) => setForm({ ...form, shop_name_local: e.target.value })} onKeyDown={(e) => e.key === "Enter" && onAdd()} />
+        <input className="ta-input" lang="ta" placeholder="Tamil name (optional)" value={form.shop_name_local} onChange={(e) => setForm({ ...form, shop_name_local: e.target.value, ta_auto: false })} onKeyDown={(e) => e.key === "Enter" && onAdd()} />
       </td>
       <td>
         <input type="number" min="0" step="any" value={form.width} onChange={(e) => setForm({ ...form, width: e.target.value })} />
@@ -889,11 +959,11 @@ function ConvertCell({ shop, onConvert, onExport, stepEstimates }) {
       </button>
     );
   }
-  if (shop.status === "queued") return <span className="badge badge-queued">Queued</span>;
+  if (shop.status === "queued") return <span className="badge badge-queued" title="Waiting its turn - CorelDRAW converts one board at a time">Pending</span>;
   if (shop.status === "converting") {
     // Eased toward (but capped just below) the next real step threshold - never a straight jump to the backend's
     // last-polled value, and never 100% here (that only happens once status flips to "done").
-    return <span className="badge badge-processing">Processing {smoothedPct}%</span>;
+    return <span className="badge badge-processing">Converting... {smoothedPct}%</span>;
   }
   if (shop.status === "done") {
     return (

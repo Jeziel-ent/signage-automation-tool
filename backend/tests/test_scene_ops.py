@@ -216,3 +216,23 @@ def test_update_slot_op_builds_the_same_op_swap_image_would():
     assert via_slot["asset"] == direct["asset"]
     assert via_slot["frame"] == direct["frame"]
     assert via_slot["fit"] == direct["fit"] == "contain"
+
+
+def _find(scene, node_id):
+    for n in scene_ops.iter_nodes(scene):
+        if n["id"] == node_id:
+            return n
+    raise KeyError(node_id)
+
+
+@pytest.mark.parametrize("case", GOLDEN["text_format_cases"], ids=lambda c: c["name"])
+def test_golden_text_format(case):
+    t = _find(apply_ops(GOLDEN["base"], case["ops"]), "t")
+    assert t["text"] == case["expect_text"]
+    assert bool(t.get("stale")) == case["expect_stale"]
+
+
+@pytest.mark.parametrize("case", GOLDEN["text_format_errors"], ids=lambda c: c["name"])
+def test_golden_text_format_errors(case):
+    with pytest.raises(OpError, match=case["error"]):
+        apply_ops(GOLDEN["base"], case["ops"])

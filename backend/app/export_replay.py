@@ -408,6 +408,7 @@ class Replayer:
                     f"font {patch['font']!r} was not applied (is it installed?) - CorelDRAW kept {actual!r}")
         if patch.get("size_pt") is not None:
             story.Size = float(patch["size_pt"])
+        self._apply_text_format(shape, story, patch)
         # New text content can turn a shape Tamil (or a shape nested inside a
         # PowerClip - scene_ops.py's one narrow exception to PowerClip
         # contents otherwise being read-only - may already be Tamil and never
@@ -415,6 +416,49 @@ class Replayer:
         # app.engines.CorelEngine applies during generation, shared via
         # corel_util so both places stay in sync.
         corel_util.ensure_tamil_font_renders(shape, _safe(lambda: story.Text), self.warnings)
+
+    def _apply_text_format(self, shape, story, patch: dict) -> None:
+        """Paragraph formatting from a `text` op (scene_ops._apply_text_format): align, bold, italic, underline, line_spacing
+        (% of character height), char_spacing (% of a space). Only values that differ from what the text already has are
+        written, each is read back (CorelDRAW ignores what it cannot do - e.g. Bold on a font without a bold face - without
+        raising), and the text is kept where the editor shows it: CorelDRAW moves artistic text when its alignment or
+        spacing changes, so afterwards it is shifted back to keep its left edge / centre / right edge (by alignment) and
+        its top."""
+        current = scene_export.text_format(story)
+        wanted = {k: patch[k] for k in ("align", "bold", "italic", "underline", "line_spacing", "char_spacing")
+                  if patch.get(k) is not None}
+        todo = {k: v for k, v in wanted.items() if current.get(k) != v}
+        if not todo:
+            return
+        left, right, top = (_safe(lambda: float(shape.LeftX)), _safe(lambda: float(shape.RightX)),
+                            _safe(lambda: float(shape.TopY)))
+        if "align" in todo:
+            _safe(lambda: setattr(story, "Alignment", scene_export.ALIGN_TO_COREL[todo["align"]]))
+        for key, prop in (("bold", "Bold"), ("italic", "Italic")):
+            if key in todo:
+                _safe(lambda prop=prop, key=key: setattr(story, prop, bool(todo[key])))
+        if "underline" in todo:
+            _safe(lambda: setattr(story, "Underline", 1 if todo["underline"] else 0))    # cdrSingleThinFontLine / none
+        if "line_spacing" in todo:
+            _safe(lambda: setattr(story, "LineSpacingType", scene_export.LINE_SPACING_PERCENT_OF_CHAR_HEIGHT))
+            _safe(lambda: setattr(story, "LineSpacing", float(todo["line_spacing"])))
+        if "char_spacing" in todo:
+            _safe(lambda: setattr(story, "CharSpacing", float(todo["char_spacing"])))
+        got = scene_export.text_format(story)
+        for key, value in todo.items():
+            if got.get(key) != value:
+                self.warnings.append(f"text {key.replace('_', ' ')} {value!r} was not applied by CorelDRAW "
+                                     f"(it kept {got.get(key)!r})")
+        # keep the text anchored where the editor shows it
+        if None not in (left, right, top):
+            align = got.get("align") or wanted.get("align") or current.get("align") or "left"
+            nl, nr, nt = (_safe(lambda: float(shape.LeftX)), _safe(lambda: float(shape.RightX)),
+                          _safe(lambda: float(shape.TopY)))
+            if None not in (nl, nr, nt):
+                dx = {"left": left - nl, "right": right - nr}.get(align, (left + right) / 2 - (nl + nr) / 2)
+                dy = top - nt
+                if abs(dx) > 1e-3 or abs(dy) > 1e-3:
+                    _safe(lambda: shape.Move(dx, dy))
 
     def _op_page(self, op, before):
         self.page.SetSize(float(self.shadow["page"]["width"]), float(self.shadow["page"]["height"]))
