@@ -9,6 +9,7 @@ Both expose:  process(master_path, shop, out_dir) -> dict
 """
 from __future__ import annotations
 
+import atexit
 import json
 import logging
 import os
@@ -27,6 +28,120 @@ logger = logging.getLogger(__name__)
 
 def _safe(name: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in name).strip("_") or "shop"
+
+
+# ---------------------------------------------------------------- persistent master session
+# Opening the master costs 2.7 s (median, 208 MB DARSHAN master) and closing it ~1.5 s, on every shop. Within one worker
+# batch the same master is therefore kept open: each shop's edits run inside ONE undo group (Document.BeginCommandGroup /
+# EndCommandGroup), the outputs are written (SaveAs / PublishToPDF / ExportBitmap never touch the master file on disk), the
+# group is undone, and the document is compared with a fingerprint taken right after the master was opened. Only an exact
+# match keeps it for the next shop; anything else closes it and the next shop reopens from disk - so a shop can never
+# inherit the previous shop's text, sizes or tiles. SIGNAGE_KEEP_MASTER_OPEN=0 turns this off.
+
+def keep_master_open() -> bool:
+    return os.environ.get("SIGNAGE_KEEP_MASTER_OPEN", "1").strip() != "0"
+
+
+class _MasterSession:
+    doc = None
+    pid: int | None = None
+    key: tuple | None = None        # (resolved path, mtime_ns, size) of the master file it was opened from
+    snapshot: tuple | None = None   # doc_fingerprint() of the pristine master
+
+
+def _master_key(master_path) -> tuple:
+    p = Path(master_path).resolve()
+    st = p.stat()
+    return (str(p).lower(), st.st_mtime_ns, st.st_size)
+
+
+class _Coll:
+    """A plain list with the COM collection interface (Count / 1-based Item)."""
+    def __init__(self, items):
+        self._items = items
+        self.Count = len(items)
+
+    def Item(self, i):
+        return self._items[i - 1]
+
+
+def doc_fingerprint(doc) -> tuple:
+    """Everything a shop's conversion can change, for the whole active page: page size, and per shape (recursively into
+    groups and PowerClip contents) its type, box (0.01 mm), text + font + size, uniform fill, and a bitmap's pixel size.
+    Two fingerprints are equal only if the document is back exactly as the master was."""
+    doc.Unit = CorelEngine.CDR_MILLIMETER
+    page = doc.ActivePage
+    out = [("page", round(float(page.SizeWidth), 2), round(float(page.SizeHeight), 2))]
+
+    def walk(coll, depth):
+        for i in range(1, coll.Count + 1):
+            s = coll.Item(i)
+            t = int(s.Type)
+            row = [depth, t, round(float(s.LeftX), 2), round(float(s.BottomY), 2),
+                   round(float(s.SizeWidth), 2), round(float(s.SizeHeight), 2)]
+            if t == CorelEngine.SHAPE_TEXT:
+                try:
+                    st = s.Text.Story
+                    row += [st.Text, st.Font, round(float(st.Size), 2)]
+                except Exception:
+                    row.append(CorelEngine._shape_text(s))
+            elif t == CorelEngine.SHAPE_BITMAP:
+                try:
+                    row += [int(s.Bitmap.SizeWidth), int(s.Bitmap.SizeHeight)]
+                except Exception:
+                    pass
+            elif depth == 0:
+                # only top-level shapes are ever recoloured (Placed.recolor_cmyk); reading a fill costs ~7 COM calls, so
+                # nested shapes skip it
+                row.append(CorelEngine._shape_fill_cmyk(s))
+            out.append(tuple(row))
+            kids = CorelEngine._child_shapes(s)
+            if kids:
+                walk(_Coll(kids), depth + 1)
+
+    walk(page.Shapes, 0)
+    return tuple(out)
+
+
+FINGERPRINT_TOL_MM = 0.05   # CorelDRAW re-measures text after an undo: a width read back 1370.06 instead of 1370.07 mm
+
+
+def same_fingerprint(a: tuple, b: tuple, tol: float = FINGERPRINT_TOL_MM) -> bool:
+    """Equal up to `tol` on every number (boxes, page size, point sizes); text, font, fill and bitmap pixels must match
+    exactly (they are ints/strings/tuples, compared as they are)."""
+    if len(a) != len(b):
+        return False
+    for ra, rb in zip(a, b):
+        if len(ra) != len(rb):
+            return False
+        for x, y in zip(ra, rb):
+            if isinstance(x, float) and isinstance(y, float):
+                if abs(x - y) > tol:
+                    return False
+            elif x != y:
+                return False
+    return True
+
+
+def _close_doc(doc) -> None:
+    """Close without a save-changes prompt (the master on disk is never saved over)."""
+    try:
+        doc.Dirty = False
+    except Exception:
+        pass
+    try:
+        doc.Close()
+    except Exception:
+        pass
+
+
+def close_master_session() -> None:
+    if _MasterSession.doc is not None:
+        _close_doc(_MasterSession.doc)
+    _MasterSession.doc = _MasterSession.pid = _MasterSession.key = _MasterSession.snapshot = None
+
+
+atexit.register(close_master_session)   # registered after corel_util's, so it runs first: the doc closes before the quit
 
 
 def name_font(text: str | None, shop: dict) -> str | None:
@@ -161,6 +276,7 @@ class CorelEngine:
 
     CLIP_FOREGROUND_MAX_AREA = 0.9   # of the page: bigger clipped children are backdrop and keep the frame's stretch
     CLIP_FOREGROUND_MIN_INSIDE = 0.9  # share of the child's box inside the page: art hanging off the page is backdrop
+    CLIP_EDGE_TOL = 0.02              # of the master's width: a child this close to (or past) a side edge stays on it
 
     @classmethod
     def _undistort_clip_contents(cls, container, sx: float, sy: float, page_w: float, page_h: float,
@@ -172,7 +288,11 @@ class CorelEngine:
         orientation_adapter's separable foreground) is re-sized uniformly by the smaller of the two scale factors,
         centred horizontally where the stretch put it and standing on the same bottom edge, so it keeps its
         proportions and never grows past the stretched box (i.e. into the logos above it). Backdrop children (the
-        full-bleed texture, art mostly off the page) keep the stretch. Returns how many children were adjusted."""
+        full-bleed texture, art mostly off the page) keep the stretch. Returns how many children were adjusted.
+
+        Horizontally, a child that touched or ran past a page edge on the MASTER stays on that edge (its bleed scaled
+        with it): the DARSHAN table runs off the left edge, and re-centring it left a short table with both ends visible
+        floating mid-board on a 167x29 in board. Only a child clear of both edges is centred where the stretch put it."""
         if abs(sx / sy - 1.0) < 0.02:
             return 0
         try:
@@ -183,6 +303,8 @@ class CorelEngine:
         if coll is None:
             return 0
         k = min(sx, sy)
+        src_w = page_w / sx                       # the master's page width
+        edge_tol = cls.CLIP_EDGE_TOL * src_w
         done = 0
         for i in range(1, coll.Count + 1):
             ch = coll.Item(i)
@@ -197,9 +319,16 @@ class CorelEngine:
             if ix * iy < cls.CLIP_FOREGROUND_MIN_INSIDE * w * h:
                 continue
             nw, nh = w / sx * k, h / sy * k   # original size x the uniform factor
+            ox, ow = x / sx, w / sx            # the child's box on the master
+            if ox <= edge_tol:                              # on / past the left edge: keep it there
+                nx = ox * k
+            elif src_w - (ox + ow) <= edge_tol:             # on / past the right edge
+                nx = page_w - (src_w - ox) * k
+            else:
+                nx = x + (w - nw) / 2
             try:
                 ch.SetSize(nw, nh)
-                ch.LeftX = x + (w - nw) / 2
+                ch.LeftX = nx
                 ch.BottomY = y
             except Exception as e:
                 warnings.append(f"could not keep a clipped object in proportion: {e}")
@@ -209,6 +338,22 @@ class CorelEngine:
             warnings.append(f"kept {done} object(s) inside the background PowerClip in proportion "
                             f"(frame stretched {sx:.2f} x {sy:.2f})")
         return done
+
+    @staticmethod
+    def _restore_master(doc, snapshot) -> bool:
+        """Undo this shop's command group and check the document is exactly the master again (doc_fingerprint)."""
+        doc.Undo(1)
+        after = doc_fingerprint(doc)
+        same = same_fingerprint(after, snapshot)
+        try:
+            doc.Dirty = False
+        except Exception:
+            pass
+        if not same:
+            diff = [(a, b) for a, b in zip(snapshot, after) if a != b]
+            logger.warning("master not identical after undo (%d of %d rows differ, rows %d vs %d, first: %s); closing it - "
+                           "the next shop reopens it from disk", len(diff), len(snapshot), len(after), len(snapshot), diff[:3])
+        return same
 
     @staticmethod
     def _child_shapes(s) -> list:
@@ -382,8 +527,35 @@ class CorelEngine:
 
         success = False
         doc = None
+        keep_doc = False
+        master_reused = False
+        snapshot = None
+        reuse = keep_master_open() and os.environ.get("SIGNAGE_REUSE_COREL") != "1"
+        sess = _MasterSession
+        key = _master_key(master_path) if reuse else None
+        if sess.doc is not None and (sess.pid != pid or sess.key != key or not reuse):
+            if sess.pid == pid:
+                _close_doc(sess.doc)          # another master on this instance
+            sess.doc = sess.pid = sess.key = sess.snapshot = None
         try:
-            doc = step("open", lambda: app.OpenDocument(str(Path(master_path).resolve())))
+            if sess.doc is not None:
+                doc, snapshot = sess.doc, sess.snapshot
+                sess.doc = None               # re-armed only after this shop restores it cleanly
+                if on_step is not None:
+                    try:
+                        on_step("open")
+                    except Exception:
+                        pass
+                timings["open"] = 0.0
+                master_reused = True
+            else:
+                def _open():
+                    d = app.OpenDocument(str(Path(master_path).resolve()))
+                    return d, (doc_fingerprint(d) if reuse else None)
+
+                doc, snapshot = step("open", _open)
+            if reuse:
+                doc.BeginCommandGroup("Signage shop")
 
             def _resize_and_tile():
                 doc.Unit = self.CDR_MILLIMETER
@@ -523,6 +695,8 @@ class CorelEngine:
             # 10x4 in board from a 125x48 in master saved 208.7 MB in 14.1 s; capped, 10.0 MB in 0.8 s). Downsamples only,
             # keeps every bitmap's box - see corel_util.cap_bitmap_resolution.
             bitmap_cap = step("bitmaps", lambda: corel_util.cap_bitmap_resolution(doc, corel_util.max_bitmap_dpi()))
+            if reuse:
+                doc.EndCommandGroup()          # every change of this shop is now ONE undo step
             if bitmap_cap.get("resampled"):
                 logger.info("capped %d bitmap(s) at %d dpi (%.1f -> %.1f Mpx)", bitmap_cap["resampled"],
                             corel_util.max_bitmap_dpi(), bitmap_cap["pixels_before"] / 1e6, bitmap_cap["pixels_after"] / 1e6)
@@ -547,14 +721,20 @@ class CorelEngine:
 
             step("png", _export)
             success = True
+            if reuse and snapshot is not None:
+                t = time.time()
+                try:
+                    keep_doc = corel_util.run_with_timeout(lambda: self._restore_master(doc, snapshot), pid, "restore")
+                except Exception as e:
+                    logger.warning("could not restore the master for reuse (%s); it will be reopened", e)
+                timings["restore"] = round(time.time() - t, 1)
         finally:
             # Best-effort: a cleanup failure (e.g. the COM server already died)
             # must not clobber a result we already successfully computed.
-            if doc is not None:
-                try:
-                    doc.Close()
-                except Exception:
-                    pass
+            if keep_doc and not corel_util.will_quit_on_release(pid, success):
+                sess.doc, sess.pid, sess.key, sess.snapshot = doc, pid, key, snapshot
+            elif doc is not None:
+                _close_doc(doc)
             if watchdog is not None:
                 for d in watchdog.stop():
                     warnings.append(f"dialog {d['title']!r} open >=20s, dismissed via {d['dismissed_via']}")
@@ -564,6 +744,8 @@ class CorelEngine:
         report["cdr_format"] = cdr_format
         report["bitmap_cap"] = {"max_dpi": corel_util.max_bitmap_dpi(), **bitmap_cap}
         report["corel"] = dict(corel_util.connected)  # which CorelDRAW (ProgID + version) produced this board
+        # the master was already open from the previous shop (restored by undo and verified) / kept open for the next one
+        report["master_session"] = {"reused": master_reused, "kept_open": bool(keep_doc)}
         (out_dir / f"{base}_report.json").write_text(json.dumps(report, indent=2))
         return {"files": {"cdr": cdr_path.name, "pdf": pdf_path.name,
                           "preview": png_path.name, "report": f"{base}_report.json"},

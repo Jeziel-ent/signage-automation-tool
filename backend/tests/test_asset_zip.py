@@ -71,7 +71,7 @@ def test_zip_layout_png_to_jpeg_and_missing_list(tmp_path):
         assert im.format == "JPEG" and im.getpixel((5, 5)) == (255, 255, 255)   # transparency -> white
     assert z.read("CDR&PDF/cdr/01_FAYAZ_HARDWREAS.cdr") == b"data:a.cdr"
     assert z.getinfo("CDR&PDF/cdr/01_FAYAZ_HARDWREAS.cdr").compress_type == zipfile.ZIP_STORED
-    assert z.getinfo("CDR&PDF/pdf/01_FAYAZ_HARDWREAS.pdf").compress_type == zipfile.ZIP_DEFLATED
+    assert z.getinfo("CDR&PDF/pdf/01_FAYAZ_HARDWREAS.pdf").compress_type == zipfile.ZIP_STORED
     assert summary["files"] == 5
     assert summary["missing"] == ["CDR&PDF/pdf/02_NU_COLOURS.pdf", "02_NU_COLOURS_2.jpg", "CDR&PDF/cdr/02_NU_COLOURS_2.cdr",
                                   "CDR&PDF/pdf/02_NU_COLOURS_2.pdf"]

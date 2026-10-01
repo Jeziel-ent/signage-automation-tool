@@ -32,7 +32,7 @@ FILES_DIR = "CDR&PDF"                   # the parent folder of the cdr/ and pdf/
 
 @dataclass
 class ShopAssets:
-    no: int
+    no: int | str
     name: str
     cdr: Path | None = None
     pdf: Path | None = None
@@ -45,11 +45,12 @@ class ShopAssets:
         return self.stem or member_base(self.no, self.name)
 
 
-def member_base(no: int, name: str) -> str:
+def member_base(no: int | str, name: str) -> str:
     """`01_FAYAZ_HARDWREAS_COLACHAL`: the queue number, then the shop name with every run of other characters as one
     underscore. Letters of any script are kept WITH their combining marks - the regex class `\\w` drops Tamil vowel signs and the
     virama (U+0BCD), which mangled "அல்" into "அல" - and case is kept as typed."""
-    return f"{int(no):02d}_{safe_part(name) or 'Shop'}"
+    from .file_naming import sno_text
+    return f"{sno_text(no, 2) or '01'}_{safe_part(name) or 'Shop'}"
 
 
 def safe_part(text: str) -> str:
@@ -107,7 +108,7 @@ def pick_sources(out_dir: Path, conversion_files: dict | None, exports: list[dic
 
 def write_zip(shops: list[ShopAssets], out_path: Path) -> dict:
     """Write the archive; returns {"shops": n, "files": n, "missing": ["01_X.pdf", ...], "notes": [...]}.
-    CDR/JPG members are STORED (already compressed - a CDR is itself a zip); PDFs are deflated."""
+    Every member is STORED (already compressed - a CDR is itself a zip, CorelDRAW's PDFs and the JPGs are compressed)."""
     from PIL import Image                        # lazily, like every other Pillow use in the app
 
     Image.MAX_IMAGE_PIXELS = None
@@ -134,7 +135,9 @@ def write_zip(shops: list[ShopAssets], out_path: Path) -> dict:
                 count += 1
             else:
                 missing.append(f"{base}.jpg")
-            for kind, path, mode in (("cdr", s.cdr, zipfile.ZIP_STORED), ("pdf", s.pdf, zipfile.ZIP_DEFLATED)):
+            # PDFs are STORED too: CorelDRAW's PDFs are already compressed - measured on a real 30 MB board PDF, deflating
+            # took 2.17 s to save 1 % (stored: 0.04 s), i.e. ~2 minutes of a 50-shop ZIP for nothing
+            for kind, path, mode in (("cdr", s.cdr, zipfile.ZIP_STORED), ("pdf", s.pdf, zipfile.ZIP_STORED)):
                 if path is not None:
                     z.write(path, f"{FILES_DIR}/{kind}/{base}.{kind}", compress_type=mode)
                     count += 1

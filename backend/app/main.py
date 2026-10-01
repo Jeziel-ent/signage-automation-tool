@@ -730,13 +730,21 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
 
 
 def _apply_sno(shop_id: str, payload: dict | None) -> None:
-    """`sno` in a body = the row's S.no in the Shops table; output files are numbered by it (file_naming)."""
-    try:
-        sno = int((payload or {}).get("sno") or 0)
-    except (TypeError, ValueError):
-        raise HTTPException(400, "sno must be a positive whole number")
-    if sno > 0:
-        db.set_shop_seq_no(shop_id, sno)
+    """`sno` in a body = the row's S.No in the Shops table - the imported sheet's own serial when it had one ("76",
+    "SL-01"), else the row's position; output files are numbered by it (file_naming). A whole number also becomes the
+    shop's seq_no; any other text is kept as written (`sno_label`)."""
+    raw = (payload or {}).get("sno")
+    text = str(raw).strip() if raw is not None else ""
+    if not text:
+        return
+    if re.fullmatch(r"\d+(\.0+)?", text):
+        if int(float(text)) > 0:
+            db.set_shop_seq_no(shop_id, int(float(text)))
+        return
+    label = file_naming.sno_text(text)
+    if not label or len(label) > 20:
+        raise HTTPException(400, "sno must be a serial number of at most 20 characters")
+    db.set_shop_sno_label(shop_id, label)
 
 
 @app.post("/api/v2/shops/{shop_id}/convert")
@@ -868,7 +876,7 @@ def v2_shop_downloads(shop_id: str):
 
 
 @app.get("/api/v2/shops/{shop_id}/download/{fmt}")
-def v2_shop_download(shop_id: str, fmt: str, no: int | None = None):
+def v2_shop_download(shop_id: str, fmt: str, no: str | None = None):
     """One file of one converted shop, named "<S.no> - <W> X <H> <Unit> - <Type> - <SHOP>.<ext>" (`no` = the row's S.no in
     the queue, default its seq_no). CDR/PDF/PNG are served as they are; a JPG is an editor export's JPEG, else the best PNG
     re-encoded as JPEG quality 95 on white (CorelDRAW's pixels, like the ZIP's JPG). 404 when that format does not exist."""
@@ -885,7 +893,7 @@ def v2_shop_download(shop_id: str, fmt: str, no: int | None = None):
     src = _single_sources(row, fmt)
     if src["path"] is None:
         raise HTTPException(404, src["reason"])
-    name = f"{file_naming.shop_basename(row, no if no and no > 0 else None)}.{fmt}"
+    name = f"{file_naming.shop_basename(row, no if no and no.strip() not in ('', '0') else None)}.{fmt}"
     if not src["to_jpeg"]:
         return FileResponse(src["path"], filename=name)
     from PIL import Image                         # lazily, like every other Pillow use in the app
@@ -964,7 +972,7 @@ class PrintSheetRequest(BaseModel):
     location: str = ""
     board_type: str = ""
     shop_ids: list[str]
-    numbers: dict[str, int] | None = None  # the S.no each shop has in the queue, for the captions (default: seq_no)
+    numbers: dict[str, int | str] | None = None  # the S.no each shop has in the queue, for the captions (default: its own)
     format: str = "pdf"                    # pdf | jpeg
 
 
@@ -1024,7 +1032,7 @@ def print_sheet_generate(body: PrintSheetRequest):
         src = asset_zip.pick_sources(JOBS_V2 / row["job_id"] / "out" / sid,
                                      json.loads(row["files_json"]) if row.get("files_json") else {}, exports, db.get_editor_ops(sid))
         shops.append(print_sheet.SheetShop(
-            no=int(numbers.get(sid) or row["seq_no"]), name=row["name"],
+            no=numbers.get(sid) or file_naming.row_sno(row), name=row["name"],
             width=row["width"], width_unit=row["width_unit"], height=row["height"], height_unit=row["height_unit"],
             image=_shop_thumbnail(row), has_cdr=src["cdr"] is not None, has_pdf=src["pdf"] is not None))
     meta = print_sheet.SheetMeta(title=body.title.strip(), project_no=body.project_no.strip(),
@@ -1039,7 +1047,7 @@ def print_sheet_generate(body: PrintSheetRequest):
 
 class AssetZipRequest(BaseModel):
     shop_ids: list[str]
-    numbers: dict[str, int] | None = None  # the S.no each shop has in the queue, for the file names (default: seq_no)
+    numbers: dict[str, int | str] | None = None  # the S.no each shop has in the queue, for the file names (default: its own)
 
 
 @dataclass
@@ -1107,7 +1115,7 @@ def export_zip(body: AssetZipRequest):
         exports = [asset_zip.export_record(db.get_export(e["id"])) for e in db.list_exports(sid, limit=20)]
         src = asset_zip.pick_sources(out_dir, json.loads(row["files_json"]) if row.get("files_json") else {},
                                      exports, db.get_editor_ops(sid))
-        no = int(numbers.get(sid) or row["seq_no"])
+        no = numbers.get(sid) or file_naming.row_sno(row)
         shops.append(asset_zip.ShopAssets(no=no, name=row["name"], stem=file_naming.shop_basename(row, no),
                                            cdr=src["cdr"], pdf=src["pdf"], image=src["image"], notes=src["notes"]))
     tmp = Path(tempfile.mkdtemp(prefix="asset_zip_"))
@@ -1140,10 +1148,7 @@ def v2_download_cdrs(ids: str, nos: str | None = None):
         raise HTTPException(422, "no shops given")
     if len(shop_ids) > 500:
         raise HTTPException(422, "at most 500 shops per download")
-    try:
-        numbers = [int(x) for x in nos.split(",")] if nos else []
-    except ValueError:
-        raise HTTPException(422, "nos must be whole numbers")
+    numbers = [x.strip() for x in nos.split(",")] if nos else []   # S.Nos, numeric or not ("76", "SL-01")
     shops = []
     for k, sid in enumerate(shop_ids):
         row = db.get_shop(sid)
@@ -1155,7 +1160,7 @@ def v2_download_cdrs(ids: str, nos: str | None = None):
         exports = [asset_zip.export_record(db.get_export(e["id"])) for e in db.list_exports(sid, limit=20)]
         src = asset_zip.pick_sources(out_dir, json.loads(row["files_json"]) if row.get("files_json") else {},
                                      exports, db.get_editor_ops(sid))
-        no = numbers[k] if k < len(numbers) and numbers[k] > 0 else row["seq_no"]
+        no = numbers[k] if k < len(numbers) and numbers[k] not in ("", "0") else file_naming.row_sno(row)
         shops.append(asset_zip.ShopAssets(no=no, name=row["name"], stem=file_naming.shop_basename(row, no), cdr=src["cdr"]))
     if not any(s.cdr for s in shops):
         raise HTTPException(409, "none of these shops has a converted CDR yet")
@@ -1204,7 +1209,7 @@ def export_zip_delete(token: str):
 class WeTransferRequest(BaseModel):
     token: str | None = None               # a ZIP already built by POST /api/export-zip (the modal's)
     shop_ids: list[str] | None = None      # or build one now from these shops
-    numbers: dict[str, int] | None = None
+    numbers: dict[str, int | str] | None = None
     sender_email: str | None = None        # WeTransfer requires the sender's address for a link transfer
     project_id: str | None = None          # accepted for the caller's convenience; not sent to WeTransfer
 

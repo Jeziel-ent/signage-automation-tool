@@ -122,15 +122,15 @@ def test_stretched_background_clip_keeps_its_foreground_in_proportion():
     # 36x48 in portrait master stretched to a 6x6 ft square: sx = 2.0, sy = 1.5. The table composite (as CorelDRAW
     # left it after the frame stretch) goes back to its original aspect at the smaller factor, same bottom edge.
     page = 6 * FT
-    table = _Shape(200.0, 300.0, 800.0 * 2.0, 400.0 * 1.5)
+    table = _Shape(200.0, 300.0, 600.0 * 2.0, 400.0 * 1.5)   # master: x 100..700 of 914 - clear of both edges
     backdrop = _Shape(-50.0, -50.0, page + 100, page + 100)
     offpage = _Shape(0.0, -900.0, 1200.0, 1000.0)
     clip = _Shape(0, 0, page, page, kids=[table, backdrop, offpage])
     warnings = []
     assert CorelEngine._undistort_clip_contents(clip, 2.0, 1.5, page, page, warnings) == 1
-    assert table.SizeWidth == pytest.approx(800 * 1.5) and table.SizeHeight == pytest.approx(400 * 1.5)
+    assert table.SizeWidth == pytest.approx(600 * 1.5) and table.SizeHeight == pytest.approx(400 * 1.5)
     assert table.BottomY == 300.0
-    assert table.LeftX + table.SizeWidth / 2 == pytest.approx(200 + 1600 / 2)      # same centre
+    assert table.LeftX + table.SizeWidth / 2 == pytest.approx(200 + 1200 / 2)      # same centre
     assert backdrop.SizeWidth == page + 100 and offpage.SizeWidth == 1200.0       # backdrop keeps the stretch
     assert warnings and "in proportion" in warnings[0]
 
@@ -196,3 +196,26 @@ def test_upload_accepts_an_explicit_master_shop_name(client):
     r = client.post("/api/v2/upload", data={"brand": "Adinn", "master_shop_name": "AL MADEENA POOJA STORE"},
                     files={"master": ("m.cdr", _fake_cdr_bytes(), "application/octet-stream")})
     assert r.json()["master_shop_name"] == "AL MADEENA POOJA STORE"
+
+
+def test_clip_child_on_the_left_edge_stays_on_it():
+    # landscape DARSHAN master (3175 wide) -> 167x29 in (4242 x 737): sx 1.336, sy 0.604. The table runs off the left
+    # edge on the master (x = -40); after the frame stretch it must not float mid-board with both ends showing.
+    sx, sy, page_w, page_h = 4241.8 / 3175, 736.6 / 1219.2, 4241.8, 736.6
+    ox, oy, ow, oh = -40.0, 150.0, 1450.0, 700.0
+    table = _Shape(ox * sx, oy * sy, ow * sx, oh * sy)
+    clip = _Shape(0, 0, page_w, page_h, kids=[table])
+    assert CorelEngine._undistort_clip_contents(clip, sx, sy, page_w, page_h, []) == 1
+    k = min(sx, sy)
+    assert table.LeftX == pytest.approx(ox * k)                      # still bleeding off the left edge
+    assert table.SizeWidth == pytest.approx(ow * k) and table.SizeHeight == pytest.approx(oh * k)
+
+
+def test_clip_child_on_the_right_edge_stays_on_it():
+    sx, sy, page_w, page_h = 2.0, 1.0, 2000.0, 500.0
+    ow, oh = 300.0, 200.0
+    ox = 1000.0 - ow + 10.0                                           # 10 mm past the master's right edge (1000 wide)
+    pack = _Shape(ox * sx, 50.0, ow * sx, oh * sy)
+    clip = _Shape(0, 0, page_w, page_h, kids=[pack])
+    CorelEngine._undistort_clip_contents(clip, sx, sy, page_w, page_h, [])
+    assert pack.LeftX + pack.SizeWidth == pytest.approx(page_w + 10.0)  # same 10 mm bleed at k = 1

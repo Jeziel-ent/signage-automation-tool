@@ -133,6 +133,9 @@ _MIGRATIONS = [
     ("shops", "font_en", "ALTER TABLE shops ADD COLUMN font_en TEXT"),
     ("shops", "font_ta", "ALTER TABLE shops ADD COLUMN font_ta TEXT"),
     ("shops", "sheet_name", "ALTER TABLE shops ADD COLUMN sheet_name TEXT"),
+    # The S.No exactly as the imported sheet wrote it ("76", "SL-01") - what the output files are numbered by; NULL =
+    # use seq_no. seq_no still holds it when it is a whole number (it orders the job's shops).
+    ("shops", "sno_label", "ALTER TABLE shops ADD COLUMN sno_label TEXT"),
 ]
 
 
@@ -270,7 +273,13 @@ def update_shop_fields(shop_id: str, f: dict) -> None:
 def set_shop_seq_no(shop_id: str, seq_no: int) -> None:
     """The S.no the shop has in the queue table (sent with Convert) - what its output files are numbered by."""
     with _conn() as conn:
-        conn.execute("UPDATE shops SET seq_no = ? WHERE id = ?", (int(seq_no), shop_id))
+        conn.execute("UPDATE shops SET seq_no = ?, sno_label = NULL WHERE id = ?", (int(seq_no), shop_id))
+
+
+def set_shop_sno_label(shop_id: str, label: str) -> None:
+    """A non-numeric S.No from the imported sheet ("SL-01"); seq_no is left as it is (it only orders the shops)."""
+    with _conn() as conn:
+        conn.execute("UPDATE shops SET sno_label = ? WHERE id = ?", (label, shop_id))
 
 
 def delete_shop(shop_id: str) -> None:

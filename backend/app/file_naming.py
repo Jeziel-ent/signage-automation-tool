@@ -44,11 +44,25 @@ def safe_filename(text: str) -> str:
     return t
 
 
+def sno_text(no, pad: int = 0) -> str:
+    """An S.No as it goes into a file name or caption: a whole number without leading zeros (zero-padded to `pad`
+    digits), anything else ("SL-01") as written, minus characters Windows refuses. Blank -> ""."""
+    t = str(no if no is not None else "").strip()
+    if re.fullmatch(r"\d+(\.0+)?", t):
+        return str(int(float(t))).zfill(pad)
+    return safe_filename(t)
+
+
+def row_sno(row: dict):
+    """The S.No a `shops` row is numbered by: the sheet's own label when it had one, else seq_no."""
+    return (row.get("sno_label") or "").strip() or row.get("seq_no") or 1
+
+
 def signage_basename(no, width, width_unit, height, height_unit, board_type, name) -> str:
     """The name without extension. `name` may be an imported designer file name - it is reduced to the shop name."""
     shop = safe_filename(clean_shop_name(name or "")) or "Shop"
     btype = safe_filename(board_type or "") or DEFAULT_BOARD_TYPE
-    head = f"{int(no) if str(no).strip().isdigit() else no} - {size_label(width, width_unit, height, height_unit)} - {btype} - "
+    head = f"{sno_text(no) or 1} - {size_label(width, width_unit, height, height_unit)} - {btype} - "
     base = safe_filename(head + shop)
     if len(base) > MAX_BASE_LEN:
         base = base[:MAX_BASE_LEN].rstrip(" .-")
@@ -57,5 +71,5 @@ def signage_basename(no, width, width_unit, height, height_unit, board_type, nam
 
 def shop_basename(row: dict, no=None) -> str:
     """`signage_basename` for a `shops` table row; `no` is its S.no in the queue (default: the row's seq_no)."""
-    return signage_basename(no if no is not None else row.get("seq_no") or 1, row.get("width"), row.get("width_unit"),
+    return signage_basename(no if no not in (None, "") else row_sno(row), row.get("width"), row.get("width_unit"),
                             row.get("height"), row.get("height_unit"), row.get("board_type"), row.get("name"))

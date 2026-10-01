@@ -570,6 +570,14 @@ def release_instance(pid: int | None, success: bool) -> None:
         _quit_pooled()
 
 
+def will_quit_on_release(pid: int | None, success: bool) -> bool:
+    """Whether release_instance(pid, success) is about to quit that instance - a document kept open on it must be closed
+    first (quitting with an open, modified document could raise a save-changes prompt)."""
+    if os.environ.get("SIGNAGE_REUSE_COREL") == "1" or _Pool.pid != pid:
+        return False
+    return (not success) or _Pool.jobs_run >= recycle_n()
+
+
 def _quit_pool_at_exit() -> None:
     if _Pool.app is not None:
         logger.info("process exiting; quitting pooled CorelDRAW instance (pid %s)", _Pool.pid)

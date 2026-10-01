@@ -68,7 +68,7 @@ class SheetMeta:
 
 @dataclass
 class SheetShop:
-    no: int
+    no: int | str
     name: str
     width: float
     width_unit: str
@@ -111,7 +111,8 @@ def caption(shop: SheetShop, board_type: str) -> str:
     """`01 - 10 X 4 Inch - ACP BOARD - FAYAZ HARDWREAS (COLACHAL)` (the reference's caption format)."""
     wu, hu = UNIT_WORD.get(shop.width_unit, shop.width_unit), UNIT_WORD.get(shop.height_unit, shop.height_unit)
     size = f"{_num(shop.width)} X {_num(shop.height)} {wu}" if wu == hu else f"{_num(shop.width)} {wu} X {_num(shop.height)} {hu}"
-    parts = [f"{shop.no:02d}", size]
+    from .file_naming import sno_text
+    parts = [sno_text(shop.no, 2) or "01", size]
     if board_type.strip():
         parts.append(board_type.strip())
     parts.append(shop.name.strip())
