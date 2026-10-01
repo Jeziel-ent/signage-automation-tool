@@ -81,7 +81,8 @@ def _parse_line(line: str) -> ParsedShop | None:
     )
 
 
-_COPY_SUFFIX = re.compile(r"\s+-\s+copy(?:\s*\(\d+\))?$", re.IGNORECASE)
+# Windows copy suffixes on a file name: "Sri Sai cafe (1)", "VASANTHAM ENTERPRISES - Copy", "X - Copy (2)"
+_COPY_SUFFIX = re.compile(r"(?:\s+-\s+copy(?:\s*\(\d+\))?|\s*\(\d+\))\s*$", re.IGNORECASE)
 
 
 def shop_name_from_filename(filename: str | None) -> str | None:
@@ -92,7 +93,17 @@ def shop_name_from_filename(filename: str | None) -> str | None:
     shop = _parse_line(t) if t else None
     if shop is None:
         return None
-    return _COPY_SUFFIX.sub("", shop.name).strip() or None
+    return strip_copy_suffix(shop.name) or None
+
+
+def strip_copy_suffix(name: str | None) -> str:
+    """"Sri Sai cafe (1)" -> "Sri Sai cafe": Windows copy suffixes removed, repeatedly ("X (1) - Copy")."""
+    name = (name or "").strip()
+    while True:
+        stripped = _COPY_SUFFIX.sub("", name).strip()
+        if stripped == name:
+            return name
+        name = stripped
 
 
 def clean_shop_name(name: str | None) -> str:

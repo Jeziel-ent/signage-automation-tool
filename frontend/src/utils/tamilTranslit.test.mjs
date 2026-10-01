@@ -23,3 +23,11 @@ test("phonetic rules: doubled consonants, nasal assimilation, sh, final a / y", 
   assert.equal(phonetic("anish"), "அனிஷ்");
   assert.equal(phonetic("ranga"), "ரங்கா");
 });
+
+test("board words from the current masters and punctuation around words", async () => {
+  const { toTamil } = await import("./tamilTranslit.js");
+  assert.equal(toTamil("Asian Juice bar"), "ஏசியன் ஜூஸ் பார்");
+  assert.equal(toTamil("Sri Sai cafe"), "ஸ்ரீ சாய் கஃபே");
+  assert.equal(toTamil("Hangyo Ice Cream").endsWith("ஐஸ் கிரீம்"), true);
+  assert.equal(toTamil("Shenbagam Enterprises (Jothi maligai)"), "செண்பகம் எண்டர்பிரைசஸ் (ஜோதி மளிகை)");
+});

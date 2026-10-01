@@ -173,6 +173,49 @@ def write_cdr_zip(shops: list[ShopAssets], out_path: Path) -> dict:
 
 
 SINGLE_FORMATS = ("cdr", "jpg", "png", "pdf")
+MISSING_NOTE = "MISSING_FILES.txt"
+
+
+def _write_jpeg(src: Path, dst) -> None:
+    """A PNG as JPEG quality 95, transparency flattened onto white (the same conversion as the asset ZIP's root JPG)."""
+    from PIL import Image                        # lazily, like every other Pillow use in the app
+
+    Image.MAX_IMAGE_PIXELS = None
+    with Image.open(src) as im:
+        rgba = im.convert("RGBA")
+        flat = Image.new("RGB", rgba.size, (255, 255, 255))
+        flat.paste(rgba, mask=rgba.split()[-1])
+        flat.save(dst, "JPEG", quality=95, subsampling=0, dpi=im.info.get("dpi", (72, 72)))
+
+
+def write_format_zip(items: list[tuple[str, dict]], fmt: str, out_path: Path) -> dict:
+    """"Download All" in one format: `items` = (standard base name, pick_single(..., fmt) result) per shop. Every file sits
+    at the archive root as "<base>.<fmt>" - CDR/PDF/PNG copied as they are, a JPG an export's JPEG or a PNG re-encoded
+    (pick_single's `to_jpeg`). STORED: all four are already compressed. Shops without that format are listed, with the
+    reason, in MISSING_FILES.txt inside the archive (never faked). Returns {"shops", "files", "missing": [names]}."""
+    if fmt not in SINGLE_FORMATS:
+        raise ValueError(f"unknown format {fmt!r}")
+    missing, count, used = [], 0, set()
+    with zipfile.ZipFile(out_path, "w", zipfile.ZIP_STORED, allowZip64=True) as z:
+        for stem, src in items:
+            base, n = stem, 2
+            while base in used:                  # two shops with the same number and name
+                base = f"{stem} ({n})"
+                n += 1
+            used.add(base)
+            name = f"{base}.{fmt}"
+            if src.get("path") is None:
+                missing.append(f"{name} - {src.get('reason') or 'not available'}")
+                continue
+            if src.get("to_jpeg"):
+                with z.open(name, "w", force_zip64=True) as dst:
+                    _write_jpeg(Path(src["path"]), dst)
+            else:
+                z.write(src["path"], name)
+            count += 1
+        if missing:
+            z.writestr(MISSING_NOTE, "These shops have no " + fmt.upper() + " file:\r\n" + "\r\n".join(missing) + "\r\n")
+    return {"shops": len(items), "files": count, "missing": missing}
 
 
 def pick_single(out_dir: Path, conversion_files: dict | None, exports: list[dict], current_ops: list, fmt: str) -> dict:

@@ -123,6 +123,7 @@ def test_stretched_background_clip_keeps_its_foreground_in_proportion():
     # left it after the frame stretch) goes back to its original aspect at the smaller factor, same bottom edge.
     page = 6 * FT
     table = _Shape(200.0, 300.0, 600.0 * 2.0, 400.0 * 1.5)   # master: x 100..700 of 914 - clear of both edges
+    table.Type = CorelEngine.SHAPE_BITMAP
     backdrop = _Shape(-50.0, -50.0, page + 100, page + 100)
     offpage = _Shape(0.0, -900.0, 1200.0, 1000.0)
     clip = _Shape(0, 0, page, page, kids=[table, backdrop, offpage])
@@ -204,6 +205,7 @@ def test_clip_child_on_the_left_edge_stays_on_it():
     sx, sy, page_w, page_h = 4241.8 / 3175, 736.6 / 1219.2, 4241.8, 736.6
     ox, oy, ow, oh = -40.0, 150.0, 1450.0, 700.0
     table = _Shape(ox * sx, oy * sy, ow * sx, oh * sy)
+    table.Type = CorelEngine.SHAPE_BITMAP
     clip = _Shape(0, 0, page_w, page_h, kids=[table])
     assert CorelEngine._undistort_clip_contents(clip, sx, sy, page_w, page_h, []) == 1
     k = min(sx, sy)
@@ -216,6 +218,104 @@ def test_clip_child_on_the_right_edge_stays_on_it():
     ow, oh = 300.0, 200.0
     ox = 1000.0 - ow + 10.0                                           # 10 mm past the master's right edge (1000 wide)
     pack = _Shape(ox * sx, 50.0, ow * sx, oh * sy)
+    pack.Type = CorelEngine.SHAPE_BITMAP
     clip = _Shape(0, 0, page_w, page_h, kids=[pack])
     CorelEngine._undistort_clip_contents(clip, sx, sy, page_w, page_h, [])
     assert pack.LeftX + pack.SizeWidth == pytest.approx(page_w + 10.0)  # same 10 mm bleed at k = 1
+
+
+# ------------------------------------------------------------ a name the master spreads over several lines
+def test_split_name_lines_shares_words_in_order():
+    from app.layout import split_name_lines as split
+    assert split("அசிஅன் ஜுஇச் பர்", ["ஏசியன்", "ஜூஸ் பார்"]) == ["அசிஅன்", "ஜுஇச் பர்"]
+    assert split("ANISH STORES", ["ஏசியன்", "ஜூஸ் பார்"]) == ["ANISH", "STORES"]
+    assert split("KALKEE", ["A", "B C"]) == ["KALKEE", ""]               # the unused line is removed by the engine
+    assert split("A B C D E", ["one", "two", "three"]) == ["A", "B", "C D E"]   # by length: "three" holds the most
+    assert split("ஸ்ரீ முருகன் ஜூஸ் கார்னர்", ["ஏசியன்", "ஜூஸ் பார்"]) == ["ஸ்ரீ முருகன்", "ஜூஸ் கார்னர்"]   # no lone huge "ஸ்ரீ"
+    assert split("ONE LINE", ["only"]) == ["ONE LINE"]
+
+
+def test_hangyo_asian_juice_bar_board_layout():
+    # the real master: two Tamil lines (big top, smaller below) + one English line in capitals
+    objs = [Obj("1", "a", "text", 1805, 35, 1244, 152, "ASIAN JUICE BAR"),
+            Obj("2", "b", "text", 1841, 262, 1184, 212, "ஜூஸ் பார்"),
+            Obj("3", "c", "text", 1654, 481, 1553, 401, "ஏசியன்")]
+    placed = {p.id: p for p in compute_layout(objs, 4876.8, 914.4, 4876.8, 914.4, shop_name="Asian Juice bar",
+                                              shop_name_local="ஏசியன் ஜூஸ் பார்", shopname_ids={"1", "2", "3"})}
+    assert placed["3"].text == "ஏசியன்" and placed["2"].text == "ஜூஸ் பார்"      # top line first, not the whole name twice
+    assert placed["3"].no_wrap and placed["2"].no_wrap
+    assert placed["1"].text == "ASIAN JUICE BAR" and not placed["1"].no_wrap  # capitals kept, single line wraps as before
+
+
+def test_mixed_case_master_line_keeps_typed_case():
+    objs = [Obj("1", "a", "text", 0, 0, 100, 20, "Sri Kanniyamman Stores")]
+    placed = compute_layout(objs, 1000, 500, 1000, 500, shop_name="Anish stores", shopname_ids={"1"})
+    assert placed[0].text == "Anish stores"
+
+
+def test_empty_split_line_is_deleted_and_split_lines_do_not_wrap():
+    class _Story:
+        Text, Font, Size = "x", "Arial", 100.0
+
+    class _T:
+        def __init__(self):
+            self.Story = _Story()
+
+    class _S:
+        def __init__(self):
+            self.Text, self.deleted, self.SizeWidth = _T(), False, 500.0
+
+        def Delete(self):
+            self.deleted = True
+
+    gone = _S()
+    CorelEngine._set_replacement_text(gone, layout.Placed("9", "n", "shopname", 0, 0, 100, 10, text="", no_wrap=True))
+    assert gone.deleted
+    wide = _S()                                    # 500 mm wide in a 100 mm box: shrinks, but must not gain a line
+    CorelEngine._fit_text(wide, 100.0, [], allow_wrap=False)
+    assert "\r" not in wide.Text.Story.Text
+
+
+def test_vector_panels_in_the_background_clip_stretch_with_it():
+    # the Hangyo board's white centre panel is a plain vector shape: it must stretch with the frame, not shrink
+    panel = _Shape(1000.0 * 0.75, 0.0, 2000.0 * 0.75, 914.0)
+    clip = _Shape(0, 0, 3658, 914, kids=[panel])
+    assert CorelEngine._undistort_clip_contents(clip, 0.75, 1.0, 3658, 914, []) == 0
+    assert panel.SizeHeight == 914.0 and panel.SizeWidth == 1500.0
+
+
+def test_text_too_wide_even_at_the_font_floor_is_scaled_to_its_box():
+    class _Story:
+        Text, Font, Size = "ஸ்ரீ முருகன்", "Latha", 40.0          # below the 52 pt floor: the font loop cannot help
+
+    class _T:
+        Story = _Story()
+
+    class _S:
+        Text = _T()
+        LeftX, BottomY, SizeWidth, SizeHeight = 0.0, 100.0, 2000.0, 400.0
+
+        def SetSize(self, w, h):
+            self.SizeWidth, self.SizeHeight = w, h
+
+    s, w = _S(), []
+    CorelEngine._fit_text(s, 1000.0, w, allow_wrap=False)
+    assert s.SizeWidth == 1000.0 and s.SizeHeight == 200.0             # uniform, to the box width
+    assert s.LeftX + s.SizeWidth / 2 == 1000.0 and s.BottomY + s.SizeHeight / 2 == 300.0   # same centre
+    assert not w
+
+
+def test_one_text_broken_over_lines_keeps_its_line_count():
+    # the Sri Sai cafe master: its only shop-name text is Tamil, on two lines inside ONE shape
+    objs = [Obj("1", "a", "text", 132, 721, 648, 303, "ஸ்ரீ சாய்\rகஃபே")]
+    p = compute_layout(objs, 914.4, 1828.8, 914.4, 1828.8, shop_name="Om Guru Sweets & Bakery",
+                       shop_name_local="ஓம் குரு ஸ்வீட்ஸ் அண்ட் பேக்கரி",
+                       shopname_ids=layout.find_shopname_ids(objs, "Sri Sai cafe", "ஸ்ரீ சாய் கஃபே"))[0]
+    assert p.text.split("\r") == ["ஓம் குரு ஸ்வீட்ஸ்", "அண்ட் பேக்கரி"] and p.no_wrap
+
+
+def test_a_tie_in_line_length_follows_the_masters_line_shape():
+    from app.layout import split_name_lines as split
+    # "ஸ்ரீ | சாய் கஃபே" and "ஸ்ரீ சாய் | கஃபே" share the longest line; the master "நியூ சென்னை / பேக்கரி" has the longer
+    # top line, so the second wins - no lone "ஸ்ரீ" on the first line (seen on the New Chennai bakery 3x6 ft board)
+    assert split("ஸ்ரீ சாய் கஃபே", ["நியூ சென்னை", "பேக்கரி"], even=True) == ["ஸ்ரீ சாய்", "கஃபே"]

@@ -26,7 +26,7 @@ from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
 from . import file_naming
-from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename
+from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename, strip_copy_suffix
 from .engines import get_engine
 from .layout import to_mm
 
@@ -347,6 +347,9 @@ def _validated_master_ids(payload: dict, job: dict) -> dict:
     return out
 
 
+SHOP_LANGUAGES = ("both", "en", "ta")
+
+
 def _parse_shop_payload(payload: dict) -> dict:
     """Validate one shop body (single add and every row of a batch share this). Raises ValueError with a
     readable reason. Optional contact fields go through `.strip() or None`: compute_layout treats None as
@@ -370,6 +373,10 @@ def _parse_shop_payload(payload: dict) -> dict:
     def opt(key):
         return (str(payload.get(key) or "")).strip() or None
 
+    language = (opt("language") or "both").lower()
+    if language not in SHOP_LANGUAGES:
+        raise ValueError("language must be one of both / en / ta")
+
     return {"name": name, "width": width, "width_unit": width_unit, "height": height, "height_unit": height_unit,
             "reference": opt("reference"),
             # No upload UI for this yet (see CLAUDE.md "New UI") - accepted so the data model needs no migration later.
@@ -382,7 +389,9 @@ def _parse_shop_payload(payload: dict) -> dict:
             # fonts for the replaced English / Tamil shop names (blank = the master's own / layout.TAMIL_FONT)
             "font_en": opt("font_en"), "font_ta": opt("font_ta"),
             # the Excel sheet the row came from (the Shops Queue's sheet tabs)
-            "sheet_name": opt("sheet_name")}
+            "sheet_name": opt("sheet_name"),
+            # which shop-name line(s) the board shows: both (default) / en / ta - engines.CorelEngine._apply_language
+            "language": None if language == "both" else language}
 
 
 def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
@@ -392,7 +401,7 @@ def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
                    fields["height_unit"], fields["reference"], fields["reference_file_path"], fields["phone"],
                    fields["gst"], fields["address"], master_ids["landscape_master_id"], master_ids["portrait_master_id"],
                    fields.get("shop_name_local"), fields.get("board_type"), fields.get("font_en"), fields.get("font_ta"),
-                   fields.get("sheet_name"))
+                   fields.get("sheet_name"), fields.get("language"))
     return db.get_shop(shop_id)
 
 
@@ -413,7 +422,7 @@ def v2_add_shop(job_id: str, payload: dict):
 
 
 EDITABLE_SHOP_KEYS = ("name", "width", "width_unit", "height", "height_unit", "unit", "phone", "gst", "address",
-                      "shop_name_local", "board_type", "font_en", "font_ta", "sheet_name")
+                      "shop_name_local", "board_type", "font_en", "font_ta", "sheet_name", "language")
 
 
 def _apply_shop_edits(shop_row: dict, payload: dict) -> None:
@@ -598,13 +607,16 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
             shop_dict["address_lines"] = address_lines
     if shop_row.get("shop_name_local"):
         shop_dict["shop_name_local"] = shop_row["shop_name_local"]
+    if shop_row.get("language") in ("en", "ta"):
+        shop_dict["language"] = shop_row["language"]
     # No font_en / font_ta from the queue: conversions keep the master's own fonts (fonts are changed in the Signage Editor).
     # Values a row may still carry from the old queue font pickers are deliberately NOT forwarded.
     master_path, master_used = _select_shop_master(shop_row, job_row, shop_dict["width"], shop_dict["height"])
     # What the CHOSEN master currently shows as its shop name - how the engine finds the text shape to overwrite on an
     # untagged master (layout.find_shopname_ids); a `shopname`-tagged shape is used regardless.
     mrow = db.get_job(master_used["job_id"]) or job_row
-    master_name = mrow.get("master_shop_name") or shop_name_from_filename(mrow.get("master_filename"))
+    # stored before copy suffixes were stripped ("Sri Sai cafe (1)") - stripped here too
+    master_name = strip_copy_suffix(mrow.get("master_shop_name")) or shop_name_from_filename(mrow.get("master_filename"))
     if master_name:
         shop_dict["master_shop_name"] = master_name
     if mrow.get("master_shop_name_local"):
@@ -615,10 +627,20 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
     return {"master_path": str(master_path), "shop": shop_dict, "out_dir": str(out_dir)}, master_used
 
 
+def _attach_master_used(report: dict, master_used: dict) -> None:
+    """Record which master a board came from; a board made from the OTHER orientation's master (a 16x3 ft design in a
+    3x6 ft board, because no master of its own orientation was uploaded) does not fit, and the report says so."""
+    report["master_used"] = master_used
+    if master_used.get("fallback"):
+        report.setdefault("warnings", []).append(
+            f"made from the {master_used.get('orientation')} master because no master of this board's orientation was "
+            "uploaded - the layout will not fit; upload a matching master and convert again")
+
+
 def _store_convert_result(shop_id: str, entry: dict, master_used: dict) -> None:
     if entry.get("status") == "done":
         out = entry["result"]
-        out["report"]["master_used"] = master_used
+        _attach_master_used(out["report"], master_used)
         db.set_shop_result(shop_id, out["files"], out["report"])
     else:
         db.set_shop_status(shop_id, "failed", error=entry.get("error", "unknown error"))
@@ -664,7 +686,7 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         try:
             job, master_used = _convert_job(shop_id)
             out = engine.process(Path(job["master_path"]), job["shop"], Path(job["out_dir"]))
-            out["report"]["master_used"] = master_used
+            _attach_master_used(out["report"], master_used)
             db.set_shop_result(shop_id, out["files"], out["report"])
         except Exception as e:
             db.set_shop_status(shop_id, "failed", error=str(e))
@@ -1134,6 +1156,52 @@ def export_zip(body: AssetZipRequest):
 CDR_ZIP_NAME = "All_CDR_Files.zip"
 
 
+ALL_ZIP_NAMES = {"cdr": CDR_ZIP_NAME, "pdf": "All_PDF_Files.zip", "jpg": "All_JPG_Files.zip", "png": "All_PNG_Files.zip"}
+
+
+@app.get("/api/v2/download-all")
+def v2_download_all(ids: str, format: str = "cdr", nos: str | None = None):
+    """"Download All": one ZIP of every listed converted shop's file in ONE format (`format` = cdr | pdf | jpg | png), each at
+    the archive root under its standard name ("01 - 125 X 48 Inch - Nonlit - SHOP.pdf"). `ids` = comma-separated shop ids;
+    `nos` = their S.no in the queue, same order (default: each shop's own). Each file is chosen exactly like the row's
+    Download popup (asset_zip.pick_single: the newest editor export of the shop's current edits, else the conversion's
+    file; a JPG may be the PNG re-encoded). Files that do not exist are listed in MISSING_FILES.txt inside the ZIP. A plain
+    GET so the browser streams it to disk; the temp archive is deleted once sent. 409 when no shop has that format."""
+    from . import asset_zip
+
+    fmt = (format or "").strip().lower()
+    if fmt == "jpeg":
+        fmt = "jpg"
+    if fmt not in asset_zip.SINGLE_FORMATS:
+        raise HTTPException(422, "format must be one of cdr, pdf, jpg, png")
+    shop_ids = [s for s in dict.fromkeys(x.strip() for x in ids.split(",")) if s]
+    if not shop_ids:
+        raise HTTPException(422, "no shops given")
+    if len(shop_ids) > 500:
+        raise HTTPException(422, "at most 500 shops per download")
+    numbers = [x.strip() for x in nos.split(",")] if nos else []   # S.Nos, numeric or not ("76", "SL-01")
+    items = []
+    for k, sid in enumerate(shop_ids):
+        row = db.get_shop(sid)
+        if not row:
+            raise HTTPException(404, f"shop {sid} not found")
+        if row["status"] != "done":
+            continue
+        no = numbers[k] if k < len(numbers) and numbers[k] not in ("", "0") else file_naming.row_sno(row)
+        items.append((file_naming.shop_basename(row, no), _single_sources(row, fmt)))
+    if not any(src["path"] is not None for _, src in items):
+        raise HTTPException(409, f"none of these shops has a {fmt.upper()} file yet")
+    tmp = tempfile.NamedTemporaryFile(prefix=f"all_{fmt}_", suffix=".zip", delete=False)
+    tmp.close()
+    try:
+        asset_zip.write_format_zip(items, fmt, Path(tmp.name))
+    except Exception:
+        Path(tmp.name).unlink(missing_ok=True)
+        raise
+    return FileResponse(tmp.name, media_type="application/zip", filename=ALL_ZIP_NAMES[fmt],
+                        background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
+
+
 @app.get("/api/v2/download-cdrs")
 def v2_download_cdrs(ids: str, nos: str | None = None):
     """"Download All CDRs": one ZIP of the CDR (vector source) of every listed converted shop, each under its standard
@@ -1562,8 +1630,8 @@ def _scene_progress(shop_id: str) -> dict:
 
 def _needs_powerclip_images(scene: dict) -> bool:
     """A scene cached before version 3 has PowerClips whose children carry no images (v1) or empty
-    SVGs (v2), so the editor could only outline them or drew them as nothing; rebuild it once
-    (boards without a PowerClip are untouched)."""
+    SVGs (v2), so the editor could only outline them or drew them as nothing; before version 4 the frame's own fill was
+    missing (frame_image) - pink panels drawn white. Rebuild it once (boards without a PowerClip are untouched)."""
     if scene.get("version", 1) >= scene_export.SCENE_VERSION:
         return False
     return any(n.get("kind") == "powerclip" for n in scene_ops.iter_nodes(scene))

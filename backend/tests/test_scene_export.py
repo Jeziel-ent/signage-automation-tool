@@ -386,3 +386,33 @@ def test_powerclip_records_whether_its_frame_is_an_axis_aligned_rectangle(tmp_pa
     by_id = {n["id"]: n for n in scene_ops.iter_nodes(scene)}
     assert by_id[f"s{rect.StaticID}"]["frame_rect"] is True
     assert by_id[f"s{ellipse.StaticID}"]["frame_rect"] is False
+
+
+def test_a_powerclip_frame_is_exported_on_its_own_for_the_editor(tmp_path):
+    # The editor draws a live PowerClip as its contents in a clip path; the frame's own fill came from nowhere, so the
+    # Hangyo board's pink side panels (the frame's fill) drew as white. The frame is now exported from a duplicate whose
+    # contents are deleted - frame_image - and the duplicate is deleted afterwards.
+    doc, curve, dup, events = _clip_doc()
+    clip = doc.ActivePage.Layers.Item(1).Shapes.Item(1)
+    inner = Shape(CURVE, -50, -50, 400, 100)
+    inner.Delete = lambda: events.append("frame contents deleted")
+    frame_dup = Shape(RECT, 0, 0, 100, 100, powerclip=[inner])
+    frame_dup.MoveToLayer = lambda layer: events.append("frame moved")
+    frame_dup.Delete = lambda: events.append("frame deleted")
+    _select_hook(frame_dup, doc)
+    clip.Duplicate = lambda: (events.append("frame dup"), frame_dup)[1]
+    clip.Layer = "the-layer"
+    scene = scene_export.export_scene(doc, tmp_path)
+    node = next(n for n in scene_ops.iter_nodes(scene) if n["kind"] == "powerclip")
+    assert node["frame_image"] == {"file": f"s{clip.StaticID}_frame.svg", "format": "svg"}
+    assert events[-4:] == ["frame dup", "frame moved", "frame contents deleted", "frame deleted"]
+    assert scene["version"] == scene_export.SCENE_VERSION == 4
+
+
+def test_a_frame_export_failure_only_leaves_the_frame_image_out(tmp_path):
+    doc, curve, dup, events = _clip_doc()
+    clip = doc.ActivePage.Layers.Item(1).Shapes.Item(1)
+    clip.Duplicate = lambda: (_ for _ in ()).throw(RuntimeError("no duplicate"))
+    scene = scene_export.export_scene(doc, tmp_path)
+    node = next(n for n in scene_ops.iter_nodes(scene) if n["kind"] == "powerclip")
+    assert "frame_image" not in node and node["image"]                     # the flat render is still there

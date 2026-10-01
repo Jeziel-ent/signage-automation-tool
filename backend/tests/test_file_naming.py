@@ -89,3 +89,39 @@ def test_generate_zip_members_use_the_standard_name(client):
     assert r.status_code == 200
     z = zipfile.ZipFile(io.BytesIO(client.get(r.json()["download"]).content))
     assert "CDR&PDF/cdr/3 - 10 X 4 Feet - Backlit - Alpha.cdr" in z.namelist()
+
+
+def test_download_all_in_one_chosen_format(client):
+    job = _upload(client)["id"]
+    a = _converted(client, job, "Alpha", 1)
+    b = _converted(client, job, "Beta", 2, "Nonlit")
+    ids = f"{a['id']},{b['id']}"
+    r = client.get(f"/api/v2/download-all?format=CDR&ids={ids}&nos=SL-1,76")
+    assert r.status_code == 200 and _download_name(r) == "All_CDR_Files.zip"
+    names = sorted(zipfile.ZipFile(io.BytesIO(r.content)).namelist())
+    assert names == ["76 - 10 X 4 Feet - Nonlit - Beta.cdr", "SL-1 - 10 X 4 Feet - Backlit - Alpha.cdr"]
+    # MockEngine makes no PDF and only an SVG preview: nothing to bundle -> 409, never a faked file
+    for fmt in ("pdf", "png", "jpg"):
+        assert client.get(f"/api/v2/download-all?format={fmt}&ids={ids}").status_code == 409, fmt
+    assert client.get(f"/api/v2/download-all?format=svg&ids={ids}").status_code == 422
+    # the old "Download All CDRs" link still works
+    assert client.get(f"/api/v2/download-cdrs?ids={ids}").status_code == 200
+
+
+def test_format_zip_reencodes_png_as_jpg_and_lists_missing(tmp_path):
+    from PIL import Image
+
+    from app.asset_zip import MISSING_NOTE, write_format_zip
+
+    png = tmp_path / "p.png"
+    Image.new("RGBA", (40, 20), (255, 0, 0, 0)).save(png)            # fully transparent -> white in the JPG
+    out = tmp_path / "all.zip"
+    s = write_format_zip([("1 - A", {"path": png, "to_jpeg": True}), ("1 - A", {"path": png, "to_jpeg": True}),
+                          ("2 - B", {"path": None, "reason": "no raster image of this board exists"})], "jpg", out)
+    assert s["files"] == 2 and len(s["missing"]) == 1
+    z = zipfile.ZipFile(out)
+    assert sorted(z.namelist()) == ["1 - A (2).jpg", "1 - A.jpg", MISSING_NOTE]
+    assert all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist())
+    with Image.open(io.BytesIO(z.read("1 - A.jpg"))) as im:
+        assert im.format == "JPEG" and im.getpixel((5, 5)) == (255, 255, 255)
+    assert "2 - B.jpg - no raster image" in z.read(MISSING_NOTE).decode()

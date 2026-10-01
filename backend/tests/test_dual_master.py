@@ -216,3 +216,13 @@ def test_same_orientation_fit_endpoint(client):
     assert r.status_code == 200
     k = min(24 / 30, 36 / 40)
     assert _box(r.json()["scene"], "prod")["w"] == pytest.approx(_box(scene, "prod")["w"] * k, rel=1e-3)
+
+
+def test_a_fallback_master_board_is_flagged_in_its_report():
+    import app.main as main
+    rep = {"warnings": []}
+    main._attach_master_used(rep, {"job_id": "L", "orientation": "landscape", "reason": "...", "fallback": True})
+    assert rep["master_used"]["fallback"] and "layout will not fit" in rep["warnings"][0]
+    rep = {}
+    main._attach_master_used(rep, {"job_id": "P", "orientation": "portrait", "fallback": False})
+    assert "warnings" not in rep

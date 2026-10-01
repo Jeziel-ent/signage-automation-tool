@@ -12,10 +12,35 @@ export function shopPayload(x) {
     ...(x.board_type ? { board_type: x.board_type } : {}),
     // its Excel sheet. No font fields: conversions keep the master's own fonts (fonts are changed in the Signage Editor)
     ...(x.sheet_name ? { sheet_name: x.sheet_name } : {}),
+    // which shop-name line(s) the board shows: "both" (default) / "en" / "ta" - always sent, so switching back to Both
+    // also reaches a saved row
+    language: LANGUAGES.some((l) => l.value === x.language) ? x.language : "both",
+    // the chosen Master 1 / 2 of the row's orientation (utils/masters.js) - kept with the row through saving
+    ...(x.master_slot ? { master_slot: x.master_slot } : {}),
+    // the imported sheet's own S.No, when it had one - output files are numbered by it
+    ...(rowSnoValue(x) ? { sno: rowSnoValue(x) } : {}),
     width: x.width === "" || x.width == null ? "" : +x.width,
     height: x.height === "" || x.height == null ? "" : +x.height,
     unit: x.unit || "in",
   };
+}
+
+/** The per-row Language choice: which shop-name line(s) the converted board shows. */
+export const LANGUAGES = [
+  { value: "both", label: "Both" },
+  { value: "en", label: "English Only" },
+  { value: "ta", label: "Tamil Only" },
+];
+
+/** A row's own S.No (from the imported sheet, or as saved on the server), "" when it has none. */
+export function rowSnoValue(x) {
+  return String(x?.sno ?? x?.sno_label ?? "").trim();
+}
+
+/** The S.No the Shops table shows for a row and its files are numbered by: the sheet's own serial ("76", "SL-01") when
+ *  the row had one, else its 1-based position `index + 1`. */
+export function rowSno(x, index) {
+  return rowSnoValue(x) || index + 1;
 }
 
 let draftCounter = 0;
@@ -28,6 +53,9 @@ export function toDraftRow(parsed) {
   return {
     id: `draft-${Date.now().toString(36)}-${draftCounter}`,
     name: parsed.name,
+    ...(rowSnoValue(parsed) ? { sno: rowSnoValue(parsed) } : {}),
+    ...(parsed.master_slot ? { master_slot: parsed.master_slot } : {}),
+    ...(parsed.language && parsed.language !== "both" ? { language: parsed.language } : {}),
     ...(parsed.shop_name_local ? { shop_name_local: parsed.shop_name_local } : {}),
     ...(parsed.board_type ? { board_type: parsed.board_type } : {}),
     ...(parsed.sheet_name ? { sheet_name: parsed.sheet_name } : {}),
@@ -55,7 +83,7 @@ export function resetForNewMaster(shops) {
   const out = shops.map((x) => {
     if (isDraft(x) && (x.status === "new" || !x.status)) return x;
     reset += 1;
-    return toDraftRow({ name: x.name, shop_name_local: x.shop_name_local, board_type: x.board_type, sheet_name: x.sheet_name,
+    return toDraftRow({ name: x.name, sno: rowSnoValue(x), master_slot: x.master_slot, language: x.language, shop_name_local: x.shop_name_local, board_type: x.board_type, sheet_name: x.sheet_name,
       ta_auto: x.ta_auto, width: x.width, height: x.height, unit: x.unit || x.width_unit || "in", unitSource: x.unitSource });
   });
   return { shops: out, reset };

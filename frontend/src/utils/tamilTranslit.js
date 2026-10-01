@@ -31,6 +31,15 @@ const WORDS = {
   ANNAI: "அன்னை", VELAN: "வேலன்", SELVAM: "செல்வம்", RAJ: "ராஜ்", KUMAR: "குமார்", AL: "அல்", MADEENA: "மதீனா",
   MADINA: "மதீனா", THE: "தி", OF: "ஆஃப்", DEALER: "டீலர்", DEALERS: "டீலர்ஸ்", AGRO: "அக்ரோ", FARM: "பார்ம்",
   FERTILIZERS: "பெர்டிலைசர்ஸ்", STATIONERY: "ஸ்டேஷனரி", STATIONERS: "ஸ்டேஷனர்ஸ்", BOOK: "புக்", BOOKS: "புக்ஸ்",
+  // food & drink, cafes and other common board words (their Tamil spelling is not phonetic from the English letters)
+  ASIAN: "ஏசியன்", JUICE: "ஜூஸ்", JUICES: "ஜூஸ்", BAR: "பார்", CAFE: "கஃபே", CAFÉ: "கஃபே", COFFEE: "காபி", TEA: "டீ",
+  ICE: "ஐஸ்", CREAM: "கிரீம்", ICECREAM: "ஐஸ்கிரீம்", PARLOUR: "பார்லர்", PARLOR: "பார்லர்", FRESH: "ஃப்ரெஷ்",
+  FRUITS: "ஃப்ரூட்ஸ்", FRUIT: "ஃப்ரூட்", SHAKE: "ஷேக்", SHAKES: "ஷேக்ஸ்", SNACKS: "ஸ்நாக்ஸ்", CHAT: "சாட்",
+  FAST: "ஃபாஸ்ட்", FOOD: "ஃபுட்", FOODS: "ஃபுட்ஸ்", BAKES: "பேக்ஸ்", BAKERS: "பேக்கர்ஸ்", CAKES: "கேக்ஸ்", CAKE: "கேக்",
+  STALL: "ஸ்டால்", CORNER: "கார்னர்", POINT: "பாயிண்ட்", ZONE: "ஜோன்", SPOT: "ஸ்பாட்", KITCHEN: "கிச்சன்",
+  CHICKEN: "சிக்கன்", BIRYANI: "பிரியாணி", MESS: "மெஸ்", NAMMA: "நம்ம", MALIGAI: "மளிகை", JOTHI: "ஜோதி",
+  SAI: "சாய்", SHENBAGAM: "செண்பகம்", SUPPLIERS: "சப்ளையர்ஸ்", DISTRIBUTORS: "டிஸ்ட்ரிபியூட்டர்ஸ்", SERVICES: "சர்வீசஸ்",
+  SERVICE: "சர்வீஸ்", FASHION: "ஃபேஷன்", FASHIONS: "ஃபேஷன்ஸ்", COLLECTIONS: "கலெக்ஷன்ஸ்", GIFTS: "கிஃப்ட்ஸ்",
   STAR: "ஸ்டார்", TAMIL: "தமிழ்", TAMILNADU: "தமிழ்நாடு", NADU: "நாடு", MAHAL: "மஹால்", VILAS: "விலாஸ்", DEPOT: "டிப்போ", HALL: "ஹால்", PALACE: "பேலஸ்", WORLD: "வேர்ல்ட்", HOUSE: "ஹவுஸ்", HOME: "ஹோம்", CITY: "சிட்டி",
 };
 
@@ -127,7 +136,12 @@ export function phonetic(word) {
   return out;
 }
 
+// brackets, commas and quotes stuck to a word ("(Jothi", "maligai)") are kept around its Tamil form, not fed into it
+const WRAP_RE = /^([()[\]{},;:!?"'“”‘’]*)(.*?)([()[\]{},;:!?"'“”‘’]*)$/;
+
 function word(token) {
+  const [, lead, core, trail] = WRAP_RE.exec(token);
+  if ((lead || trail) && core) return lead + word(core) + trail;
   const up = token.toUpperCase();
   if (WORDS[up]) return WORDS[up];
   if (!/[A-Z]/.test(up)) return token; // digits, punctuation, anything already Tamil

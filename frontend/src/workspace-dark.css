@@ -341,3 +341,19 @@
 .app-shell .sd-btn:hover:not(.disabled) { background: linear-gradient(to right, #dc2626, #e11d48); border-color: transparent; color: #fff; }
 .app-shell .sd-loading { color: #94a3b8; }
 .app-shell .sd-notes { color: #fcd34d; }
+/* output preview gallery (Eye icon) + the master modules, on the dark workspace */
+.app-shell .pg-item { background: rgba(2, 6, 23, 0.4); border-color: var(--ws-border); }
+.app-shell .pg-item a { background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 18px 18px; }
+.app-shell .pg-item figcaption, .app-shell .pg-empty, .app-shell .pg-hint { color: var(--ws-muted); }
+.app-shell .pg-item figcaption strong { color: var(--ws-strong); }
+.app-shell .pg-open { color: var(--ws-text); }
+.app-shell .mc-module-head h3 { color: var(--ws-strong); }
+/* queue gallery on the dark workspace */
+.app-shell .qg-search { border-color: var(--ws-border); color: var(--ws-muted); }
+.app-shell .qg-card { background: rgba(2, 6, 23, 0.4); border-color: var(--ws-border); }
+.app-shell .qg-thumb { background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 18px 18px; }
+.app-shell .qg-card figcaption { color: var(--ws-muted); }
+.app-shell .qg-name, .app-shell .qg-light-cap { color: var(--ws-strong); }
+.app-shell .qg-ta { color: var(--ws-text); }
+.app-shell .qg-dl a { border-color: var(--ws-border-hover); color: var(--ws-text); }
+.app-shell .qg-dl a:hover { border-color: var(--ws-accent); color: #fca5a5; }

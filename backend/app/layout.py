@@ -99,6 +99,9 @@ class Placed:
     font: str | None = None  # font to set alongside `text` (e.g. for Tamil content)
     bring_to_front: bool = False  # CorelEngine should call Shape.OrderToFront() after positioning this shape
     recolor_cmyk: tuple | None = None  # CorelEngine should set this shape's uniform fill to this (c, m, y, k)
+    # one line of a shop name the master spreads over several text shapes (split_name_lines): CorelEngine only shrinks it to
+    # fit, never wraps it onto an extra line (a wrapped line grows down over whatever sits below it)
+    no_wrap: bool = False
 
     def to_dict(self):
         return asdict(self)
@@ -266,6 +269,7 @@ def compute_layout(
                 shopname_objs, new_w, new_h, panel_scale, shop_name, shop_name_local,
             ))
 
+    _distribute_shopname_lines(out, objects)
     return out
 
 
@@ -892,23 +896,116 @@ def _contact_replacement(o: Obj, phone: str | None, gst: str | None,
     return text
 
 
+def _norm_name(text: str) -> str:
+    """For comparing shop names: lower case, every run of whitespace (incl. CorelDRAW's \r line breaks) as one space."""
+    return " ".join((text or "").split()).lower()
+
+
 def find_shopname_ids(objects: list[Obj], *old_names: str | None) -> set[str]:
     """Best-effort match for untagged masters: find top-level text objects
     whose content matches one of the master's known old shop-name strings
     (case-insensitive, either containing the other). Returns an id set to
     pass to `compute_layout(..., shopname_ids=...)`.
     """
-    hints = [h.strip().lower() for h in old_names if h and h.strip()]
+    hints = [_norm_name(h) for h in old_names if h and h.strip()]
     if not hints:
         return set()
     matches = set()
     for o in objects:
         if o.kind != "text" or not o.text:
             continue
-        t = o.text.strip().lower()
+        t = _norm_name(o.text)
         if any(t and h and (h in t or t in h) for h in hints):
             matches.add(o.id)
     return matches
+
+
+def split_name_lines(new_text: str, original_lines: list[str], even: bool = False) -> list[str]:
+    """Spread a new shop name over the lines a master uses for its old one, top line first.
+
+    A master may write one name over several text shapes of the same script (the Hangyo "Asian Juice bar" board: big
+    "ஏசியன்" over "ஜூஸ் பார்"). Writing the WHOLE new name into each line repeated it, and the fitter then wrapped the
+    over-long top line down over the artwork below. Instead the new name's words are shared out in order, one or more per
+    line, choosing the cut points that keep every line closest to the LENGTH its master line had (minimising the largest
+    new/old length ratio) - so the big top line gets about as much text as it held: "ஸ்ரீ முருகன் | ஜூஸ் கார்னர்", not a
+    lone huge "ஸ்ரீ". Fewer words than lines: one word per line from the top, the rest "" (the caller removes them)."""
+    k = len(original_lines)
+    words = (new_text or "").split()
+    if k <= 1:
+        return [new_text or ""]
+    if len(words) <= 1:
+        return [new_text or ""] + [""] * (k - 1)
+    if len(words) <= k:
+        return words + [""] * (k - len(words))
+    # even=True: lines of ONE text share a font size, so only the longest line matters - balance them evenly
+    orig = [max(1, len((t or "").strip())) for t in original_lines]
+    caps = [1] * k if even else orig
+    n = len(words)
+
+    def length(i, j):                       # characters of words[i:j] joined by spaces
+        return sum(len(w) for w in words[i:j]) + (j - i - 1)
+
+    # Every way to cut the words into k non-empty lines, in order (names are a few words, so this is small). Ranked by
+    # the largest new/old length ratio; ties - common in "even" mode, where e.g. "ஸ்ரீ | சாய் கஃபே" and "ஸ்ரீ சாய் | கஃபே"
+    # have the same longest line - go to the cut closest to the master's own line lengths (a longer top line on a master
+    # written "நியூ சென்னை / பேக்கரி"), so a lone short word is not left on a line by itself.
+    from itertools import combinations
+    best_key, best_cuts = None, None
+    for inner in combinations(range(1, n), k - 1):
+        cuts = inner + (n,)
+        spans, i = [], 0
+        for j in cuts:
+            spans.append(length(i, j))
+            i = j
+        key = (round(max(L / c for L, c in zip(spans, caps)), 9), max(L / c for L, c in zip(spans, orig)))
+        if best_key is None or key < best_key:
+            best_key, best_cuts = key, cuts
+    lines, i = [], 0
+    for j in best_cuts:
+        lines.append(" ".join(words[i:j]))
+        i = j
+    return lines
+
+
+def _match_case(new: str, original: str | None) -> str:
+    """A master line written in capitals ("ASIAN JUICE BAR") gets the new name in capitals too; any other casing is kept as
+    typed. Only letters with case count (Tamil has none)."""
+    cased = [c for c in (original or "") if c.isalpha() and c.lower() != c.upper()]
+    if new and cased and all(c.isupper() for c in cased) and len(cased) >= 2:
+        return new.upper()
+    return new
+
+
+def _distribute_shopname_lines(placed: list[Placed], objects: list[Obj]) -> None:
+    """compute_layout's last step for shop names: per script (Tamil / not), when the master spread the name over several
+    shapes, each gets its own part (split_name_lines, top to bottom) instead of the whole name, and is not wrapped; a
+    capitals-only master line gets capitals."""
+    by_id = {o.id: o for o in objects}
+    names = [p for p in placed if p.role == "shopname" and p.text is not None and p.id in by_id]
+    for p in names:
+        if not is_tamil(by_id[p.id].text):
+            p.text = _match_case(p.text, by_id[p.id].text)
+    for tamil in (True, False):
+        group = [p for p in names if is_tamil(by_id[p.id].text) == tamil]
+        texts = {p.text for p in group}
+        if len(group) == 1:
+            # ONE text broken over several lines on the master (Sri Sai cafe: "ஸ்ரீ சாய்" / "கஃபே" in one shape): the new
+            # name keeps that many lines inside the shape, split by length, instead of one long line shrunk small
+            p = group[0]
+            old_lines = [ln for ln in re.split(r"[\r\n\v]+", by_id[p.id].text or "") if ln.strip()]
+            if len(old_lines) > 1 and p.text:
+                parts = [x for x in split_name_lines(p.text, old_lines, even=True) if x]
+                if len(parts) > 1:
+                    p.text = "\r".join(parts)
+                    p.no_wrap = True
+            continue
+        if len(group) < 2 or len(texts) != 1:
+            continue                        # lines that already got different texts
+        group.sort(key=lambda p: (-(by_id[p.id].y + by_id[p.id].h), by_id[p.id].x))   # top line first
+        parts = split_name_lines(group[0].text, [by_id[p.id].text for p in group])
+        for p, part in zip(group, parts):
+            p.text = part
+            p.no_wrap = True
 
 
 def find_local_partner_ids(objects: list[Obj], name_ids: set[str]) -> set[str]:

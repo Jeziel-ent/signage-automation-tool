@@ -136,6 +136,8 @@ _MIGRATIONS = [
     # The S.No exactly as the imported sheet wrote it ("76", "SL-01") - what the output files are numbered by; NULL =
     # use seq_no. seq_no still holds it when it is a whole number (it orders the job's shops).
     ("shops", "sno_label", "ALTER TABLE shops ADD COLUMN sno_label TEXT"),
+    # which shop-name line(s) the board shows: NULL / 'both' (default), 'en' (English only), 'ta' (Tamil only)
+    ("shops", "language", "ALTER TABLE shops ADD COLUMN language TEXT"),
 ]
 
 
@@ -221,7 +223,8 @@ def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float,
                  gst: str | None = None, address: str | None = None,
                  landscape_master_id: str | None = None, portrait_master_id: str | None = None,
                  shop_name_local: str | None = None, board_type: str | None = None,
-                 font_en: str | None = None, font_ta: str | None = None, sheet_name: str | None = None) -> None:
+                 font_en: str | None = None, font_ta: str | None = None, sheet_name: str | None = None,
+                 language: str | None = None) -> None:
     """`reference` is the free-text note shown in the UI today.
     `reference_file_path`, if given, is a path to an uploaded reference
     file - the data model supports it (per review feedback) ahead of any
@@ -239,11 +242,11 @@ def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float,
             """INSERT INTO shops
                (id, job_id, seq_no, name, width, width_unit, height, height_unit,
                 reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
-                shop_name_local, board_type, font_en, font_ta, sheet_name, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
+                shop_name_local, board_type, font_en, font_ta, sheet_name, language, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
             (shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
              reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
-             shop_name_local, board_type, font_en, font_ta, sheet_name, time.time()),
+             shop_name_local, board_type, font_en, font_ta, sheet_name, language, time.time()),
         )
 
 
@@ -265,9 +268,10 @@ def update_shop_fields(shop_id: str, f: dict) -> None:
         conn.execute(
             """UPDATE shops SET name = ?, width = ?, width_unit = ?, height = ?, height_unit = ?,
                phone = ?, gst = ?, address = ?, shop_name_local = ?, board_type = ?, font_en = ?, font_ta = ?,
-               sheet_name = ? WHERE id = ?""",
+               sheet_name = ?, language = ? WHERE id = ?""",
             (f["name"], f["width"], f["width_unit"], f["height"], f["height_unit"], f["phone"], f["gst"], f["address"],
-             f.get("shop_name_local"), f.get("board_type"), f.get("font_en"), f.get("font_ta"), f.get("sheet_name"), shop_id))
+             f.get("shop_name_local"), f.get("board_type"), f.get("font_en"), f.get("font_ta"), f.get("sheet_name"),
+             f.get("language"), shop_id))
 
 
 def set_shop_seq_no(shop_id: str, seq_no: int) -> None:

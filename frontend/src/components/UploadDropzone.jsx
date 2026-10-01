@@ -1,4 +1,6 @@
 import { useRef, useState } from "react";
+import { shopNameFromFileName } from "../utils/shopImport.js";
+import { toTamil } from "../utils/tamilTranslit.js";
 import { UploadCloud } from "lucide-react";
 
 /**
@@ -30,6 +32,14 @@ export default function UploadDropzone({ brand, onUploaded, disabled, orientatio
     fd.append("master", file);
     fd.append("brand", brand || "");
     fd.append("orientation", orientation);
+    // the shop name the master shows, from a designer-style file name, in English and (transliterated) Tamil: how the
+    // server finds the text to replace - a master that writes its name only in Tamil has no English line to match
+    const masterName = shopNameFromFileName(file.name);
+    if (masterName) {
+      fd.append("master_shop_name", masterName);
+      const ta = toTamil(masterName);
+      if (ta) fd.append("master_shop_name_local", ta);
+    }
 
     const xhr = new XMLHttpRequest();
     xhr.open("POST", "/api/v2/upload");

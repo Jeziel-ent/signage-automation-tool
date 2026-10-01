@@ -602,7 +602,7 @@ a.btn { text-decoration: none; display: inline-block; }
 
 
 /* ---- Master Templates: two side-by-side upload cards (stack when the card is narrow), each a file badge once filled */
-.ws-card-body:has(.mc-grid) { padding: 16px; }
+.ws-card-body:has(.mc-grid), .ws-card-body:has(.mc-modules) { padding: 16px; }
 .mc-grid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; }
 .mc-slot, .mc-root { display: flex; flex-direction: column; min-height: 0; }
 .mc-root { flex: 1; }
@@ -837,3 +837,55 @@ a.btn { text-decoration: none; display: inline-block; }
 .sheet-tabs-label { font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: #94a3b8; margin-right: 4px; }
 .sheet-tab.active .sheet-count { background: rgba(255, 255, 255, 0.22); }
 .sheet-count { padding: 0 6px; border-radius: 999px; background: rgba(148, 163, 184, 0.18); line-height: 16px; }
+
+/* Secondary masters (Landscape / Portrait Master 2) + the queue's Master column */
+.mc-secondary-toggle { align-self: flex-start; margin: 10px 0; padding: 4px 2px; background: none; border: 0; font: 600 12px/1.2 inherit;
+  color: #dc2626; cursor: pointer; }
+.mc-secondary-toggle:hover:not(:disabled) { text-decoration: underline; }
+.mc-secondary-toggle:disabled { color: #94a3b8; cursor: default; }
+.ws-masters .mc-grid + .mc-secondary-toggle + .mc-grid { margin-top: 0; }
+.master-cell { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.master-cell .muted { color: #94a3b8; font-size: 12px; }
+.master-cell .fallback-warn { color: #d97706; font-size: 12px; font-weight: 600; text-transform: capitalize; }
+.orient-tag { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 6px; font: 700 11px/1 inherit; }
+.orient-tag.landscape { background: rgba(220, 38, 38, 0.12); color: #dc2626; }
+.orient-tag.portrait { background: rgba(225, 29, 72, 0.12); color: #e11d48; }
+
+/* Master Templates: Landscape Masters (left) and Portrait Masters (right), each a module holding Master 1 (+ Master 2) */
+.mc-modules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+@media (max-width: 760px) { .mc-modules { grid-template-columns: 1fr; } }
+.mc-module { display: flex; flex-direction: column; gap: 12px; padding: 14px; border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 14px; background: rgba(148, 163, 184, 0.06); min-width: 0; }
+.mc-module-head { display: flex; align-items: center; gap: 8px; padding-bottom: 10px; border-bottom: 1px solid rgba(148, 163, 184, 0.2); }
+.mc-module-head h3 { margin: 0; font-size: 14px; font-weight: 700; }
+.mc-module-rule { margin-left: auto; font-size: 11px; color: #94a3b8; white-space: nowrap; }
+.mc-stack { display: flex; flex-direction: column; gap: 12px; }
+.ws-masters .mc-stack .master-card { min-height: 170px; }
+
+/* ---- Master Templates, compact: Landscape column | Portrait column, 176 px cards (Tailwind h-44), small icon and copy.
+   With the secondary masters shown, a column's Master 1 and Master 2 sit side by side, so the section does not grow. */
+.ws-masters .ws-card-head .mc-secondary-toggle { margin: 0; align-self: center; }
+.ws-masters .mc-modules { gap: 16px; }
+.ws-masters .mc-module { padding: 0; border: 0; background: none; gap: 8px; }
+.ws-masters .mc-module-head { padding: 0; border: 0; gap: 6px; }
+.ws-masters .mc-module-head h3 { font-size: 12px; font-weight: 600; }
+.ws-masters .mc-module-rule { margin-left: 0; font-size: 10px; }
+.ws-masters .orient-tag { width: 18px; height: 18px; font-size: 10px; border-radius: 5px; }
+.ws-masters .mc-stack { gap: 10px; }
+.ws-masters .mc-stack.two { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.ws-masters .mc-stack .master-card { flex: none; min-height: 0; height: 176px; padding: 14px; border-radius: 12px; border-style: dashed; }
+.ws-masters .mc-stack .mc-icon { width: 36px; height: 36px; border-radius: 10px; margin-bottom: 8px; }
+.ws-masters .mc-stack .mc-icon svg { width: 20px; height: 20px; }
+.ws-masters .mc-stack .mc-icon.muted { background: rgba(148, 163, 184, 0.15); color: #64748b; box-shadow: none; }
+.ws-masters .mc-stack .mc-title { font-size: 12px; font-weight: 600; margin-bottom: 2px; }
+.ws-masters .mc-stack .mc-help { font-size: 11px; line-height: 1.25; margin-bottom: 8px; max-width: 200px; }
+.ws-masters .mc-stack .mc-browse { font-size: 11px; padding: 4px 10px; border-radius: 8px; }
+/* an uploaded master: title, thumbnail and file badge stacked inside the same 176 px */
+.ws-masters .mc-stack .master-card.filled { flex-direction: column; flex-wrap: nowrap; align-items: stretch; gap: 6px; padding: 10px; border-style: solid; }
+.ws-masters .mc-stack .master-card.filled .mc-filled-head { flex-basis: auto; font-size: 12px; }
+.ws-masters .mc-stack .master-card.filled .master-thumb { flex: 1 1 auto; height: auto; min-height: 0; }
+.ws-masters .mc-stack .master-card.filled .file-badge { flex: none; padding: 4px 8px; gap: 8px; }
+.ws-masters .mc-stack .file-badge-name { font-size: 11.5px; }
+.ws-masters .mc-stack .file-badge-size { font-size: 10.5px; }
+.ws-masters .mc-stack .file-badge .icon-btn { padding: 2px; }
+@media (max-width: 760px) { .ws-masters .mc-stack.two { grid-template-columns: 1fr; } }

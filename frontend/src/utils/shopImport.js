@@ -23,8 +23,29 @@ const NAME_EXCLUDE_RE = new RegExp(
     TYPE_RE.source].join("|"),
   "i");
 
+// the sheet's own serial number ("S.No", "S. No.", "Sl.No", "SNo", "Serial No", "Sr. No", "#") - kept as the row's S.No
+const SNO_RE = /^\s*(s\.?\s*no\.?|sl\.?\s*no\.?|sr\.?\s*no\.?|sno|slno|serial(\s*(no\.?|number|#))?|#)\s*$/i;
+
 // a column that holds just the unit of each row's size ("Unit": ft / Feet / in / Inches ...)
 const UNIT_COL_RE = /\bunits?\b|\buom\b|\bu\.o\.m\b/i;
+
+// which shop-name line(s) the board shows: "Language", "Lang", "Language Mode", "Mode", "Text Language"
+const LANG_COL_RE = /^\s*(language(\s*mode)?|lang\.?|mode|text\s*language)\s*$/i;
+const EN_WORDS = new Set(["english", "eng", "en", "e", "ஆங்கிலம்"]);
+const TA_WORDS = new Set(["tamil", "tam", "ta", "t", "தமிழ்"]);
+const BOTH_WORDS = new Set(["both", "all", "bilingual", "dual"]);
+
+/** "both" | "en" | "ta" from a Language cell, by whole words (so "status" is not "ta"): only English words -> en, only Tamil
+ *  words -> ta; "Both", "English & Tamil", "EN/TA", blank or anything unrecognised -> both. */
+export function parseShopRowLanguage(v) {
+  const words = String(v ?? "").trim().toLowerCase().split(/[^a-z஀-௿]+/).filter(Boolean);
+  if (words.some((w) => BOTH_WORDS.has(w))) return "both";
+  const en = words.some((w) => EN_WORDS.has(w));
+  const ta = words.some((w) => TA_WORDS.has(w));
+  if (en && !ta) return "en";
+  if (ta && !en) return "ta";
+  return "both";
+}
 
 const UNIT_TOKEN ="ft\\.?|feet|foot|'|’|\"|inches|inch|in\\.?|cm|mm";
 // "120 * 48", "10 x 4", "30X40", "10ft x 4ft", "12' * 4'", "10 by 4", "10.5 × 4": width, optional unit, separator,
@@ -133,10 +154,33 @@ const DESIGN_FILE_RE = /^\s*\d+\s*-\s*\d+(?:\.\d+)?\s*[xX×*]\s*\d+(?:\.\d+)?\s*
 /** The shop name to print from a name cell: a trailing ".cdr" is dropped and a designer file name is reduced to its
  *  shop-name part; anything else is returned trimmed. */
 export function cleanShopName(v) {
-  let t = cellText(v).replace(/\.cdr$/i, "").trim();
-  const m = DESIGN_FILE_RE.exec(t);
-  if (m) t = m[2].replace(/\s+-\s+copy$/i, "").trim();
-  return t;
+  return shopNameFromFileName(v) ?? cellText(v).replace(/\.cdr$/i, "").trim();
+}
+
+// Windows copy suffixes: "Sri Sai cafe (1)", "VASANTHAM ENTERPRISES - Copy", "X - Copy (2)"
+const COPY_SUFFIX_RE = /(?:\s+-\s+copy(?:\s*\(\d+\))?|\s*\(\d+\))\s*$/i;
+
+/** The shop name inside a designer-style file name ("02 - 3 X 6 Feet - Double Side GSB - Sri Sai cafe (1).cdr" ->
+ *  "Sri Sai cafe"), copy suffixes dropped; null when the name does not follow that pattern. */
+export function shopNameFromFileName(v) {
+  const m = DESIGN_FILE_RE.exec(cellText(v).replace(/\.cdr$/i, "").trim());
+  if (!m) return null;
+  let t = m[2].trim();
+  for (let prev = ""; prev !== t; ) {
+    prev = t;
+    t = t.replace(COPY_SUFFIX_RE, "").trim();
+  }
+  return t || null;
+}
+
+/** The unit written in a designer file name used as the shop name ("75 - 6 X 4 Feet - Nonlit - SHOP" -> "ft"), else
+ *  null. Such a sheet's own size column is often just "6 X 4", so without this the "Feet" in the name was lost and the
+ *  board converted at 6 x 4 INCHES. */
+export function unitFromName(v) {
+  const t = cellText(v).replace(/\.cdr$/i, "").trim();
+  if (!DESIGN_FILE_RE.test(t)) return null;
+  const seg = t.split(/\s+-\s+/)[1] || "";
+  return detectUnit(seg.replace(/^[\d.\s]+[xX×*][\d.\s]+/, ""));
 }
 
 /** The board type written in a designer file name used as the shop name ("73 - 60 X 75 Inch - Nonlit - SHOP" -> "Nonlit"),
@@ -148,7 +192,7 @@ export function boardTypeFromName(v) {
 
 /**
  * rows: array of arrays (SheetJS `sheet_to_json(sheet, {header: 1, defval: ""})`). Returns
- *   { shops: [{name, shop_name_local?, width, height, unit, row}], errors: [{row, reason}], missing: [...], layout }
+ *   { shops: [{name, sno?, shop_name_local?, width, height, unit, row}], errors: [{row, reason}], missing: [...], layout }
  * `row` is the 1-based spreadsheet row. `missing` is ["name"] and/or ["size"] when a column cannot be found even by
  * looking at the values - nothing is imported then. `layout` describes what was detected (for the tests/messages).
  */
@@ -223,11 +267,13 @@ export function mapSheetRows(rows, { defaultUnit = "in" } = {}) {
   if (typeCol >= 0) taken.add(typeCol);
   // ---- a separate Unit column ("Unit" / "UOM" header whose values are mostly units: ft, Feet, in, Inches, ')
   const unitCol = headers.findIndex((h, i) => h && !taken.has(i) && UNIT_COL_RE.test(h) && share(col(i), (v) => !!detectUnit(v)) >= 0.5);
+  const snoCol = headers.findIndex((h, i) => h && !taken.has(i) && i !== unitCol && SNO_RE.test(h));
+  const langCol = headers.findIndex((h, i) => h && !taken.has(i) && i !== unitCol && i !== snoCol && LANG_COL_RE.test(h));
 
   const missing = [];
   if (nameCol < 0) missing.push("name");
   if (sizeCol < 0 && widthCol < 0) missing.push("size");
-  const layout = { headerRow: headerRow >= 0 ? headerRow + 1 : null, nameCol, localCol, typeCol, unitCol, sizeCol, widthCol, heightCol };
+  const layout = { headerRow: headerRow >= 0 ? headerRow + 1 : null, nameCol, localCol, typeCol, unitCol, snoCol, langCol, sizeCol, widthCol, heightCol };
   const shops = [];
   const errors = [];
   if (missing.length) return { shops, errors, missing, layout };
@@ -238,8 +284,9 @@ export function mapSheetRows(rows, { defaultUnit = "in" } = {}) {
     const name = cleanShopName(cells[nameCol]);
     const local = localCol >= 0 ? cellText(cells[localCol]) : "";
     if (!name) return errors.push({ row, reason: "missing shop name" });
-    // unit precedence: written in the size cell itself > this row's Unit column > a header hint ("Size (ft)") > the default
-    const rowUnit = unitCol >= 0 ? detectUnit(cells[unitCol]) : null;
+    // unit precedence: written in the size cell itself > this row's Unit column > the unit in a designer file name used as
+    // the shop name ("... - 6 X 4 Feet - ...") > a header hint ("Size (ft)") > the default
+    const rowUnit = (unitCol >= 0 ? detectUnit(cells[unitCol]) : null) || unitFromName(cells[nameCol]);
     let dims = null;
     let detected = false;
     if (sizeCol >= 0) {
@@ -258,16 +305,36 @@ export function mapSheetRows(rows, { defaultUnit = "in" } = {}) {
     // unitSource: "excel" when the file said which unit, "default" when it fell back to the page's Default Unit (such rows
     // follow later changes of the Default Unit; "excel" rows never do)
     const boardType = (typeCol >= 0 ? normalizeBoardType(cells[typeCol]) : "") || boardTypeFromName(cells[nameCol]);
-    shops.push({ name, ...(local ? { shop_name_local: local } : {}), ...(boardType ? { board_type: boardType } : {}), ...dims, unitSource: detected ? "excel" : "default", row });
+    // the row's own S.No ("76", "SL-01"); blank -> none, and the table falls back to the row's position
+    const sno = snoCol >= 0 ? cellText(cells[snoCol]) : "";
+    // the row's Language (Both / English Only / Tamil Only) when the sheet has such a column; Both otherwise
+    const language = langCol >= 0 ? parseShopRowLanguage(cells[langCol]) : "both";
+    shops.push({ name, ...(sno ? { sno } : {}), ...(language !== "both" ? { language } : {}), ...(local ? { shop_name_local: local } : {}), ...(boardType ? { board_type: boardType } : {}), ...dims, unitSource: detected ? "excel" : "default", row });
   });
   return { shops, errors, missing, layout };
 }
 
 /** Read an .xlsx / .xls / .csv File and map it: the first sheet that yields shops (a workbook often opens on a cover or
  *  summary sheet), else the first sheet's result so its "missing" message is shown. */
+/** A workbook from an uploaded file. A CSV is decoded as UTF-8 first: SheetJS reads a CSV without a byte-order mark as
+ *  Latin-1, which garbled every Tamil name ("à®µà®¿..."). A file that is not valid UTF-8 (an old ANSI export) and every
+ *  Excel file are read as before. */
+async function readWorkbook(XLSX, file) {
+  const buf = await file.arrayBuffer();
+  if (/\.(csv|txt|tsv)$/i.test(file.name || "")) {
+    try {
+      const text = new TextDecoder("utf-8", { fatal: true }).decode(buf).replace(/^﻿/, "");
+      return XLSX.read(text, { type: "string" });
+    } catch {
+      /* not UTF-8 - fall through */
+    }
+  }
+  return XLSX.read(buf, { type: "array" });
+}
+
 export async function parseShopFile(file, opts = {}) {
   const XLSX = await import("xlsx");
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const wb = await readWorkbook(XLSX, file);
   let first = null;
   for (const name of wb.SheetNames) {
     // raw:false -> formatted text ("10*4" stays text, 12 stays "12"); header:1 -> rows as arrays, so a title above the
@@ -285,7 +352,7 @@ export async function parseShopFile(file, opts = {}) {
  *  with their `missing` reason, and the caller reports them. */
 export async function parseShopWorkbook(file, opts = {}) {
   const XLSX = await import("xlsx");
-  const wb = XLSX.read(await file.arrayBuffer(), { type: "array" });
+  const wb = await readWorkbook(XLSX, file);
   const multi = wb.SheetNames.length > 1;
   const sheets = wb.SheetNames.map((name) => {
     const rows = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, defval: "", raw: false, blankrows: true });

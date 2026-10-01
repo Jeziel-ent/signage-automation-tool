@@ -261,3 +261,62 @@ test("parseShopWorkbook: every sheet with shops, each row tagged with its sheet;
   const r = await parseShopWorkbook(new File([XLSX.write(one, { type: "array", bookType: "xlsx" })], "o.xlsx"));
   assert.equal(r.sheets[0].shops[0].sheet_name, undefined);
 });
+
+test("the unit in a designer file name used as the shop name wins over the default for a unitless size", async () => {
+  const { unitFromName } = await import("./shopImport.js");
+  assert.equal(unitFromName("75 - 6 X 4 Feet - Nonlit - SRI RAM NADUMARUTHU KADAI.cdr"), "ft");
+  assert.equal(unitFromName("73 - 60 X 75 Inch - Nonlit - SRI AMBIRAMI"), "in");
+  assert.equal(unitFromName("Anish Stores"), null);
+  const r = mapSheetRows([["Shop Name", "Size"], ["75 - 6 X 4 Feet - Nonlit - SRI RAM", "6 X 4"], ["Plain", "8 x 4"],
+    ["68 - 7 X 5 Feet - Nonlit - M.S POOJA STORES", "7 X 5 in"]], { defaultUnit: "in" });
+  assert.deepEqual(r.shops.map((s) => [s.name, s.width, s.height, s.unit, s.unitSource]),
+    [["SRI RAM", 6, 4, "ft", "excel"], ["Plain", 8, 4, "in", "default"], ["M.S POOJA STORES", 7, 5, "in", "excel"]]);
+});
+
+test("an explicit S.No column is kept per row; blank cells and sheets without one fall back to position", async () => {
+  const { rowSno } = await import("./shopPayload.js");
+  for (const h of ["S.No", "S. No.", "Sl.No", "SNo", "SLNO", "Serial No", "Sr. No", "#"]) {
+    const r = mapSheetRows([[h, "Shop Name", "Size"], ["76", "Kalkee", "6x6 ft"], ["", "Anish", "8x4 ft"], ["SL-01", "Devi", "5x5 ft"]]);
+    assert.equal(r.layout.snoCol, 0, h);
+    assert.deepEqual(r.shops.map((s, i) => [s.name, rowSno(s, i)]), [["Kalkee", "76"], ["Anish", 2], ["Devi", "SL-01"]], h);
+  }
+  const none = mapSheetRows([["Shop Name", "Size"], ["Kalkee", "6x6 ft"], ["Anish", "8x4 ft"]]);
+  assert.equal(none.layout.snoCol, -1);
+  assert.deepEqual(none.shops.map((s, i) => rowSno(s, i)), [1, 2]);
+  // "Shop No" / "Phone No" are not serial columns
+  assert.equal(mapSheetRows([["Shop No", "Shop Name", "Size"], ["A1", "Kalkee", "6x6"]]).layout.snoCol, -1);
+});
+
+test("a Language column pre-fills each row's Language (whole words, Both when blank or unclear)", async () => {
+  const { parseShopRowLanguage: lang } = await import("./shopImport.js");
+  const { toDraftRow } = await import("./shopPayload.js");
+  for (const v of ["English", "English Only", "EN", "eng", "ஆங்கிலம்"]) assert.equal(lang(v), "en", v);
+  for (const v of ["Tamil", "Tamil Only", "TA", "tam", "தமிழ்"]) assert.equal(lang(v), "ta", v);
+  for (const v of ["Both", "English & Tamil", "EN/TA", "en & ta", "Bilingual", "", "status", "xyz", null]) assert.equal(lang(v), "both", String(v));
+  for (const h of ["Language", "Lang", "Language Mode", "Mode", "Text Language"]) {
+    const r = mapSheetRows([["S.No", "Shop Name", "Size", h], [1, "A", "8x4 ft", "English Only"], [2, "B", "6x6 ft", "Tamil"], [3, "C", "10x4 ft", ""]]);
+    assert.equal(r.layout.langCol, 3, h);
+    assert.deepEqual(r.shops.map((s) => toDraftRow(s).language ?? "both"), ["en", "ta", "both"], h);
+  }
+  assert.equal(mapSheetRows([["Shop Name", "Size"], ["A", "8x4"]]).layout.langCol, -1);
+  const f = await parseShopFile(fileOf([["Shop Name", "Width", "Height", "Lang"], ["A", "8 ft", "4 ft", "ENG"], ["B", "6", "6", "Both"]]));
+  assert.deepEqual(f.shops.map((s) => s.language ?? "both"), ["en", "both"]);
+});
+
+test("a master's shop name comes from its file name without Windows copy suffixes", async () => {
+  const { shopNameFromFileName } = await import("./shopImport.js");
+  assert.equal(shopNameFromFileName("02 - 3 X 6 Feet - Double Side GSB - Sri Sai cafe (1).cdr"), "Sri Sai cafe");
+  assert.equal(shopNameFromFileName("05 - 6 X 3 Feet - Double Side GSB - Namma T Zone (1).cdr"), "Namma T Zone");
+  assert.equal(shopNameFromFileName("66 - 8 X 4 Feet - Nonlit - VASANTHAM ENTERPRISES - Copy.cdr"), "VASANTHAM ENTERPRISES");
+  assert.equal(shopNameFromFileName("master.cdr"), null);
+  assert.equal(cleanShopName("02 - 3 X 6 Feet - Double Side GSB - Sri Sai cafe (1).cdr"), "Sri Sai cafe");
+});
+
+test("a UTF-8 CSV keeps its Tamil names (no byte-order mark needed)", async () => {
+  const csv = "S.No,Shop Name,Shop Name (Tamil),Size\n1,Wide Shop,விட் ஷாப்,12 x 4 ft\n";
+  const r = await parseShopFile(new File([new TextEncoder().encode(csv)], "shops.csv"));
+  assert.equal(r.shops[0].shop_name_local, "விட் ஷாப்");
+  const bom = await parseShopFile(new File([new TextEncoder().encode("﻿" + csv)], "shops.csv"));
+  assert.equal(bom.shops[0].name, "Wide Shop");
+  assert.equal(bom.shops[0].shop_name_local, "விட் ஷாப்");
+});

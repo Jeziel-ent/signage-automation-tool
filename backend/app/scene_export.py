@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-SCENE_VERSION = 3
+SCENE_VERSION = 4
 CDR_PNG = 802
 CDR_SVG = 1345
 CDR_CURRENT_PAGE = 1
@@ -325,6 +325,32 @@ def _export_leaf(doc, node: dict, shape, img_dir: Path) -> None:
         if not was_visible:
             _safe(lambda: setattr(shape, "Visible", False))
         _safe(lambda: doc.ClearSelection())
+    if node.get("kind") == "powerclip":
+        _export_frame(doc, node, shape, img_dir)
+
+
+def _export_frame(doc, node: dict, shape, img_dir: Path) -> None:
+    """The PowerClip FRAME on its own - its fill and outline without the contents - as node["frame_image"]. The editor draws
+    a live PowerClip as its contents inside a clip path; without this the frame's own fill was missing there (the Hangyo
+    board's pink side panels showed as white, and the white "ICE CREAM" / "ADINN/06/26" text vanished on white). Rendered
+    from a duplicate whose contents are deleted; the duplicate is deleted afterwards. A failure only leaves the frame
+    image out - the editor then draws as before."""
+    dup = None
+    try:
+        dup = _duplicate_out_of_clip(doc, shape)
+        clip = _safe(lambda: dup.PowerClip)
+        for c in (_children(clip) if clip is not None else []):
+            _safe(lambda c=c: c.Delete())
+        frame = {"id": f"{node['id']}_frame", "kind": "shape", "type": node.get("type"), "w": node["w"], "h": node["h"]}
+        _render_leaf(doc, frame, dup, img_dir)
+        if frame.get("image"):
+            node["frame_image"] = frame["image"]
+    except Exception:
+        pass
+    finally:
+        if dup is not None:
+            _safe(lambda: dup.Delete())
+        _safe(lambda: doc.ClearSelection())
 
 
 # COM errors that mean CorelDRAW itself is gone (crashed, killed, or disconnected) - not that one shape could not be
@@ -418,7 +444,7 @@ def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = Non
         failed.append(f"page image: {e}")
 
     scene = {
-        "version": SCENE_VERSION,          # 2: PowerClip children have own images; 3: ...and are exported from duplicates (v2 wrote empty SVGs for them)
+        "version": SCENE_VERSION,          # 2: PowerClip children have own images; 3: ...and are exported from duplicates (v2 wrote empty SVGs for them); 4: + the frame's own fill (frame_image)
         "unit": "mm",
         "page": {"width": round(page_w, 4), "height": round(page_h, 4)},
         "page_image": page_image,

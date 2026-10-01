@@ -1658,6 +1658,27 @@ Tests: `test_corel_quit.py` (9, a fake CorelDRAW that exits only when its last r
 `test_convert_batching.py` (7, fake supervisor: one batch, cap, retry-alone, RAM refusal, per-index heartbeat, the batched
 status endpoint), `test_editor_api.py` (versioned immutable assets). Backend 678 passed, frontend 170.
 
+**Master kept open across a batch + `.env` (2026-10-01).** Measured on the user's 183-shop DARSHAN batch: ~21 s per shop -
+saveas 10.6 s (median), pdf 3.8, open 2.7. The master carries 711 MB of raw bitmaps (`content/data/Bitmaps.dat`, 208 MB
+packed) that every output rewrites; at 6-12 ft boards the photos are under 300 dpi, so the cap rarely fires.
+- **Persistent master session** (`engines._MasterSession`, `SIGNAGE_KEEP_MASTER_OPEN`, default 1): within one worker the
+  master stays open while the next shop uses the same file (path + mtime + size) on the same CorelDRAW pid. Each shop's
+  edits run in ONE undo group (`BeginCommandGroup`/`EndCommandGroup`; verified live: page size, moves, text, duplicates
+  and `Bitmap.Resample` are all undone by `Undo(1)`); after the PNG the group is undone and `doc_fingerprint` (page size;
+  per shape, recursively into groups/PowerClips: type, box, text+font+size, bitmap pixels, top-level fills) must match
+  the snapshot taken at open within 0.05 mm (`same_fingerprint`; CorelDRAW re-measures text after an undo - a width came
+  back 1370.06 vs 1370.07 mm), else the doc is closed and the next shop reopens it. A doc is closed before an instance
+  the pool is about to quit (`corel_util.will_quit_on_release`) and at exit. `report.master_session` = {reused, kept_open};
+  `timings_s.restore` = undo + check. **Live** (4 boards, same master): 3 of 4 reused, every PNG pixel-identical to the
+  reopen path (mean 0.000/255), CDR sizes equal - but only **86.9 s vs 90.8 s (~4%)**: the restore check costs ~1.2 s per
+  shop and the snapshot ~1.5-4 s per open, against ~2.7 s open + close saved.
+- **ZIP**: PDFs are STORED now (deflating a real 30 MB PDF took 2.17 s to save 1 %), ~2 s per shop in "Generate ZIP".
+- **`.env`**: `app/__init__.py` loads `backend/.env` (python-dotenv, environment wins) for the server and the worker;
+  `backend/.env.example` documents `SIGNAGE_MAX_BITMAP_DPI` (300; 150 measured on a 10x4 ft board: 31.3 -> 24.2 s, CDR
+  209 -> 168 MB, PDF 43 -> 30 MB) and `SIGNAGE_KEEP_MASTER_OPEN`.
+- Already in place, not redone: `Optimization`/`EventsEnabled` (`DisplayAlerts` does not exist), the background queue
+  with progress, and a ZIP that never calls CorelDRAW. Tests: `test_master_session.py` (4).
+
 ### CorelDRAW version: discovered from the registry, never hardcoded
 
 The code has always dispatched the version-independent ProgID `CorelDRAW.Application` (never a numbered one), which Windows

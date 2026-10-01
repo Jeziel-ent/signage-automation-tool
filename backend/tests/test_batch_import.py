@@ -45,3 +45,11 @@ def test_unparseable_line_reported_as_error():
 def test_bad_size_segment_is_an_error():
     r = parse_shop_lines("16 - not a size - Nonlit - A STORE")
     assert not r.shops and r.errors
+
+
+def test_master_name_drops_windows_copy_suffixes():
+    from app.batch_import import shop_name_from_filename, strip_copy_suffix
+    assert shop_name_from_filename("02 - 3 X 6 Feet - Double Side GSB - Sri Sai cafe (1).cdr") == "Sri Sai cafe"
+    assert strip_copy_suffix("Sri Sai cafe (1)") == "Sri Sai cafe"
+    assert strip_copy_suffix("X (1) - Copy") == "X"
+    assert strip_copy_suffix("K. V. C. & CO (R) POOJA STORE") == "K. V. C. & CO (R) POOJA STORE"   # (R) is not a copy number

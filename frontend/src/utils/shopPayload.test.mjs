@@ -10,13 +10,13 @@ test("an imported row edited from 10*4 to 12*4 sends the edited values", () => {
   assert.deepEqual([row.width, row.height], [10, 4]);
   row = { ...row, width: "12" };                                   // the user retypes the width input: "10" -> "12"
   const body = shopPayload(row);
-  assert.deepEqual(body, { name: "Sri Kumar", width: 12, height: 4, unit: "in" });
+  assert.deepEqual(body, { name: "Sri Kumar", language: "both", width: 12, height: 4, unit: "in" });
   assert.equal(typeof body.width, "number");
 });
 
 test("only name, width, height and unit are sent; an emptied number stays empty; unit defaults to in", () => {
   const body = shopPayload({ name: "A", width: "", height: 4, unit: "ft", phone: "98", gst: "G", address: "x", width_unit: "cm" });
-  assert.deepEqual(body, { name: "A", width: "", height: 4, unit: "ft" });
+  assert.deepEqual(body, { name: "A", language: "both", width: "", height: 4, unit: "ft" });
   assert.equal(shopPayload({ name: "B", width: 1, height: 2 }).unit, "in");
 });
 
@@ -144,4 +144,25 @@ test("auto Tamil: filled on import, follows English edits (deferred while typing
   // conversions keep the master's fonts: font fields a row may still carry are never sent
   const body = pay({ name: "A", width: 1, height: 1, font_en: "Arial", font_ta: "Latha" });
   assert.equal("font_en" in body || "font_ta" in body, false);
+});
+
+test("the sheet's S.No rides with the draft, its convert payload and a master reset", async () => {
+  const { rowSno: sno, shopPayload: pay, toDraftRow: draft, resetForNewMaster: reset } = await import("./shopPayload.js");
+  const d = draft({ name: "Kalkee", sno: "76", width: 6, height: 6, unit: "ft" });
+  assert.equal(pay(d).sno, "76");
+  assert.equal(sno(d, 0), "76");
+  const saved = { id: "abc", name: "Kalkee", sno_label: "SL-01", status: "done", width: 6, height: 6, unit: "ft" };
+  assert.equal(sno(saved, 4), "SL-01");
+  assert.equal(reset([saved]).shops[0].sno, "SL-01");
+  assert.equal("sno" in pay(draft({ name: "X", width: 1, height: 1 })), false);
+});
+
+test("the row's Language is always sent (both by default) and survives a master reset", async () => {
+  const { shopPayload: pay, toDraftRow: draft, resetForNewMaster: reset } = await import("./shopPayload.js");
+  assert.equal(pay({ name: "X", width: 1, height: 1 }).language, "both");
+  assert.equal(pay({ name: "X", width: 1, height: 1, language: "ta" }).language, "ta");
+  assert.equal(pay({ name: "X", width: 1, height: 1, language: "fr" }).language, "both");
+  const saved = { id: "abc", name: "K", status: "done", width: 6, height: 4, unit: "ft", language: "en" };
+  assert.equal(reset([saved]).shops[0].language, "en");
+  assert.equal("language" in draft({ name: "X", width: 1, height: 1 }), false);
 });

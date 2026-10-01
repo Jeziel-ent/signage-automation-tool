@@ -70,6 +70,22 @@ const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs
                 height={c.h}
               />
             </clipPath>
+            {/* the frame's own fill and outline (scene version 4), under its contents - without it a filled frame drew as
+                nothing: the Hangyo board's pink side panels were white */}
+            {c.frame_image && (
+              <image
+                ref={(el) => {
+                  if (el) imgRefs.current.set("frame:" + c.id, el);
+                  else imgRefs.current.delete("frame:" + c.id);
+                }}
+                href={assetBase + c.frame_image.file}
+                x={c.x}
+                y={pageH - c.y - c.h}
+                width={c.w}
+                height={c.h}
+                preserveAspectRatio="none"
+              />
+            )}
             <g clipPath={`url(#${clipId})`}>{draw(it.items)}</g>
           </g>
         );
@@ -226,8 +242,8 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
   };
 
   const setImg = (id, box) => {
-    // the image of a leaf, and/or the clip rectangle of a live PowerClip container
-    for (const el of [imgRefs.current.get(id), imgRefs.current.get("clip:" + id)]) {
+    // the image of a leaf, and/or the clip rectangle and frame image of a live PowerClip container
+    for (const el of [imgRefs.current.get(id), imgRefs.current.get("clip:" + id), imgRefs.current.get("frame:" + id)]) {
       if (!el) continue;
       el.setAttribute("x", box.x);
       el.setAttribute("y", latest.current.pageH - box.y - box.h);

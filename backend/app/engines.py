@@ -144,6 +144,20 @@ def close_master_session() -> None:
 atexit.register(close_master_session)   # registered after corel_util's, so it runs first: the doc closes before the quit
 
 
+def shop_language(shop: dict, warnings: list[str] | None = None) -> str:
+    """'both' | 'en' | 'ta': which shop-name line(s) the board keeps (shop["language"], default both). Tamil Only without a
+    Tamil name would leave the MASTER's own Tamil shop name as the only name on the board, so it becomes English Only, with
+    a warning."""
+    mode = str(shop.get("language") or "both").strip().lower()
+    if mode not in ("en", "ta"):
+        return "both"
+    if mode == "ta" and not (shop.get("shop_name_local") or "").strip():
+        if warnings is not None:
+            warnings.append("Tamil Only was chosen but this shop has no Tamil name - kept the English name instead")
+        return "en"
+    return mode
+
+
 def name_font(text: str | None, shop: dict) -> str | None:
     """The font to set on a replaced shop-name text: only an EXPLICIT override (`font_ta` for Tamil text, `font_en` for
     anything else - an API caller's choice); otherwise None, i.e. only the text is replaced and the master's own font, size
@@ -260,6 +274,13 @@ class CorelEngine:
         installed - Text.Story.Font silently reads back "" afterwards - so
         the write is verified rather than trusted (see layout.TAMIL_FONT).
         """
+        if not (placed.text or "").strip():
+            # a line of a split shop name the new name has no words left for (layout.split_name_lines)
+            try:
+                shape.Delete()
+            except Exception as e:
+                placed.warnings.append(f"could not remove an unused shop-name line: {e}")
+            return
         try:
             story = shape.Text.Story
             story.Text = placed.text
@@ -272,7 +293,7 @@ class CorelEngine:
             return
         # the master's font is kept - unless it is Tamil text in a font that has no Tamil letters (tofu boxes otherwise)
         corel_util.ensure_tamil_font_renders(shape, placed.text, placed.warnings)
-        CorelEngine._fit_text(shape, placed.w, placed.warnings)
+        CorelEngine._fit_text(shape, placed.w, placed.warnings, allow_wrap=not placed.no_wrap)
 
     CLIP_FOREGROUND_MAX_AREA = 0.9   # of the page: bigger clipped children are backdrop and keep the frame's stretch
     CLIP_FOREGROUND_MIN_INSIDE = 0.9  # share of the child's box inside the page: art hanging off the page is backdrop
@@ -283,7 +304,7 @@ class CorelEngine:
                                  warnings: list[str]) -> int:
         """A page-covering PowerClip (the `bg` role) is stretched to the new page, and CorelDRAW stretches its contents
         with it - on a board whose shape differs from the master's that squashes the table / product-box composite a
-        real master keeps inside its background clip. Each FOREGROUND child of the clip (smaller than
+        real master keeps inside its background clip. Each FOREGROUND child of the clip that holds a BITMAP (smaller than
         CLIP_FOREGROUND_MAX_AREA of the page and at least CLIP_FOREGROUND_MIN_INSIDE on it - the same rule as
         orientation_adapter's separable foreground) is re-sized uniformly by the smaller of the two scale factors,
         centred horizontally where the stretch put it and standing on the same bottom edge, so it keeps its
@@ -318,6 +339,10 @@ class CorelEngine:
             iy = max(0.0, min(y + h, page_h) - max(y, 0.0))
             if ix * iy < cls.CLIP_FOREGROUND_MIN_INSIDE * w * h:
                 continue
+            if not cls._has_bitmap(ch):
+                # a plain vector shape (the Hangyo board's white centre panel, a colour band) stretches with the frame
+                # like the rest of the background - only photos and photo composites would look distorted
+                continue
             nw, nh = w / sx * k, h / sy * k   # original size x the uniform factor
             ox, ow = x / sx, w / sx            # the child's box on the master
             if ox <= edge_tol:                              # on / past the left edge: keep it there
@@ -340,6 +365,55 @@ class CorelEngine:
         return done
 
     @staticmethod
+    def _apply_language(mode: str, placed, objs_by_id: dict, shapes_by_id: dict, warnings: list[str]) -> int:
+        """English Only / Tamil Only: delete the top-level shop-name lines of the OTHER language (judged by the master's own
+        text of each line - Tamil script or not) and move the kept ones so they are centred on the space the whole name
+        block used (vertically when the lines were stacked, horizontally when they sat side by side). Returns how many lines were removed. Nothing happens
+        when the board has no line of the language to keep (it is never left without a shop name)."""
+        if mode not in ("en", "ta"):
+            return 0
+        names = [p for p in placed if p.role == "shopname" and p.id in objs_by_id and p.id in shapes_by_id]
+        drop = [p for p in names if is_tamil(objs_by_id[p.id].text) == (mode == "en")]
+        keep = [p for p in names if p not in drop]
+        if not drop:
+            return 0
+        if not keep:
+            warnings.append(f"{'English' if mode == 'en' else 'Tamil'} Only was chosen but the board has no "
+                            f"{'English' if mode == 'en' else 'Tamil'} shop-name line - both lines kept")
+            return 0
+
+        def box(ps):
+            bs = []
+            for p in ps:
+                s = shapes_by_id[p.id]
+                bs.append((float(s.LeftX), float(s.BottomY), float(s.LeftX) + float(s.SizeWidth), float(s.BottomY) + float(s.SizeHeight)))
+            return min(b[0] for b in bs), min(b[1] for b in bs), max(b[2] for b in bs), max(b[3] for b in bs)
+
+        try:
+            k, d = box(keep), box(drop)
+            stacked = min(k[2], d[2]) - max(k[0], d[0]) > 0          # the two groups overlap horizontally: one above the other
+            # the kept line(s) move to the centre of the space the whole name block used, along the axis the pair was
+            # laid out on: vertically for stacked lines, horizontally for side-by-side ones (landscape DARSHAN footer)
+            if stacked:
+                dx, dy = 0.0, (min(k[1], d[1]) + max(k[3], d[3])) / 2 - (k[1] + k[3]) / 2
+            else:
+                dx, dy = (min(k[0], d[0]) + max(k[2], d[2])) / 2 - (k[0] + k[2]) / 2, 0.0
+            for p in keep:
+                s = shapes_by_id[p.id]
+                s.LeftX = float(s.LeftX) + dx
+                s.BottomY = float(s.BottomY) + dy
+        except Exception as e:
+            warnings.append(f"could not re-centre the remaining shop name: {e}")
+        removed = 0
+        for p in drop:
+            try:
+                shapes_by_id[p.id].Delete()
+                removed += 1
+            except Exception as e:
+                warnings.append(f"could not remove the {'Tamil' if mode == 'en' else 'English'} shop-name line: {e}")
+        return removed
+
+    @staticmethod
     def _restore_master(doc, snapshot) -> bool:
         """Undo this shop's command group and check the document is exactly the master again (doc_fingerprint)."""
         doc.Undo(1)
@@ -354,6 +428,18 @@ class CorelEngine:
             logger.warning("master not identical after undo (%d of %d rows differ, rows %d vs %d, first: %s); closing it - "
                            "the next shop reopens it from disk", len(diff), len(snapshot), len(after), len(snapshot), diff[:3])
         return same
+
+    @classmethod
+    def _has_bitmap(cls, shape, depth: int = 0) -> bool:
+        """Whether a shape is, or contains (in a group or PowerClip, a few levels deep), an embedded bitmap."""
+        try:
+            if int(shape.Type) == cls.SHAPE_BITMAP:
+                return True
+        except Exception:
+            return False
+        if depth >= 4:
+            return False
+        return any(cls._has_bitmap(k, depth + 1) for k in cls._child_shapes(shape))
 
     @staticmethod
     def _child_shapes(s) -> list:
@@ -404,11 +490,19 @@ class CorelEngine:
         ids = {o.id for o in objs if o.name.strip().lower().startswith("shopname")}
         ids |= {o.id for o in objs if o.text and hints and any(
             (h in o.text.strip().lower() or o.text.strip().lower() in h) for h in hints)}
-        if local and not shop.get("master_shop_name_local"):
+        if (local or shop_language(shop) == "en") and not shop.get("master_shop_name_local"):
             ids |= find_local_partner_ids(objs, ids)
         done = 0
         for sh, o in texts:
             if o.id not in ids:
+                continue
+            lang = shop_language(shop)
+            if lang != "both" and is_tamil(o.text) == (lang == "en"):
+                try:
+                    sh.Delete()
+                    done += 1
+                except Exception as e:
+                    warnings.append(f"could not remove a nested shop-name line: {e}")
                 continue
             if is_tamil(o.text) and local:
                 new, font = local, TAMIL_FONT
@@ -433,7 +527,7 @@ class CorelEngine:
         return done
 
     @staticmethod
-    def _fit_text(shape, target_w_mm: float, warnings: list[str]) -> None:
+    def _fit_text(shape, target_w_mm: float, warnings: list[str], allow_wrap: bool = True) -> None:
         """Shrink, then wrap to a second line, a text shape that's grown
         wider than the space its layout box was given.
 
@@ -466,13 +560,24 @@ class CorelEngine:
                 size *= 0.9
                 story.Size = size
 
-            if float(shape.SizeWidth) > target_w_mm * 1.05:
+            if allow_wrap and float(shape.SizeWidth) > target_w_mm * 1.05:
                 text = story.Text or ""
                 spaces = [i for i, c in enumerate(text) if c == " "]
                 if spaces:
                     mid = len(text) / 2
                     best = min(spaces, key=lambda i: abs(i - mid))
                     story.Text = text[:best] + "\r" + text[best + 1:]
+
+            if float(shape.SizeWidth) > target_w_mm * 1.05:
+                # last resort: scale the text shape itself, uniformly and about its centre, to the box width. Needed when
+                # the master's text is small-point type enlarged as a shape (the Hangyo board's big Tamil line), so the
+                # font-size loop above never runs - left alone, the new name ran off the white panel.
+                w0, h0 = float(shape.SizeWidth), float(shape.SizeHeight)
+                cx, cy = float(shape.LeftX) + w0 / 2, float(shape.BottomY) + h0 / 2
+                k = target_w_mm / w0
+                shape.SetSize(w0 * k, h0 * k)
+                shape.LeftX = cx - w0 * k / 2
+                shape.BottomY = cy - h0 * k / 2
 
             if float(shape.SizeWidth) > target_w_mm * 1.05:
                 warnings.append("replacement text still wider than its layout box after shrinking/wrapping; check manually")
@@ -591,7 +696,8 @@ class CorelEngine:
                 # file name) - it is the Tamil text stacked next to the matched English line.
                 if not shop.get("master_shop_name_local"):
                     partners = find_local_partner_ids(objs, shopname_ids)
-                    if shop.get("shop_name_local"):
+                    # English Only removes the Tamil line, so it is found even without a Tamil name to write into it
+                    if shop.get("shop_name_local") or shop_language(shop) == "en":
                         shopname_ids |= partners
                     elif partners:
                         warnings.append("the master's local-language shop name was left unchanged: no local shop name "
@@ -686,7 +792,13 @@ class CorelEngine:
                         self._set_replacement_text(shape, p)
                 # Shop-name texts INSIDE a group or PowerClip are not layout objects of their own (only top-level shapes
                 # are); their parent was placed above, so they are rewritten in place.
-                self._replace_nested_shopnames(shapes, shop, warnings)
+                self._apply_language(shop_language(shop, warnings), placed, {o.id: o for o in objs}, shapes_by_id, warnings)
+                nested = self._replace_nested_shopnames(shapes, shop, warnings)
+                if (shop.get("name") or shop.get("shop_name_local")) and not nested and not any(
+                        p.role == "shopname" for p in placed):
+                    warnings.append("SHOP NAME NOT REPLACED: none of the master's text matches its shop name "
+                                    f"({shop.get('master_shop_name') or 'unknown'!r}) - this board still shows the master's "
+                                    "own shop name. Tag the text 'shopname' in CorelDRAW or correct the master's shop name.")
                 return page_w, page_h, placed
 
             page_w, page_h, placed = step("tile_resize", _resize_and_tile)
