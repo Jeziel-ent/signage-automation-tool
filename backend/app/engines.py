@@ -9,6 +9,8 @@ Both expose:  process(master_path, shop, out_dir) -> dict
 """
 from __future__ import annotations
 
+import re
+
 import atexit
 import json
 import logging
@@ -20,8 +22,8 @@ from pathlib import Path
 
 from . import corel_util
 from .corel_watchdog import Watchdog
-from .layout import (MIN_TEXT_PT, TAMIL_FONT, Obj, compute_layout, detect_role, find_contact_ids, find_local_partner_ids,
-                     find_shopname_ids, is_tamil, load_brand_rule, to_mm)
+from .layout import (_norm_name, MIN_TEXT_PT, TAMIL_FONT, Obj, compute_layout, detect_role, find_contact_ids, find_local_partner_ids,
+                     find_shopname_ids, is_tamil, load_brand_rule, brand_rule_for_shop, to_mm)
 
 logger = logging.getLogger(__name__)
 
@@ -177,6 +179,9 @@ def apply_name_fonts(placed, shop: dict) -> None:
             p.font = name_font(p.text, shop)
 
 
+CR, LF = chr(13), chr(10)      # CorelDRAW artistic text breaks a line with a carriage return
+
+
 def _output_base(shop: dict) -> str:
     """Output file stem: the caller's `file_base` ("76 - 125 X 48 Inch - Nonlit - SHOP", see file_naming.py) when given,
     else the shop name made filesystem-safe (the old /api/jobs flow and the dev tools)."""
@@ -190,6 +195,9 @@ def _report(page, new, placed, timings=None, warnings=None, free_ram_gb=None) ->
         "new_page_mm": {"w": new[0], "h": new[1]},
         "objects": [p.to_dict() for p in placed],
     }
+    src = next((p.layout_source for p in placed if getattr(p, "layout_source", None)), None)
+    if src:
+        report["layout"] = src
     if timings is not None:
         report["timings_s"] = timings
     if warnings is not None:
@@ -293,11 +301,238 @@ class CorelEngine:
             return
         # the master's font is kept - unless it is Tamil text in a font that has no Tamil letters (tofu boxes otherwise)
         corel_util.ensure_tamil_font_renders(shape, placed.text, placed.warnings)
+        if placed.text_fit:
+            CorelEngine._apply_text_fit(shape, placed.text_fit, placed.warnings)
+            return
         CorelEngine._fit_text(shape, placed.w, placed.warnings, allow_wrap=not placed.no_wrap)
 
     CLIP_FOREGROUND_MAX_AREA = 0.9   # of the page: bigger clipped children are backdrop and keep the frame's stretch
     CLIP_FOREGROUND_MIN_INSIDE = 0.9  # share of the child's box inside the page: art hanging off the page is backdrop
     CLIP_EDGE_TOL = 0.02              # of the master's width: a child this close to (or past) a side edge stays on it
+
+    @classmethod
+    def _count_nested(cls, shape) -> int:
+        """Shapes nested in a group (all depths, PowerClip contents not counted) - the same number the COM dump's
+        top_level() gives, so a master element's signature is the same in the library and at run time."""
+        n = 0
+        try:
+            coll = shape.Shapes
+            for i in range(1, coll.Count + 1):
+                ch = coll.Item(i)
+                n += 1
+                if int(ch.Type) == cls.SHAPE_GROUP:
+                    n += cls._count_nested(ch)
+        except Exception:
+            pass
+        return n
+
+    @staticmethod
+    def _balanced_lines(words: list[str], n: int) -> list[str]:
+        """Split words into n lines of about equal length (character count), keeping word order."""
+        if n <= 1 or len(words) <= 1:
+            return [" ".join(words)]
+        total = sum(len(w) for w in words) + len(words) - 1
+        lines, cur, cur_len = [], [], 0
+        for i, w in enumerate(words):
+            cur.append(w)
+            cur_len += len(w) + 1
+            left = len(words) - i - 1
+            if len(lines) < n - 1 and cur_len >= total / n and left >= (n - 1 - len(lines)):
+                lines.append(" ".join(cur))
+                cur, cur_len = [], 0
+        if cur:
+            lines.append(" ".join(cur))
+        return lines
+
+    @classmethod
+    def _apply_text_fit(cls, shape, spec: dict, warnings: list[str]) -> None:
+        """Example-library text (app/example_layout.py). Two designer habits, told apart from her boards of this size:
+        mode "font" - one font size per style, a longer name wraps onto more lines (never more than she used): the name gets her
+          line height and the fewest balanced lines that fit her width cap; if even those do not fit it shrinks uniformly;
+        mode "block" - she fits each name to its text block: of 1..her-maximum lines, the one that gives the biggest text inside
+          her block height and width cap (a longer break must be clearly better).
+        Then it is anchored (left / right / centre) at her x and centred on her y. Growing a short name is as legitimate as
+        shrinking a long one."""
+        try:
+            story = shape.Text.Story
+            original = story.Text or ""
+            words = original.replace(CR, " ").replace(LF, " ").split()
+            if CR in original and is_tamil(original) and re.search(r"[A-Za-z]", original):
+                # two names stacked on purpose (English over Tamil, "Both" on a one-line master): keep the line breaks, only scale
+                w0, h0 = float(shape.SizeWidth), float(shape.SizeHeight)
+                k = min(spec["h"] / h0, spec["w_cap"] / w0) if w0 > 0 and h0 > 0 else 1.0
+                shape.SetSize(w0 * k, h0 * k)
+                w, h = float(shape.SizeWidth), float(shape.SizeHeight)
+                x = cls._inside_page(w, {"left": spec["ax"], "right": spec["ax"] - w, "center": spec["ax"] - w / 2}[spec["anchor"]], spec)
+                shape.LeftX = x
+                shape.BottomY = spec["cy"] - h / 2
+                return
+            max_lines = int(spec.get("max_lines") or 1)
+            font_mode = spec.get("mode") == "font"
+            line_h = float(spec.get("line_h") or spec["h"])
+            tries = []
+            for n in range(1, min(max(max_lines, 1), max(len(words), 1)) + 1):
+                story.Text = CR.join(cls._balanced_lines(words, n)) if n > 1 else " ".join(words)
+                w0, h0 = float(shape.SizeWidth), float(shape.SizeHeight)
+                if w0 <= 0 or h0 <= 0:
+                    continue
+                k_w = spec["w_cap"] / w0
+                k_h = (line_h * n if font_mode else spec["h"]) / h0
+                tries.append((n, min(k_h, k_w), k_h <= k_w, k_h))
+            if not tries:
+                return
+            if font_mode:
+                fitting = [t for t in tries if t[2]]
+                n, k = (fitting[0][0], fitting[0][3]) if fitting else max(((t[0], t[1]) for t in tries), key=lambda t: t[1])
+            else:
+                best = None
+                for n_, k_, _f, _kh in tries:
+                    if best is None or k_ > best[1] * 1.04:
+                        best = (n_, k_)
+                n, k = best
+            story.Text = CR.join(cls._balanced_lines(words, n)) if n > 1 else (" ".join(words) if words else original)
+            w0, h0 = float(shape.SizeWidth), float(shape.SizeHeight)
+            shape.SetSize(w0 * k, h0 * k)
+            w, h = float(shape.SizeWidth), float(shape.SizeHeight)
+            x = cls._inside_page(w, {"left": spec["ax"], "right": spec["ax"] - w, "center": spec["ax"] - w / 2}[spec["anchor"]], spec)
+            shape.LeftX = x
+            shape.BottomY = spec["cy"] - h / 2
+            if k < 0.45:
+                warnings.append(f"shop name scaled to {k:.0%} of its natural size to fit the designer's block ({n} line(s))")
+        except Exception as e:
+            warnings.append(f"text-fit failed: {e}")
+
+    @staticmethod
+    def _inside_page(w: float, x: float, spec: dict) -> float:
+        """Left edge for a name line of width w: kept inside the page (a line anchored at the designer's x must not run off a board
+        narrower than hers). Specs without a page width (older libraries) are left as they are."""
+        pw = spec.get("page_w")
+        if not pw:
+            return x
+        m = 0.02 * pw
+        return max(m, min(x, pw - w - m)) if w <= pw - 2 * m else (pw - w) / 2
+
+    @classmethod
+    def _leaf_bitmaps(cls, coll, out: list | None = None) -> list:
+        """Every bitmap in a shape collection, through groups (a picture composite is a group of bitmaps)."""
+        out = [] if out is None else out
+        for i in range(1, coll.Count + 1):
+            ch = coll.Item(i)
+            t = int(ch.Type)
+            if t == cls.SHAPE_BITMAP:
+                out.append(ch)
+            elif t == cls.SHAPE_GROUP:
+                cls._leaf_bitmaps(ch.Shapes, out)
+        return out
+
+    @classmethod
+    def _place_clip_bitmaps(cls, coll, boxes: dict, warnings: list[str], sx: float = 1.0, sy: float = 1.0) -> int:
+        """boxes: {key: (x, y, w, h, aspect)} - the designer's box for each clipped picture. Each bitmap of the clip takes the box
+        whose aspect ratio is closest to its own (every box used once); returns how many were placed."""
+        import math
+        try:
+            bms = cls._leaf_bitmaps(coll)
+        except Exception as e:
+            warnings.append(f"could not read the background clip's pictures: {e}")
+            return 0
+        used, done = set(), 0
+        items = sorted(bms, key=lambda b: -float(b.SizeWidth) * float(b.SizeHeight))
+        areas = [float(b.SizeWidth) * float(b.SizeHeight) for b in items]
+        # the paper backdrop is the one bitmap far bigger than every picture (>= 3x the next); it only takes a backdrop box
+        has_backdrop = len(items) > 1 and areas[0] >= 3 * areas[1]
+        for idx, b in enumerate(items):
+            try:
+                is_backdrop = has_backdrop and idx == 0
+                # the page stretch (sx, sy) already squeezed every clipped picture: undo it to see the picture's own proportions
+                asp = float(b.SizeWidth) / max(float(b.SizeHeight), 1e-6) * (sy / sx)
+                cands = [(abs(math.log(asp / v[4])), k) for k, v in boxes.items() if k not in used and bool(v[5]) == is_backdrop]
+                d, k = min(cands) if cands else (9, None)
+                if k is None or d > 0.3:
+                    continue
+                x, y, w, h = boxes[k][:4]
+                b.SetSize(w, h)
+                b.LeftX = x
+                b.BottomY = y
+                used.add(k)
+                done += 1
+            except Exception as e:
+                warnings.append(f"could not place a clipped picture: {e}")
+        return done
+
+    @classmethod
+    def _apply_clip_plan(cls, container, plan: dict, page_w: float, page_h: float, warnings: list[str],
+                         sx: float = 1.0, sy: float = 1.0) -> int:
+        """Agarpathi template: put the contents of the page-sized background PowerClip where the designer's board of this size
+        has them. Children are told apart by geometry on the (already stretched) page: the largest is the paper backdrop
+        (covers its target box uniformly - it is a photo), a wide low group is the maroon footer band (stretched to its box -
+        plain vector), everything else is the table / product-box composite and moves as ONE rigid unit, scaled uniformly
+        into its box (centred)."""
+        try:
+            coll = container.PowerClip.Shapes
+        except Exception:
+            return 0
+        kids = []
+        for i in range(1, coll.Count + 1):
+            ch = coll.Item(i)
+            try:
+                kids.append((ch, float(ch.LeftX), float(ch.BottomY), float(ch.SizeWidth), float(ch.SizeHeight)))
+            except Exception:
+                continue
+        if not kids:
+            return 0
+        placed_individually = False
+        if plan.get("bitmaps"):
+            # every clipped picture goes to the designer's box for it, found by its proportions (a picture is scaled, not
+            # redrawn, so its aspect ratio is its identity); the vector band keeps the rules below
+            done = cls._place_clip_bitmaps(coll, plan["bitmaps"], warnings, sx, sy)
+            if done:
+                plan = {k: v for k, v in plan.items() if k not in ("backdrop", "composite", "bitmaps")}
+                kids = [k for k in kids if int(k[0].Type) != cls.SHAPE_BITMAP and not cls._has_bitmap(k[0])]
+                placed_individually = True
+                if not kids or "band" not in plan:
+                    return done
+        bitmaps = [k for k in kids if int(k[0].Type) == cls.SHAPE_BITMAP and k[3] * k[4] >= 0.9 * page_w * page_h]
+        if placed_individually:
+            backdrop = None                    # the pictures (backdrop included) are already placed
+        else:
+            backdrop = max(bitmaps, key=lambda k: k[3] * k[4]) if bitmaps else max(kids, key=lambda k: k[3] * k[4])
+        rest = [k for k in kids if k is not backdrop]
+        bands = [k for k in rest if int(k[0].Type) != cls.SHAPE_BITMAP and k[1] <= 0.1 * page_w
+                 and k[1] + k[3] >= 0.9 * page_w and k[2] + k[4] / 2 < 0.45 * page_h]
+        band = max(bands, key=lambda k: k[3] * k[4]) if bands else None
+        comp = [k for k in rest if k is not band and k[3] < 0.97 * page_w]
+        done = 0
+        try:
+            if "backdrop" in plan and backdrop is not None:
+                bx, by, bw, bh = plan["backdrop"]
+                _, x, y, w, h = backdrop
+                sc = max(bw / w, bh / h)
+                backdrop[0].SetSize(w * sc, h * sc)
+                backdrop[0].LeftX = bx + bw / 2 - w * sc / 2
+                backdrop[0].BottomY = by + bh / 2 - h * sc / 2
+                done += 1
+            if band is not None and "band" in plan:
+                bx, by, bw, bh = plan["band"]
+                band[0].SetSize(bw, bh)
+                band[0].LeftX = bx
+                band[0].BottomY = by
+                done += 1
+            if comp and "composite" in plan:
+                bx, by, bw, bh = plan["composite"]
+                x0 = min(k[1] for k in comp); y0 = min(k[2] for k in comp)
+                x1 = max(k[1] + k[3] for k in comp); y1 = max(k[2] + k[4] for k in comp)
+                cw, ch_ = x1 - x0, y1 - y0
+                sc = min(bw / cw, bh / ch_)
+                ox = bx + bw / 2 - cw * sc / 2
+                oy = by + bh / 2 - ch_ * sc / 2
+                for shp, x, y, w, h in comp:
+                    shp.SetSize(w * sc, h * sc)
+                    shp.LeftX = ox + (x - x0) * sc
+                    shp.BottomY = oy + (y - y0) * sc
+                    done += 1
+        except Exception as e:
+            warnings.append(f"could not apply the designer template to the background clip: {e}")
+        return done
 
     @classmethod
     def _undistort_clip_contents(cls, container, sx: float, sy: float, page_w: float, page_h: float,
@@ -453,6 +688,37 @@ class CorelEngine:
                 continue
         return []
 
+    STAMP_RE = re.compile(r"\d{1,2}\s*/\s*\d{1,2}")      # "ADINN/06/26": a job stamp, not a shop name
+
+    @classmethod
+    def _guess_master_names(cls, shapes) -> tuple[str | None, str | None]:
+        """A master whose shop name nobody entered (its file is just "6 X 3.cdr"): the shop name is its biggest English text, and
+        the Tamil one its biggest Tamil text - looked up through groups and PowerClips too (a master often keeps the name
+        inside the logo group), skipping job stamps like "ADINN/06/26". Returns (english text, tamil text) as printed."""
+        best = {"en": None, "ta": None}
+
+        def walk(shape_list):
+            for sh in shape_list:
+                kids = cls._child_shapes(sh)
+                if kids:
+                    walk(kids)
+                    continue
+                try:
+                    if int(sh.Type) != cls.SHAPE_TEXT:
+                        continue
+                    t = cls._shape_text(sh)
+                    area = float(sh.SizeWidth) * float(sh.SizeHeight)
+                except Exception:
+                    continue
+                if not t or not t.strip() or cls.STAMP_RE.search(t):
+                    continue
+                key = "ta" if is_tamil(t) else "en"
+                if best[key] is None or area > best[key][0]:
+                    best[key] = (area, t)
+
+        walk(shapes)
+        return (best["en"][1] if best["en"] else None, best["ta"][1] if best["ta"] else None)
+
     @classmethod
     def _replace_nested_shopnames(cls, top_shapes, shop: dict, warnings: list[str]) -> int:
         """Rewrite shop-name texts nested inside groups / PowerClips: a text named `shopname...` in CorelDRAW's Object
@@ -463,7 +729,7 @@ class CorelEngine:
         local = shop.get("shop_name_local")
         if not (name or local):
             return 0
-        hints = [h.strip().lower() for h in (shop.get("master_shop_name"), shop.get("master_shop_name_local")) if h and h.strip()]
+        hints = [_norm_name(h) for h in (shop.get("master_shop_name"), shop.get("master_shop_name_local")) if h and h.strip()]
         texts = []  # (shape, Obj) for every nested text shape
 
         def walk(shape_list, nested):
@@ -489,7 +755,7 @@ class CorelEngine:
         objs = [o for _, o in texts]
         ids = {o.id for o in objs if o.name.strip().lower().startswith("shopname")}
         ids |= {o.id for o in objs if o.text and hints and any(
-            (h in o.text.strip().lower() or o.text.strip().lower() in h) for h in hints)}
+            (h in _norm_name(o.text) or _norm_name(o.text) in h) for h in hints)}
         if (local or shop_language(shop) == "en") and not shop.get("master_shop_name_local"):
             ids |= find_local_partner_ids(objs, ids)
         done = 0
@@ -655,12 +921,15 @@ class CorelEngine:
                 master_reused = True
             else:
                 def _open():
+                    corel_util.check_file_not_newer(Path(master_path), app)
                     d = app.OpenDocument(str(Path(master_path).resolve()))
                     return d, (doc_fingerprint(d) if reuse else None)
 
                 doc, snapshot = step("open", _open)
             if reuse:
                 doc.BeginCommandGroup("Signage shop")
+
+            made_copies: list = []                 # shapes this shop Duplicate()d: such a board is never reused as the next shop's master
 
             def _resize_and_tile():
                 doc.Unit = self.CDR_MILLIMETER
@@ -686,8 +955,15 @@ class CorelEngine:
                     objs.append(Obj(oid, s.Name or f"object_{i+1}", kind,
                                     float(s.LeftX), float(s.BottomY),
                                     float(s.SizeWidth), float(s.SizeHeight), text,
-                                    self._shape_fill_cmyk(s)))
+                                    self._shape_fill_cmyk(s), self._count_nested(s) if kind == "group" else 0))
 
+                if not shop.get("master_shop_name") and not shop.get("master_shop_name_local") and                         not any(o.name.strip().lower().startswith("shopname") for o in objs):
+                    en, ta = self._guess_master_names(shapes)
+                    if en or ta:
+                        shop["master_shop_name"] = " ".join(en.split()) if en else None
+                        shop["master_shop_name_local"] = " ".join(ta.split()) if ta else None
+                        warnings.append("the master's shop name was not set: its biggest text was used as the name to replace "
+                                        f"({shop['master_shop_name'] or shop['master_shop_name_local']!r}) - set it for the master to be sure")
                 shopname_ids = find_shopname_ids(
                     objs, shop.get("master_shop_name"), shop.get("master_shop_name_local"),
                 )
@@ -713,11 +989,14 @@ class CorelEngine:
                     shop_name=shop.get("name"),
                     shop_name_local=shop.get("shop_name_local"),
                     shopname_ids=shopname_ids,
-                    brand_rule=load_brand_rule(shop.get("brand")),
+                    brand_rule=brand_rule_for_shop(shop.get("brand")),
                     phone=shop.get("phone"),
                     gst=shop.get("gst"),
                     address_lines=shop.get("address_lines"),
                     contact_ids=contact_ids,
+                    template_exclude=shop.get("template_exclude"),   # leave-one-out testing only
+                    board_type=shop.get("board_type"),
+                    language=shop_language(shop, warnings),
                 )
                 apply_name_fonts(placed, shop)
 
@@ -745,6 +1024,7 @@ class CorelEngine:
                     # (see CLAUDE.md "Wide-board panel sequence").
                     if base_id in reused_base_ids:
                         shape = base_shape.Duplicate()
+                        made_copies.append(base_id)
                     else:
                         shape = base_shape
                         reused_base_ids.add(base_id)
@@ -755,7 +1035,10 @@ class CorelEngine:
                     shape.SetSize(p.w, p.h)
                     shape.LeftX = p.x
                     shape.BottomY = p.y
-                    if p.role == "bg" and old_w > 0 and old_h > 0:
+                    if p.role == "bg" and p.clip_plan:
+                        self._apply_clip_plan(shape, p.clip_plan, new_w, new_h, p.warnings,
+                                              p.w / old_w if old_w > 0 else 1.0, p.h / old_h if old_h > 0 else 1.0)
+                    elif p.role == "bg" and old_w > 0 and old_h > 0:
                         self._undistort_clip_contents(shape, p.w / old_w, p.h / old_h, new_w, new_h, p.warnings)
                     if p.bring_to_front:
                         # A duplicated card background (see layout._place_panel_sequence's
@@ -840,6 +1123,10 @@ class CorelEngine:
                 except Exception as e:
                     logger.warning("could not restore the master for reuse (%s); it will be reopened", e)
                 timings["restore"] = round(time.time() - t, 1)
+                if made_copies and keep_doc:
+                    # an undone Duplicate() passes the fingerprint check yet has produced wrongly drawn boards (an icon at many times its
+                    # size) for the shops after it in one batch; a board with copies reopens its master from disk instead
+                    keep_doc = False
         finally:
             # Best-effort: a cleanup failure (e.g. the COM server already died)
             # must not clobber a result we already successfully computed.

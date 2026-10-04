@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import math
+from datetime import datetime, timezone
 import os
 import queue
 import re
@@ -25,7 +27,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
-from . import file_naming
+from . import confidence, file_naming
 from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename, strip_copy_suffix
 from .engines import get_engine
 from .layout import to_mm
@@ -257,19 +259,41 @@ def _extract_cdr_preview(master_path: Path) -> tuple[Path | None, str | None]:
     return preview_path, None
 
 
-@app.post("/api/v2/upload")
-async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form("landscape"),
-                    master_shop_name: str = Form(""), master_shop_name_local: str = Form("")):
-    """`master_shop_name` / `master_shop_name_local`: the shop name the master itself shows (English / local script),
-    which is how conversion finds the text to overwrite on an untagged master. Optional - the English one defaults to
-    the shop name in a designer-style file name ("<code> - W X H unit - type - SHOP NAME.cdr")."""
+MASTER_ORIENTATIONS = ("landscape", "portrait")
+MASTER_NAME_MAX = 120
+
+
+def _parse_default_size(raw: str) -> tuple[float, float, str] | None:
+    """`dimensions_default` form field: JSON {width, height, unit} or blank. Partial or invalid -> 400."""
+    if not (raw or "").strip():
+        return None
+    try:
+        d = json.loads(raw)
+        width, height, unit = float(d["width"]), float(d["height"]), str(d.get("unit") or "in")
+    except (ValueError, TypeError, KeyError):
+        raise HTTPException(400, "dimensions_default must be JSON {width, height, unit}")
+    if not (width > 0 and height > 0) or unit not in ("mm", "cm", "in", "ft"):
+        raise HTTPException(400, "dimensions_default needs width>0, height>0 and unit in mm/cm/in/ft")
+    return width, height, unit
+
+
+def _save_master_upload(master: UploadFile, brand: str, orientation: str, master_shop_name: str,
+                        master_shop_name_local: str, name: str = "",
+                        default_size: tuple[float, float, str] | None = None) -> str:
+    """Store an uploaded master .cdr as a new registered `jobs` row (+ its instant preview); returns its id."""
     if not (master.filename or "").lower().endswith(".cdr"):
         raise HTTPException(400, "Master file must be a .cdr")
     orientation = orientation.strip().lower()
-    if orientation not in ("landscape", "portrait"):
+    if orientation not in MASTER_ORIENTATIONS:
         raise HTTPException(400, "orientation must be 'landscape' or 'portrait'")
-    if not brand.strip():
+    brand = brand.strip()
+    if not brand:
         raise HTTPException(400, "brand required")
+    name = name.strip()
+    if len(name) > MASTER_NAME_MAX:
+        raise HTTPException(400, f"name must be at most {MASTER_NAME_MAX} characters")
+    # default display name "Master N", N counting every master ever registered for this brand + orientation
+    name = name or f"Master {db.count_registered_masters(brand, orientation) + 1}"
 
     job_id = uuid.uuid4().hex[:12]
     jdir = JOBS_V2 / job_id
@@ -281,19 +305,89 @@ async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orie
     with open(master_path, "wb") as f:
         shutil.copyfileobj(master.file, f)
 
-    db.create_job(job_id, brand.strip(), master.filename, str(master_path), orientation,
+    db.create_job(job_id, brand, master.filename, str(master_path), orientation,
                   master_shop_name.strip() or shop_name_from_filename(master.filename),
-                  master_shop_name_local.strip() or None)
+                  master_shop_name_local.strip() or None, master_name=name, default_size=default_size,
+                  registered=True)
     preview_path, preview_error = _extract_cdr_preview(master_path)
     db.set_job_preview(job_id, str(preview_path) if preview_path else None, preview_error)
+    return job_id
 
+
+def _master_json(row: dict) -> dict:
+    """A master template as the /api/masters routes return it."""
+    path = Path(row["master_path"])
+    dims = None
+    if row.get("default_width") and row.get("default_height"):
+        dims = {"width": row["default_width"], "height": row["default_height"], "unit": row.get("default_unit") or "in"}
+    return {
+        "id": row["id"],
+        "name": row.get("master_name") or row["master_filename"],
+        "orientation": row.get("orientation") or "landscape",
+        "brand": row["brand"],
+        "file_name": row["master_filename"],
+        "file_path": str(path),
+        "file_size": path.stat().st_size if path.exists() else None,
+        "dimensions_default": dims,
+        "master_shop_name": row.get("master_shop_name"),
+        "preview_url": f"/api/v2/jobs/{row['id']}/preview" if row.get("preview_path") else None,
+        "preview_error": row.get("preview_error"),
+        "created_at": datetime.fromtimestamp(row["created_at"], timezone.utc).isoformat(),
+    }
+
+
+@app.post("/api/v2/upload")
+async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form("landscape"),
+                    master_shop_name: str = Form(""), master_shop_name_local: str = Form("")):
+    """`master_shop_name` / `master_shop_name_local`: the shop name the master itself shows (English / local script),
+    which is how conversion finds the text to overwrite on an untagged master. Optional - the English one defaults to
+    the shop name in a designer-style file name ("<code> - W X H unit - type - SHOP NAME.cdr"). The master is also
+    added to the registry (/api/masters) under a default "Master N" name."""
+    job_id = _save_master_upload(master, brand, orientation, master_shop_name, master_shop_name_local)
+    job = db.get_job(job_id)
     return {
         "id": job_id,
-        "orientation": orientation,
-        "master_shop_name": db.get_job(job_id).get("master_shop_name"),
-        "preview_url": f"/api/v2/jobs/{job_id}/preview" if preview_path else None,
-        "preview_error": preview_error,
+        "orientation": job["orientation"],
+        "master_shop_name": job.get("master_shop_name"),
+        "preview_url": f"/api/v2/jobs/{job_id}/preview" if job.get("preview_path") else None,
+        "preview_error": job.get("preview_error"),
     }
+
+
+@app.get("/api/masters")
+def list_masters(brand: str | None = None, orientation: str | None = None):
+    """Registered master templates (any number per orientation), oldest first - the first of each orientation is its
+    default. Optional `brand` / `orientation` filters. Returns {masters, landscape, portrait}."""
+    if orientation is not None and orientation not in MASTER_ORIENTATIONS:
+        raise HTTPException(400, "orientation must be 'landscape' or 'portrait'")
+    masters = [_master_json(r) for r in db.list_masters(brand, orientation)]
+    return {"masters": masters,
+            "landscape": [m for m in masters if m["orientation"] == "landscape"],
+            "portrait": [m for m in masters if m["orientation"] == "portrait"]}
+
+
+@app.post("/api/masters/upload")
+async def upload_master(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form(...),
+                        name: str = Form(""), dimensions_default: str = Form(""),
+                        master_shop_name: str = Form(""), master_shop_name_local: str = Form("")):
+    """Register a new master template: the .cdr plus `name` (default "Master N"), `orientation` and an optional
+    `dimensions_default` (JSON {width, height, unit})."""
+    default_size = _parse_default_size(dimensions_default)
+    job_id = _save_master_upload(master, brand, orientation, master_shop_name, master_shop_name_local, name, default_size)
+    return _master_json(db.get_job(job_id))
+
+
+@app.delete("/api/masters/{master_id}")
+def delete_master(master_id: str):
+    """Remove a master from the registry. Soft delete: the file stays, because the boards already made from it live in
+    its folder (Recently generated, the editor). Refused while a shop that uses it is queued or converting."""
+    row = db.get_job(master_id)
+    if not row or not row.get("registered") or row.get("deleted_at"):
+        raise HTTPException(404, "master not found")
+    if db.count_active_shops_using_master(master_id):
+        raise HTTPException(409, "a shop using this master is converting - try again when it has finished")
+    db.delete_master(master_id)
+    return {"deleted": master_id}
 
 
 @app.patch("/api/v2/jobs/{job_id}/master-shop-name")
@@ -343,8 +437,26 @@ def _validated_master_ids(payload: dict, job: dict) -> dict:
                 raise HTTPException(400, f"{key} belongs to brand {mrow['brand']!r}, not {job['brand']!r}")
             if (mrow.get("orientation") or "landscape") != want:
                 raise HTTPException(400, f"{key} was uploaded as a {mrow.get('orientation')} master")
+            if mrow.get("deleted_at"):
+                raise HTTPException(400, f"{key} was deleted")
         out[key] = mid
     return out
+
+
+def _validated_master_id(payload: dict, job: dict) -> str | None:
+    """`master_id` from a request body - the master chosen in the queue's Master column. It must exist (404), not be
+    deleted and belong to the job's brand (400). Its orientation is not checked here: the row's size may still change,
+    and _select_shop_master falls back to the default master of the board's orientation when it does not match."""
+    mid = (str(payload.get("master_id") or "")).strip() or None
+    if mid:
+        mrow = db.get_job(mid)
+        if not mrow:
+            raise HTTPException(404, "master_id not found")
+        if mrow.get("deleted_at"):
+            raise HTTPException(400, "master_id was deleted")
+        if mrow["brand"] != job["brand"]:
+            raise HTTPException(400, f"master_id belongs to brand {mrow['brand']!r}, not {job['brand']!r}")
+    return mid
 
 
 SHOP_LANGUAGES = ("both", "en", "ta")
@@ -401,7 +513,7 @@ def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
                    fields["height_unit"], fields["reference"], fields["reference_file_path"], fields["phone"],
                    fields["gst"], fields["address"], master_ids["landscape_master_id"], master_ids["portrait_master_id"],
                    fields.get("shop_name_local"), fields.get("board_type"), fields.get("font_en"), fields.get("font_ta"),
-                   fields.get("sheet_name"), fields.get("language"))
+                   fields.get("sheet_name"), fields.get("language"), master_ids.get("master_id"))
     return db.get_shop(shop_id)
 
 
@@ -416,7 +528,8 @@ def v2_add_shop(job_id: str, payload: dict):
         raise HTTPException(400, "invalid shop: need name, width>0, height>0, unit in mm/cm/in/ft")
     # Dual-master templates (optional): the ids of two uploaded masters (each an /api/v2/upload job). They must
     # exist, belong to this job's brand and have been uploaded as the orientation they are used for.
-    row = _insert_shop(job_id, fields, _validated_master_ids(payload, job))
+    row = _insert_shop(job_id, fields, {**_validated_master_ids(payload, job),
+                                        "master_id": _validated_master_id(payload, job)})
     _apply_sno(row["id"], payload)
     return db.get_shop(row["id"])
 
@@ -481,7 +594,7 @@ def v2_add_shops_batch(job_id: str, payload: dict):
         raise HTTPException(400, "shops must be a non-empty array")
     if len(rows) > BATCH_MAX_SHOPS:
         raise HTTPException(413, f"at most {BATCH_MAX_SHOPS} shops per batch")
-    batch_ids = _validated_master_ids(payload, job)
+    batch_ids = {**_validated_master_ids(payload, job), "master_id": _validated_master_id(payload, job)}
     added, errors = [], []
     for i, row in enumerate(rows):
         try:
@@ -489,6 +602,8 @@ def v2_add_shops_batch(job_id: str, payload: dict):
                 raise ValueError("row must be an object")
             fields = _parse_shop_payload(row)
             ids = {**batch_ids, **{k: v for k, v in _validated_master_ids(row, job).items() if v}}
+            if row.get("master_id"):
+                ids["master_id"] = _validated_master_id(row, job)
             added.append(_insert_shop(job_id, fields, ids))
         except ValueError as e:
             errors.append({"index": i, "reason": str(e)})
@@ -516,6 +631,7 @@ def v2_recent():
             "reference": r["reference"], "status": r["status"], "error": r["error"],
             "created_at": r["created_at"], "completed_at": r["completed_at"],
             "files": files,
+            "confidence": confidence.layout_confidence(json.loads(r["layout_json"])) if r.get("layout_json") else None,
         })
     return out
 
@@ -545,22 +661,103 @@ _progress_peak: dict[str, int] = {}  # shop id -> highest progress_pct reported 
 _progress_lock = threading.Lock()
 
 
+def _master_record(mrow: dict, orientation: str, reason: str, fallback: bool = False, selected: bool = False) -> dict:
+    return {"job_id": mrow["id"], "name": mrow.get("master_name") or mrow.get("master_filename"),
+            "orientation": orientation, "reason": reason, "fallback": fallback, "selected": selected}
+
+
+def _example_style_master(brand: str, orientation: str, target_w_mm: float, target_h_mm: float, board_type: str | None = None) -> dict | None:
+    """With an example library (app/example_layout.py), the registered master whose file the nearest designer board was built from
+    - only when the brand has two or more masters of this orientation to choose between (a single one is the default anyway)."""
+    from . import example_layout
+    masters = [m for m in db.list_masters(brand, orientation) if not m.get("deleted_at")]
+    if len(masters) < 2:
+        return None
+    wanted = example_layout.preferred_master_file(brand, target_w_mm, target_h_mm,
+                                                  available={m.get("master_filename") or "" for m in masters}, board_type=board_type)
+    if not wanted:
+        return None
+    for m in masters:
+        if (m.get("master_filename") or "").strip().lower() == wanted.strip().lower():
+            return {"id": m["id"], "count": len(masters), "shape": f"the nearest designer board was made from {wanted}"}
+    return None
+
+
+def _nearest_shaped_master(brand: str, orientation: str, target_w_mm: float, target_h_mm: float) -> dict | None:
+    """When a brand has several masters of one orientation (e.g. 10x3 ft, 6x3 ft and 4x8 ft creatives) and they carry a default
+    size, the one whose width:height ratio is closest to the target is the best starting point - the layout then has the
+    least to stretch. Needs at least two masters with a default size; otherwise None (the orientation's default is used)."""
+    sized = []
+    for m in db.list_masters(brand, orientation):
+        if m.get("deleted_at") or not (m.get("default_width") and m.get("default_height")):
+            continue
+        unit = m.get("default_unit") or "in"
+        sized.append((m, to_mm(m["default_width"], unit) / to_mm(m["default_height"], unit)))
+    if len(sized) < 2:
+        return None
+    asp = target_w_mm / target_h_mm
+    m, a = min(sized, key=lambda t: abs(math.log(t[1] / asp)))
+    return {"id": m["id"], "count": len(sized), "shape": f"{a:.2f}:1 for a {asp:.2f}:1 board"}
+
+
 def _select_shop_master(shop_row: dict, job_row: dict, target_w_mm: float, target_h_mm: float) -> tuple[Path, dict]:
     """The master file a shop converts from, plus a small record of the choice for the report.
 
-    A shop with `landscape_master_id` / `portrait_master_id` uses the master matching the TARGET's orientation
-    (`orientation_adapter.select_master`: width / height >= 1.25 is landscape; square, near-square and portrait use portrait) so the layout engine only ever scales
-    and pads within one orientation; a shop with neither keeps using its job's own master, as before."""
-    l_id, p_id = shop_row.get("landscape_master_id"), shop_row.get("portrait_master_id")
-    if not (l_id or p_id):
+    1. `master_id` (the master picked in the queue's Master column) is used when it still exists, is not deleted,
+       belongs to the shop's brand and has the TARGET's orientation (`orientation_adapter.target_orientation`:
+       width / height >= 1.25 is landscape; square, near-square and portrait use portrait).
+    2. Otherwise - or when none was picked - `landscape_master_id` / `portrait_master_id` (each orientation's default)
+       pick by the target's orientation (`orientation_adapter.select_master`), so the layout engine only ever scales
+       and pads within one orientation. When a picked master was unusable and no default of the target's orientation
+       is set, the brand's first registered master of that orientation is used.
+    3. A shop with none of these keeps using its job's own master, as before."""
+    want = orientation_adapter.target_orientation(target_w_mm, target_h_mm)
+    brand = job_row["brand"]
+    note = None
+    chosen = shop_row.get("master_id")
+    if chosen:
+        m = db.get_job(chosen)
+        m_orient = (m.get("orientation") or "landscape") if m else None
+        if m and not m.get("deleted_at") and m["brand"] == brand and m_orient == want:
+            name = m.get("master_name") or m.get("master_filename")
+            return Path(m["master_path"]), _master_record(m, want, f"selected master '{name}' ({want})", selected=True)
+        why = ("no longer exists" if not m else "was deleted" if m.get("deleted_at")
+               else f"belongs to brand {m['brand']!r}" if m["brand"] != brand
+               else f"is a {m_orient} master and this board is {want}")
+        note = f"selected master {chosen} {why} - used the default {want} master"
+        logger.warning("Shop %s: %s", shop_row["id"], note)
+
+    def usable(mid):  # a soft-deleted default is skipped; an id that no longer exists still fails loudly below
+        m = db.get_job(mid) if mid else None
+        return None if (m and m.get("deleted_at")) else mid
+
+    ids = {"landscape": usable(shop_row.get("landscape_master_id")), "portrait": usable(shop_row.get("portrait_master_id"))}
+    if note and not ids[want]:
+        defaults = db.list_masters(brand, want)
+        if defaults:
+            ids[want] = defaults[0]["id"]
+    nearest = None
+    if not shop_row.get("master_id"):
+        # 1. the master the nearest designer board of this brand was made from (one master per design style)
+        nearest = _example_style_master(brand, want, target_w_mm, target_h_mm, shop_row.get("board_type"))
+        # 2. else the master whose own shape is closest to the board
+        nearest = nearest or _nearest_shaped_master(brand, want, target_w_mm, target_h_mm)
+        if nearest:
+            ids[want] = nearest["id"]
+    if not (ids["landscape"] or ids["portrait"]):
+        reason = "job master (no dual masters set)" if not note else f"{note} (none uploaded - used the job's own master)"
         return Path(job_row["master_path"]), {"job_id": job_row["id"], "orientation": job_row.get("orientation") or "landscape",
-                                              "reason": "job master (no dual masters set)"}
-    orientation, mid, fallback = orientation_adapter.select_master(target_w_mm, target_h_mm, l_id, p_id)
+                                              "reason": reason}
+    orientation, mid, fallback = orientation_adapter.select_master(target_w_mm, target_h_mm, ids["landscape"], ids["portrait"])
     mrow = db.get_job(mid)
     if not mrow:
         raise RuntimeError(f"{orientation} master {mid} no longer exists")
     reason = f"target is {orientation}" + (" (no matching master uploaded - used the other orientation)" if fallback else "")
-    return Path(mrow["master_path"]), {"job_id": mid, "orientation": orientation, "reason": reason, "fallback": fallback}
+    if nearest and mid == nearest["id"]:
+        reason += f"; picked among {nearest['count']} {want} masters: {nearest['shape']}"
+    if note:
+        reason = f"{note}; {reason}"
+    return Path(mrow["master_path"]), _master_record(mrow, orientation, reason, fallback)
 
 
 # Consecutive queued shops are converted in ONE corel_worker session that reuses a single CorelDRAW instance (launched once,
@@ -609,6 +806,8 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
         shop_dict["shop_name_local"] = shop_row["shop_name_local"]
     if shop_row.get("language") in ("en", "ta"):
         shop_dict["language"] = shop_row["language"]
+    if shop_row.get("board_type"):
+        shop_dict["board_type"] = shop_row["board_type"]       # picks among designer boards of one size (example library)
     # No font_en / font_ta from the queue: conversions keep the master's own fonts (fonts are changed in the Signage Editor).
     # Values a row may still carry from the old queue font pickers are deliberately NOT forwarded.
     master_path, master_used = _select_shop_master(shop_row, job_row, shop_dict["width"], shop_dict["height"])
@@ -771,7 +970,8 @@ def _apply_sno(shop_id: str, payload: dict | None) -> None:
 
 @app.post("/api/v2/shops/{shop_id}/convert")
 def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
-    """Queue a conversion. An optional body `{landscape_master_id, portrait_master_id}` (re)sets the shop's dual
+    """Queue a conversion. An optional `master_id` in the body sets the master picked for this shop (see
+    _select_shop_master). An optional body `{landscape_master_id, portrait_master_id}` (re)sets the shop's dual
     masters first: a shop row keeps the ids it was created with, so a portrait master uploaded AFTER the shop was
     added would otherwise never be used (the shop row would still say portrait_master_id = NULL and the landscape
     master would win by fallback). A body that names neither id leaves the stored ids alone."""
@@ -789,6 +989,9 @@ def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
     if payload and (payload.get("landscape_master_id") or payload.get("portrait_master_id")):
         ids = _validated_master_ids(payload, db.get_job(row["job_id"]))
         db.set_shop_masters(shop_id, ids["landscape_master_id"], ids["portrait_master_id"])
+    # the master picked in the queue's Master column; an explicit null / "" goes back to the orientation's default
+    if payload and "master_id" in payload:
+        db.set_shop_master_id(shop_id, _validated_master_id(payload, db.get_job(row["job_id"])))
     db.set_shop_status(shop_id, "queued")
     with _convert_queue_lock:
         _convert_queue.append(shop_id)
@@ -806,6 +1009,7 @@ def v2_shop_status(shop_id: str):
         row["progress_pct"] = 100
         row["files"] = json.loads(row["files_json"]) if row["files_json"] else None
         row["report"] = json.loads(row["report_json"]) if row["report_json"] else None
+        row["confidence"] = confidence.layout_confidence((row["report"] or {}).get("layout"))
     elif row["status"] == "failed":
         row["progress_pct"] = 0
     elif row["status"] == "converting":

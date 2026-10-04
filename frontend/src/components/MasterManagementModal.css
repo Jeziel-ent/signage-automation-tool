@@ -1,0 +1,34 @@
+/* "Manage Masters" modal (components/MasterManagementModal.jsx); built on ExportModal.css's .xm-* shell. */
+.xm.mm { width: min(820px, 100%); }
+.mm-form { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; padding: 14px; border: 1px solid #e2e8f0; border-radius: 12px; }
+.mm-input { padding: 6px 8px; border: 1px solid #e2e8f0; border-radius: 8px; font: 13px var(--font-sans); background: #fff; color: inherit; min-width: 0; }
+.mm-input:focus { outline: none; border-color: #dc2626; box-shadow: 0 0 0 3px rgba(220, 38, 38, 0.12); }
+.mm-dims { display: flex; align-items: center; gap: 6px; }
+.mm-dims .mm-input { width: 72px; }
+.mm-dims .xm-select { align-self: auto; }
+.mm-file { display: inline-flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px dashed #cbd5e1; border-radius: 8px;
+  background: #f8fafc; font: 600 12.5px var(--font-sans); cursor: pointer; text-align: left; overflow: hidden; }
+.mm-file small { margin-left: auto; font-weight: 400; color: #94a3b8; }
+.mm-submit { grid-column: 1 / -1; justify-self: start; }
+.mm-progress, .mm-msg { grid-column: 1 / -1; margin: 0; }
+.mm-lists { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.mm-list h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; }
+.mm-list ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.mm-empty { margin: 0; font-size: 12px; color: #94a3b8; }
+.mm-row { display: flex; align-items: center; gap: 10px; padding: 8px; border: 1px solid #e2e8f0; border-radius: 10px; }
+.mm-thumb { width: 64px; height: 40px; flex: none; display: grid; place-items: center; border-radius: 6px; background: #f1f5f9; overflow: hidden; color: #10b981; }
+.mm-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.mm-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.mm-meta strong { font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-meta small { font-size: 11.5px; color: #64748b; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mm-del:hover:not(:disabled) { color: #dc2626; }
+.mc-default { margin-left: 6px; padding: 1px 6px; border-radius: 999px; font: 600 10px/1.5 var(--font-sans); background: rgba(16, 185, 129, 0.14);
+  color: #059669; vertical-align: middle; }
+@media (max-width: 640px) { .mm-form, .mm-lists { grid-template-columns: 1fr; } }
+
+/* dark workspace theme (workspace-dark.css tokens) */
+.app-shell .mm-form, .app-shell .mm-row { border-color: var(--ws-border); background: rgba(2, 6, 23, 0.4); }
+.app-shell .mm-input, .app-shell .mm-file { background: rgba(2, 6, 23, 0.6); border-color: var(--ws-border-hover); color: var(--ws-text); }
+.app-shell .mm-list h3, .app-shell .mm-meta strong { color: var(--ws-strong); }
+.app-shell .mm-meta small, .app-shell .mm-empty { color: var(--ws-muted); }
+.app-shell .mm-thumb { background: rgba(30, 41, 59, 0.6); }

@@ -18,53 +18,158 @@
     "groups": [
       {
         "group_id": "tamil_card",
-        "bbox_mm": {"x": 386.9266, "y": 242.1056, "w": 1284.2668, "h": 814.9427},
+        "bbox_mm": {
+          "x": 386.9266,
+          "y": 242.1056,
+          "w": 1284.2668,
+          "h": 814.9427
+        },
         "size_table": [
-          {"aspect": 3.0, "target_h_frac": 0.564, "target_w_frac": 0.296, "target_cy_frac": 0.528},
-          {"aspect": 3.75, "target_h_frac": 0.626, "target_w_frac": 0.263, "target_cy_frac": 0.531},
-          {"aspect": 4.0, "target_h_frac": 0.683, "target_w_frac": 0.269, "target_cy_frac": 0.531},
-          {"aspect": 4.5, "target_h_frac": 0.602, "target_w_frac": 0.211, "target_cy_frac": 0.530}
+          {
+            "aspect": 3.0,
+            "target_h_frac": 0.564,
+            "target_w_frac": 0.296,
+            "target_cy_frac": 0.528
+          },
+          {
+            "aspect": 3.75,
+            "target_h_frac": 0.626,
+            "target_w_frac": 0.263,
+            "target_cy_frac": 0.531
+          },
+          {
+            "aspect": 4.0,
+            "target_h_frac": 0.683,
+            "target_w_frac": 0.269,
+            "target_cy_frac": 0.531
+          },
+          {
+            "aspect": 4.5,
+            "target_h_frac": 0.602,
+            "target_w_frac": 0.211,
+            "target_cy_frac": 0.53
+          }
         ],
         "cx_table": [
-          {"aspect": 3.0, "target_cx_frac": 0.3191},
-          {"aspect": 3.75, "target_cx_frac": 0.3151},
-          {"aspect": 4.0, "target_cx_frac": 0.3104},
-          {"aspect": 4.5, "target_cx_frac": 0.2556}
+          {
+            "aspect": 3.0,
+            "target_cx_frac": 0.3191
+          },
+          {
+            "aspect": 3.75,
+            "target_cx_frac": 0.3151
+          },
+          {
+            "aspect": 4.0,
+            "target_cx_frac": 0.3104
+          },
+          {
+            "aspect": 4.5,
+            "target_cx_frac": 0.2556
+          }
         ],
         "cx_table_note": "Measured directly from all 4 real wide dalmia boards (added after finding _place_panel_sequence's axis='x' horizontal placement had never been verified against a real file the way target_cy_frac/h_frac/w_frac were): each group's real horizontal centre is a roughly constant fraction of new_w per aspect, NOT 'cell i of n' (evenly dividing the page into n equal slots, the previous unmeasured assumption) - that put every group 840-1100mm too far left on every sampled board despite target_cy_frac already being accurate to ~16mm. See app.layout._interp_cx_frac; falls back to the old even-cell math when a group config has no cx_table (e.g. every hand-built test_layout.py fixture)."
       },
       {
         "group_id": "roof_graphic",
-        "bbox_mm": {"x": 1937.9174, "y": 405.9946, "w": 723.1551, "h": 597.4089},
+        "bbox_mm": {
+          "x": 1937.9174,
+          "y": 405.9946,
+          "w": 723.1551,
+          "h": 597.4089
+        },
         "size_table": [
-          {"aspect": 3.0, "target_h_frac": 0.413, "target_w_frac": 0.167, "target_cy_frac": 0.566},
-          {"aspect": 3.75, "target_h_frac": 0.459, "target_w_frac": 0.148, "target_cy_frac": 0.573},
-          {"aspect": 4.0, "target_h_frac": 0.501, "target_w_frac": 0.152, "target_cy_frac": 0.577},
-          {"aspect": 4.5, "target_h_frac": 0.441, "target_w_frac": 0.119, "target_cy_frac": 0.570}
+          {
+            "aspect": 3.0,
+            "target_h_frac": 0.413,
+            "target_w_frac": 0.167,
+            "target_cy_frac": 0.566
+          },
+          {
+            "aspect": 3.75,
+            "target_h_frac": 0.459,
+            "target_w_frac": 0.148,
+            "target_cy_frac": 0.573
+          },
+          {
+            "aspect": 4.0,
+            "target_h_frac": 0.501,
+            "target_w_frac": 0.152,
+            "target_cy_frac": 0.577
+          },
+          {
+            "aspect": 4.5,
+            "target_h_frac": 0.441,
+            "target_w_frac": 0.119,
+            "target_cy_frac": 0.57
+          }
         ],
         "cx_table": [
-          {"aspect": 3.0, "target_cx_frac": 0.5973},
-          {"aspect": 3.75, "target_cx_frac": 0.6052},
-          {"aspect": 4.0, "target_cx_frac": 0.6072},
-          {"aspect": 4.5, "target_cx_frac": 0.7250}
+          {
+            "aspect": 3.0,
+            "target_cx_frac": 0.5973
+          },
+          {
+            "aspect": 3.75,
+            "target_cx_frac": 0.6052
+          },
+          {
+            "aspect": 4.0,
+            "target_cx_frac": 0.6072
+          },
+          {
+            "aspect": 4.5,
+            "target_cx_frac": 0.725
+          }
         ]
       },
       {
         "group_id": "enlarged_badge_card",
-        "bbox_mm": {"x": 2607.3269, "y": 975.9158, "w": 392.9035, "h": 199.9416},
+        "bbox_mm": {
+          "x": 2607.3269,
+          "y": 975.9158,
+          "w": 392.9035,
+          "h": 199.9416
+        },
         "card_from": "tamil_card",
         "card_from_note": "The master's small top-right badge (bare icon+text, no card - see 'Wide-board panel sequence') is redesigned in every real wide file into a white card matching the Tamil card's size/shadow, with the badge's own icon+text centred inside - not a bare enlarged logo, which is what a uniform scale-up of the master's badge shapes alone produces. card_content_frac is measured from the master's own Tamil card: its icon+Tamil-text content occupies 80.4% of the card's width and 50.0% of its height, centred at (45.8%, 56.4%) of the card's own box - applied here to size/centre this group's own icon+English-text content inside the borrowed card.",
-        "card_content_frac": {"w": 0.804, "h": 0.500, "cx": 0.458, "cy": 0.564},
+        "card_content_frac": {
+          "w": 0.804,
+          "h": 0.5,
+          "cx": 0.458,
+          "cy": 0.564
+        },
         "cx_table": [
-          {"aspect": 3.0, "target_cx_frac": 0.8578},
-          {"aspect": 3.75, "target_cx_frac": 0.8702},
-          {"aspect": 4.0, "target_cx_frac": 0.8774},
-          {"aspect": 4.5, "target_cx_frac": 0.8683}
+          {
+            "aspect": 3.0,
+            "target_cx_frac": 0.8578
+          },
+          {
+            "aspect": 3.75,
+            "target_cx_frac": 0.8702
+          },
+          {
+            "aspect": 4.0,
+            "target_cx_frac": 0.8774
+          },
+          {
+            "aspect": 4.5,
+            "target_cx_frac": 0.8683
+          }
         ]
       }
     ],
-    "sequence_3": ["tamil_card", "roof_graphic", "enlarged_badge_card"],
-    "sequence_4": ["tamil_card", "roof_graphic", "enlarged_badge_card", "roof_graphic"]
+    "sequence_3": [
+      "tamil_card",
+      "roof_graphic",
+      "enlarged_badge_card"
+    ],
+    "sequence_4": [
+      "tamil_card",
+      "roof_graphic",
+      "enlarged_badge_card",
+      "roof_graphic"
+    ]
   },
   "groups": [
     {
@@ -146,5 +251,6 @@
       },
       "repeat": "never"
     }
-  ]
+  ],
+  "example_library": false
 }

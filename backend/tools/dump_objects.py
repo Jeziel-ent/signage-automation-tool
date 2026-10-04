@@ -16,6 +16,7 @@ If output.json is omitted, writes next to this script's caller as
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -76,6 +77,19 @@ def _dump_shape(shape, layer_name: str, group_path: list[str], out: list[dict]):
             children = []
         for child in children:
             _dump_shape(child, layer_name, group_path + [entry["name"]], out)
+
+    # SIGNAGE_DUMP_CLIPS=1: also list what is clipped inside a PowerClip (marked "clip": true, group_path ends with
+    # "<clip>"), which the default dump never entered - the table/box artwork of the Agarpathi boards lives there.
+    if os.environ.get("SIGNAGE_DUMP_CLIPS") == "1":
+        try:
+            pc = shape.PowerClip
+            kids = [pc.Shapes.Item(i) for i in range(1, pc.Shapes.Count + 1)] if pc is not None else []
+        except Exception:
+            kids = []
+        for child in kids:
+            n0 = len(out)
+            _dump_shape(child, layer_name, group_path + [entry["name"] + "<clip>"], out)
+            out[n0]["clip"] = True
 
 
 def dump(cdr_path: Path) -> dict:

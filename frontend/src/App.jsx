@@ -3,6 +3,7 @@ import { AnimatePresence } from "framer-motion";
 import { NavLink, Route, Routes } from "react-router-dom";
 import { ChevronLeft, ChevronRight, History, Sparkles, Workflow } from "lucide-react";
 import Automation from "./pages/Automation.jsx";
+import { MasterProvider } from "./context/MasterContext.jsx";
 import RecentlyGenerated from "./pages/RecentlyGenerated.jsx";
 import { loadEditorPage } from "./utils/prefetchEditor.js";
 
@@ -107,10 +108,13 @@ function Shell() {
         </button>
       </aside>
       <main className="app-main">
-        <Routes>
-          <Route path="/" element={<Automation />} />
-          <Route path="/recent" element={<RecentlyGenerated />} />
-        </Routes>
+        {/* the master template registry, loaded once for the workspace (context/MasterContext.jsx) */}
+        <MasterProvider>
+          <Routes>
+            <Route path="/" element={<Automation />} />
+            <Route path="/recent" element={<RecentlyGenerated />} />
+          </Routes>
+        </MasterProvider>
       </main>
     </div>
   );

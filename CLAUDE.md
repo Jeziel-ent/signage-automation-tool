@@ -846,6 +846,46 @@ geometric rule to discover. This is the same limitation documented in
 "Designer dataset analysis" throughout - now measured from several angles,
 not closed.
 
+## Loose logo fragments move as one unit; edge-to-edge rules stretch (`layout._place_logo_units`, 2026-10-01)
+
+**Reported as** "hardcoded bounds / text frames that don't resize / EXPERT shifted off-centre" on a 90x80 in board from
+a 30x40 in master, with a proposed fix: find `WHITE_SHOP_BOX` / `SHOP_NAME_TEXT` / `EXPERT_LOGO_GROUP` by name and
+`SetBounds` them to fixed page fractions. **Not done that way**: none of those names exists (the master is 135 untagged
+top-level shapes - 132 loose curves and 3 groups), so the lookups would find nothing, and fixed fractions measured on one
+board are the over-fitting this file warns against. **Real cause, read off the real board** ("Chairman store",
+`e72b9394cb7d/f815cd3883cd`, from master `483713ace456`): the white card and the house were scaled correctly (uniform
+s = min(3, 2) = 2), but every LOOSE fragment's centre moved by the page's own factor per axis (3x across) while it grew 2x,
+so the gaps between letters grew 3x - "E X P E R T", "ட ா ல் ம ி ய ா", "D a l m i a" - and blue letters slid off the white
+card/house onto the blue page, looking clipped. The full-width rule above the footer grew 2x and stopped short of both
+edges. The "text clipping" in the footer is tofu (missing font) plus the shop name never being replaced (the report's
+own warning), not a frame size.
+
+**Fix (plain, non-tiled path only; tiled panels already move as one unit):**
+1. Loose `shape` fragments of `logo` role within `FRAGMENT_GAP_FRAC` (0.012 of the master's long side) of each other
+   form a unit (`cluster_fragments`, union-find); a group/bitmap overlapping a unit's box by `SHADOW_IOU` (0.6) joins it
+   (the card drop shadows are groups holding a bitmap). A unit of 2+ objects scales by s about its own centre, which is
+   placed at its proportional page position - the per-object rule applied to the unit. It cannot leave the page (its box
+   shrinks by s <= the page factor on both axes); a safe margin shifts the unit as one piece. Same aspect ratio = exactly
+   the old result. Groups, bitmaps and text are never merged with each other (Agarpathi's photo and badge, 43 mm apart,
+   stay independent) and never stretched.
+2. A bare `shape` spanning `FULL_SPAN_FRAC` (95 %) of the page width/height (rule line, colour band) is stretched with the
+   page along that axis and scaled by s across it. A full-width GROUP (the footer lettering) is not.
+
+**Why 0.012, measured on three real masters**: on the landscape dalmia 120x48 master it gives the documented 58 / 50 / 24
+logos (identical to 0.009); on the 30x40 portrait master 0.009 split the "Dalmia Bharat CEMENT" badge into 12 + 6 + 6
+(rows 9.2 and 11.7 mm apart) - which would still drift apart - while 0.012 keeps it whole. No threshold separates
+everything: the house and the Tamil card are 11.3 mm apart, closer than the badge's rows, so with groups counted they can
+merge. Merging is the safe direction (a merged unit is still uniform and on the page; only splitting spreads letters).
+
+**Verified**: on the real board's 135 shapes, re-laid out offline and re-composited in Edge from CorelDRAW's own per-shape
+renders (its editor scene): before = the real PNG; after = whole wordmarks on their card/house, shadow attached, rule edge
+to edge, everything on the page; fragment spacing grows x2.00 with the fragments (was x3.00). Against the designers' real
+dalmia files (cached dumps, `metrics.geometric_accuracy`, every NON-tiled board): 120x48 boards identical; 144x60 boards
+(09, 10, 13 x2) area matched within 5 mm **58-62 % -> 82-88 %**, mean position error +0.2-0.3 mm; board 12 (120x60, the
+known outlier) area unchanged at 1 %, mean position error 109 -> 129 mm (worse). Tests: 6 in `test_layout.py`
+(52 total; backend 870 passed). **Not verified live in CorelDRAW**: an untracked CorelDRAW (someone's own session) was
+open, and COM `Dispatch` can attach to it - re-convert the board once to confirm.
+
 ## Shop name replacement
 
 Since real masters are untagged, `compute_layout` can't find "the" shop-name
@@ -1379,6 +1419,151 @@ above) rather than shipping the general example-interpolation approach
 this validation shows underperforms. `example_engine.py` and its tests
 remain in the codebase for reference/future use, not as dead code to
 delete, but aren't on any runtime path.
+
+## Example-library layout (brand-agnostic, `backend/app/example_layout.py`, 2026-10-04)
+
+**What and why.** A master scaled uniformly does not look like what the designers make: they build a few STYLES per board size
+(where each badge, picture and the shop name sit) and repeat them - every 9x3 ft, 10x4 ft or 8x4 ft Agarpathi board has the same boxes
+to the millimetre, while 12x4 ft and 9x3 ft (same 3:1 ratio) differ. So the engine now COPIES THE NEAREST DESIGNER BOARD. It is
+generic: nothing names a brand, a picture or a shape. Offline leave-one-out on the 62 Agarpathi boards (artwork only): the old rule
+engine put 7 within 2 % of the page, copying the nearest board 36 (`tools/example_loo.py`).
+
+**Library** (`backend/brand_data/<brand>/library.json`, built by `tools/build_example_library.py <brand> <dump_dir> <master name
+fragment> ...` from COM dumps made WITH PowerClip contents: `tools/dump_brand_designers.py`, env `SIGNAGE_DUMP_CLIPS=1` in
+`dump_objects.py`):
+- `masters[]`: the master's art ELEMENTS as signatures (kind, aspect ratio, number of nested shapes; `n_desc` on `layout.Obj`, set by
+  `CorelEngine._count_nested`) - a group, a bitmap, a lone shape, or a CLUSTER of loose shapes closer than 1.2 % of the long side
+  (real masters leave logos as 100+ ungrouped curves; Dalmia's master clusters into exactly the documented 48 / 58 / 24-fragment
+  pictures) - plus the page clip's bitmaps (`clip_bitmaps`, told apart by aspect ratio and size: sticks, box, table, paper backdrop).
+- `boards[]`: per designer file, which master element went where (box as a fraction of the page; strict signature match first, then
+  a `loose` same-kind match for a re-drawn badge), the clip band / composite boxes, `cbm` (each clipped picture's own box) and the shop
+  name lines (`name_en`, `name_ta`: English by the file name's shop name, Tamil by script). `extra` = art on the board that is no master
+  element (repeated copies); a board belongs to the master it matches best.
+
+**Run time** (`example_layout.plan`, called from `layout.compute_layout` when the brand rule has `"example_library": true`): the opened
+master is matched to a library master by the same signatures; the nearest board is chosen (|ln aspect| + 0.35 |ln height|, same
+orientation family, ties -> the most complete board of that size, `compatible()` drops boards whose bitmaps are other pictures);
+returns `boxes` (a cluster's members keep their place in it), `clip` (band + each clipped picture) and `texts` (anchor left / right /
+centre = the edge that stays put across boards of that size, designer text height, width cap). Elements the chosen board lacks and
+anything unmatched fall through to the ordinary rules; `None` (no library, no matching master, no compatible board) = the old rules.
+`CorelEngine` applies it: `_apply_clip_plan` (pictures placed individually by aspect ratio corrected for the page stretch, the paper
+backdrop told from a picture by size, the colour band = the biggest wide low vector shape) and `_apply_text_fit` (the name line is
+scaled to the designer's height - growing a short name too - capped by her width, anchored at her x, centred on her y).
+`brand_rules/agarpathi.json` carries the flag; `shop["template_exclude"]` hides designer files (leave-one-out testing only).
+
+**Measured with the real engine** (CorelDRAW 2019, all 62 Agarpathi designer files, `tools/example_eval.py`; each board is generated,
+COM-dumped and compared element by element with her CDR; EXACT = within 2 % of the page for position / 3 % size, CLOSE 5 % / 6 %):
+- sizes the designer made (production behaviour): **47 EXACT, 1 CLOSE, 3 OFF, 11 not reproducible from the master** (a flat black box
+  instead of the standing one on the 9x3 ft style, repeated copies on the 35x4 ft board) = 48 of the 51 reproducible boards within 5 %.
+  Through the real app API (`POST /api/v2/shops/{id}/convert`) the similarity to her JPEG went 0.47 -> 0.95 (12x4), 0.43 -> 0.81 (11x6),
+  0.47 -> 0.72+ (5x5), 0.88 -> 0.92 (3x4), 0.87 (15x4), 0.98 (6x3).
+- sizes never made (every board of that size hidden): **7 EXACT, 15 CLOSE, 29 OFF, 11 not reproducible** - a new size is a guess; blending
+  the two nearest boards was tried and is worse (12 vs 16 of 62 at 2 %), `H_WEIGHT` 0-0.35 is flat, higher is worse.
+- Dalmia (second brand, only the 15 files this CorelDRAW can open): library built from 11 boards, 6 of 11 pass offline leave-one-out
+  but the wide tiled boards (3 of 14) are not representable, so **dalmia keeps its rules** (`example_library` is not set).
+- Not Agarpathi-specific code: `tests/test_example_layout.py` (11, synthetic dumps), `tools/example_loo.py`.
+
+**Hangyo (second brand, evaluated 2026-10-04 after CorelDRAW 27 was installed).** Earlier this machine had only CorelDRAW 2019 and the
+Hangyo files (saved by CorelDRAW 2024, `CoreVersion 2510`) failed with a bare "Failed to open document"; `corel_util.cdr_core_version` /
+`check_file_not_newer` (before `OpenDocument`; `tests/test_cdr_version_guard.py`) now name both versions. With CorelDRAW 27 the 53 files
+open. Library: 48 boards (45 built from the 6x3 ft master, 3 from the 10x3 ft one; the 4x8 ft master is one big group and matches nothing).
+Hangyo needed three generic engine additions: (1) `layout._shopname_replacement(..., language)` - Tamil Only writes the local name into a
+master's single English line; (2) `layout._add_missing_name_line` - the designer's board shows two scripts but the master has one name line:
+the shape is duplicated (`_tile1` id) and carries the other script in her box; (3) `CorelEngine._apply_text_fit` tries 1-4 balanced lines and
+keeps the biggest text that fits her text block. `load_brand_rule` turns the example library on automatically for any brand that has one
+(`"example_library": false` in the rule file keeps the rules - dalmia).
+Real-engine result (46 boards): sizes the designer made **15 EXACT, 4 CLOSE, 19 OFF, 8 not reproducible**; unseen sizes **5 EXACT, 33 OFF, 8 not
+reproducible**. Weakest: boards from the 10x3 ft master (it carries no shop-name text, so its name lines are always added copies) and the
+wide / tiled 12-26 ft boards; a name's block height depends on how many lines it wraps into, so names are scored on position (and only a >15 %
+height gap). Agarpathi was re-checked after these changes: 11 of 12 spot-checked boards still exact, the 12th unchanged.
+
+**Round 2 (2026-10-04): confidence tag, style masters, name lines, repeated copies.**
+- **Confidence on every finished board** (`confidence.layout_confidence`, wired through `layout.compute_layout` -> `Placed.layout_source` ->
+  `report["layout"]` -> `/api/v2/recent` + `/api/v2/shops/{id}/status` field `confidence`; badge "Exact size" / "Check" / "Draft" on the queue's
+  Completed pill and on Recently generated): GOOD = a designer board of the same size was copied, REVIEW = nearest-size copy
+  (distance <= 0.25), MANUAL = far, or the plain rules were used (`{"mode":"rules"}`), and a board whose designer example repeats art the
+  master lacks is at most REVIEW. `tests/test_confidence_layout.py`.
+- **One master per design style.** The flat-box 9x3 ft Agarpathi style needs pictures the 125x48 master does not have. Building the library
+  with that designer file as a THIRD master (`build_example_library.py agarpathi agarpathi "76 - 125 X 48" "76 - 36 X 48" "20 - 9 X 3"`)
+  absorbs all 10 art-limited boards. `find_master` now needs every library element present AND nothing left over (a superset master -
+  the 9x3 file holds every picture of the 125x48 one - was matched to the smaller one first), and `main._example_style_master` routes a
+  shop to the registered master whose FILE the nearest designer board was made from (`example_layout.preferred_master_file`), before the
+  shape-based `_nearest_shaped_master`. Needs the style master uploaded (same file name as in the library) - a data step.
+- **Name lines.** `_apply_text_fit` reads the designer's habit from her boards of that size: mode `font` (one font size, longer names wrap
+  onto more lines, never more than she used) when her per-line heights agree within 15 %, else `block` (fit each name to her text block, 1..her
+  maximum lines, the biggest text wins). The library records each name's `lines`. Hangyo's masters carry ONE name line, so a bilingual board
+  gets a duplicated line (`layout._add_missing_name_line`) and Tamil Only / English Only write the language into it
+  (`_shopname_replacement(..., language)`). A master with NO name text (Hangyo 10x3 ft) still needs a sample name added: data step.
+- **Repeated copies.** A wide designer board that shows the logo / badge / picture twice is recorded as `copies` of the master element
+  (strict signature leftovers; `extra` now counts only art that is no master element at all); `plan` emits `<id>_tile<n>` boxes, `layout`
+  turns them into Placed objects and `CorelEngine` duplicates the base shape for them. Not copied: tiling a name block, 3+ distinct new pictures.
+- **Evaluation harness fixes found on the way**: master reuse (`SIGNAGE_KEEP_MASTER_OPEN`) is OFF in `tools/eval_chain.py` - after
+  `Duplicate()` the undo check fails and a following shop can die with "The referenced object no longer exists" (in the app a failed batch
+  member is retried alone); NEVER start two evaluation chains (killing a child process only advances its shell to the next command - use the
+  single-process `tools/eval_chain.py` and kill that); a leftover CorelDRW holding 1.4 GB makes the next batch refuse (free RAM < 1.5 GB);
+  names carry "(1)" / "(2)" markers for double-sided boards (`clean_name`); name lines are scored with a 4x wider position tolerance because
+  the designer centres them by eye (her own same-size boards differ by 5-10 % of the page).
+
+**Round 3 (2026-10-04): Hangyo UI test vs the designers' JPEGs (`tools/build_hangyo_jpg_deck.py`, deck "Hangyo - Designer vs Automated").**
+Compared 50 UI outputs with the designer JPEGs (21 very close, 16 close, 9 different, 4 wrong proportions) and fixed what the slides showed:
+- **The queue never let the server choose the master.** The UI always sent `master_id` (the default = first master), and `_select_shop_master`
+  only runs the style routing when it is empty, so every board came from the first uploaded master (a 10x3 ft design for 8x4 / 10x4 ft GSB boards).
+  `utils/masters.js` `pickedMasterId` / `rowMasterIdsAuto`: `master_id` is sent only when the user PICKED one; the Master column has an
+  "Auto (best match)" entry (default). Auto = the server's order: (1) `main._example_style_master`, (2) `_nearest_shaped_master`, (3) the default.
+  `rowMasterIds` is unchanged.
+- **`example_layout.preferred_master_file(brand, w, h, available=, board_type=)`**: with `available` (the uploaded master file names) it searches every
+  candidate library (a master is recognised by its file / shapes, not by the brand label: Hangyo masters uploaded as "Adinn"), counts only boards
+  whose master is uploaded, and an uploaded master drawn at the target's own shape (within `SAME_SHAPE_TOL` 8 %: 10 X 3 for a 10x3 ft board) wins.
+  Measured: routing 10x3 ft boards to the 6 X 3 master (what the library says for most of them) is WORSE than the 10 X 3 master.
+- **TYPE OF BOARD picks among designer boards of one size** (`select_board(..., board_type)`, `plan(..., board_type)`, `compute_layout(board_type=)`,
+  `shop["board_type"]` from the shop row): an 8x4 ft GSB (banner with Tamil over English) and an 8x4 ft Double Side GSB (one big line) are different
+  designs. It only breaks ties between boards of the same distance and never overrides a nearer board; no type = the old choice. `_text_spec` does not
+  average boards of another type when their name lines sit > 4 % of the height elsewhere.
+- **Library build**: the English name line is found by `is_name_text` (the file name's shop name, or most of its words: designers retype names) so
+  boards no longer lose their English line as "art". Hangyo's library was rebuilt (`build_example_library.py hangyo hangyo "10 X 3.cdr" "6 X 3.cdr"
+  "4 X 8.cdr"` - use the `.cdr` names, a bare "10 X 3" matches a designer board): only 5 boards gained `name_en`; Agarpathi's library was not rebuilt.
+- **Name lines stay on the board**: a spec's `w_cap` is at most `PAGE_FIT` (96 %) of the page (a designer's own Tamil line can run off hers: 114 %)
+  and `CorelEngine._inside_page` pulls the line inside a 2 % margin - a name wider than the page made the exported picture wider than the board
+  (S.No 9 / 11 / 12 / 15). `_separate_name_lines`: Tamil-left / English-right lines whose recorded boxes overlap keep the left line to the room left.
+- Excel columns (`shopImport.js`): `SHOP NAME (TA)` is read as the Tamil name, `MASTER` picks a master by name / label / file name
+  (`resolveMasterId`), `CONVERT` = No / skip / hold / 0 excludes the row from Convert All (`skip_convert`).
+- **Cannot be automated / still open**: the designer's Tamil spelling (only the sheet's TA column can supply it) and renamed English names; a size nobody
+  made; a design chosen by the designer's judgement when type and size do not say; repeated logos on boards whose art the master lacks (10x4 ft GSB shows
+  one logo, the designer two); the portrait 3x6 boards (the library records them as built from the landscape 6 X 3 master, the portrait 4 X 8 master matches
+  nothing, so they use the rules). Tests: `tests/test_example_layout_types.py`, `masters.test.mjs`.
+
+**Round 3 follow-up: driven through the frontend (Hangyo 50 boards, Agarpathi worst 8).** A visible run (built-in browser against my own backend on
+:8001 + vite on :5174, `SIGNAGE_API=http://localhost:8001` read by `frontend/vite.config.js`; masters and the Excel sheet injected into the real dropzones
+with `DataTransfer`) found three more things:
+- **Wide Hangyo boards (12x4 ... 26x3 ft) were drawn from the 6 X 3 master and came out broken** (name hidden behind the band, tiny pictures); the 10 X 3
+  master gives the designer's logo | name panel | logo design (similarity to the designer's picture 0.68-0.76 -> 0.87-0.92 on all ten tested).
+  `library.json` may carry `"wide_boards_use_widest_master": true` (set for Hangyo; `build_example_library.py` keeps such hand-set keys on a rebuild):
+  `preferred_master_file` then sends a board at least as wide as an uploaded master (within `SAME_SHAPE_TOL` x 1.5 below) to the WIDEST such master.
+  **Not generic on purpose**: without the flag the nearest designer board decides - Agarpathi has a 9 X 3 flat-box style master next to its 125 X 48
+  one (both ~3:1), and a same-shape rule sent 12x4 boards to the 9 X 3 master (another shop's Tamil name left on them). Measured, then gated.
+- **A board that Duplicate()s shapes is no longer kept open as the next shop's master** (`made_copies` in `CorelEngine.process`): an undone Duplicate
+  passes the fingerprint check yet produced boards with an icon at many times its size later in the same batch (solo conversions were fine).
+- Result: Hangyo 50 boards through the UI = 29 very close / 17 close / 4 different / 0 wrong size (was 21 / 16 / 9 / 4 in the first UI test);
+  Agarpathi's 8 weakest boards: the two 12x4 ft boards 0.81 -> 0.98, the rest unchanged (6x5, 2x6, 6x4 ft: designer art the master lacks, and the
+  designer's preview shows its own Tamil as boxes, so the score under-rates ours). Decks: `Hangyo - Designer vs Automated (UI run).pptx`,
+  `Agarpathi - Worst boards (UI run).pptx` (`tools/build_hangyo_jpg_deck.py`, any brand).
+
+**Master routing.** `main._nearest_shaped_master`: when a brand has two or more masters of the target's orientation that carry a default
+size (Hangyo's 10x3 / 6x3 / 4x8 ft creatives), the one whose width:height is closest is used (the queue's explicit master pick still wins).
+
+**Tools** (all `backend/tools/`): `dump_brand_designers.py`, `build_example_library.py`, `example_loo.py` (offline, any brand),
+`example_eval.py <brand> <dump dir> <dataset dir> known|unseen` (real engine; generate, then dump + compare in separate worker batches -
+dumping inside the generating worker breaks the reused CorelDRAW), `example_recompute.py` / `example_redump.py` / `example_migrate_dumps.py`
+(re-derive verdicts from saved dumps without CorelDRAW), `build_comparison_deck.py <out.pptx> <brand>[:Title] ...` (the designer-vs-automated
+deck; a brand without results gets a "blocked" slide from `dataset_analysis/example_eval/<brand>/blocked.json`), `side_by_side.py`.
+Harness gotchas found: CorelDRAW cannot save to a path beyond ~260 characters (long names in deep eval folders: shortened automatically);
+the two S.No 76 designer files share a 60-character name prefix (dump files now carry sno + size); the engine shortens very long output
+names on save (the dump step globs the folder).
+
+**Known limits.** A new size is only as good as the nearest designer board; boards that use pictures the master lacks cannot be matched
+(upload one master per design style - the library supports several per brand); the table/box pictures are placed by the designer's
+boxes but the composite is not re-arranged inside a group; Tamil text is the automatic transliteration, so its width differs from hers;
+a name longer than its slot is scaled down (as the designer does), never wrapped.
 
 ## Engine split (`backend/app/engines.py`)
 
@@ -3291,6 +3476,61 @@ before the engine, and the orientation adapter is not on this path at all. Tests
 (629 backend total). NOT done: a live Shop 2 conversion checking the rendered layers against the portrait CDR - the
 user's masters are not available here, so the "roof badge at bottom / Tamil card upper-mid" check is still to do by eye.
 
+### Master template registry: any number of masters per orientation (2026-10-01; supersedes the Landscape 1/2 + Portrait 1/2 slots)
+
+A master is still its own `jobs` row with an `orientation`. New columns on `jobs` (`db._MIGRATIONS`): `master_name`,
+`default_width/height/unit`, `registered` and `deleted_at`. Shops get a new `master_id` column.
+**Deviation from the request**: it asked for `app/models/master.py` + `app/api/masters.py`. The repo keeps its schema in `db.py`
+and its routes in `main.py`, and conversion already resolves masters as `jobs` rows, so the registry extends those instead of
+adding a parallel table.
+- `GET /api/masters?brand=&orientation=` -> `{masters, landscape, portrait}`, oldest first. The first master of each
+  orientation is that orientation's default. Each master: id, name, orientation, brand, file_name, file_path, file_size,
+  dimensions_default `{width,height,unit}|null`, master_shop_name, preview_url, created_at.
+- `POST /api/masters/upload` (form: `master`, `brand`, `orientation`, `name`, `dimensions_default` JSON,
+  `master_shop_name[_local]`). A blank name becomes "Master N", where N counts every master ever registered for that
+  brand + orientation, so a name is never reused after a delete. `/api/v2/upload` registers too, under the same default name.
+- `DELETE /api/masters/{id}` is a SOFT delete. The file stays, because that master's folder also holds the boards made from
+  it. Answers 404 if the id is unknown, unregistered or already deleted, and 409 while a shop using it is queued/converting.
+- Masters uploaded before the registry existed are not listed (`registered` NULL). They still work for their own shops.
+- **Resolution** (`main._select_shop_master`). The shop's `master_id` is used if it exists, is not deleted, belongs to the
+  shop's brand and matches the TARGET orientation (the 1.25 rule). Otherwise the reason is logged and recorded in
+  `report.master_used.reason`, and selection falls back to the `landscape/portrait_master_id` defaults
+  (`orientation_adapter.select_master`). If there is no default of that orientation, the brand's first registered master of
+  that orientation is used. A shop with no ids at all converts from its job's own master, unchanged.
+  `report.master_used` now also has `name` and `selected`. `master_id` is accepted by add-shop, the batch add and convert; an
+  explicit null on convert clears it. It is rejected with 404 if unknown, and 400 if deleted or from another brand.
+  Orientation is deliberately not validated on the request, so a resized row falls back instead of failing.
+- **Engine**: `engines.py` and `corel_util.py` are unchanged. The master FILE is chosen before the engine runs, and the
+  master session (keep-open) is keyed on the path, so different masters within one batch reopen correctly.
+- **Frontend**:
+  - `context/MasterContext.jsx` (mounted in `App.jsx`'s Shell) fetches `/api/masters` once and exposes `forBrand`,
+    `add` and `remove`.
+  - `utils/masters.js` now works on `{landscape: [...], portrait: [...]}` (`rowMasterId`, `masterLabel` "L: Master 2 - ...",
+    `rowMasterIds` = `{master_id, landscape_master_id, portrait_master_id}`). Rows carry `master_id` (it replaced
+    `master_slot`, also through drafts and `resetForNewMaster`).
+  - **Deviation from the request**: a row's orientation uses the server's W:H >= 1.25 rule, not `height > width`. With
+    `height > width` a 5x5 ft board would list landscape masters but be converted from a portrait one.
+  - The queue's Master column (`MasterCell` in `Automation.jsx`; there is no `ShopQueueTable.jsx`) is a dropdown of every
+    master of the row's orientation; with one master its name is shown as text.
+  - Master Templates shows every master as a card (the first is tagged "default") plus an "Add" dropzone per orientation.
+    The section grows with the number of masters.
+  - The brand bar's "Manage Masters" button and the section's "+ Add Master" open `components/MasterManagementModal.jsx`:
+    an upload form (name, orientation, optional default size, .cdr, real XHR progress) and both lists with Delete.
+  - Adding or deleting a master, or switching brand (another master set), resets the queue's conversions exactly like a
+    master change did before.
+  - Found while checking: a tall portrait preview squeezed a fixed-height card's name to zero height (now `flex: none`).
+- **Verified**: `test_masters_registry.py` (12; backend 864 passed, 37 skipped) and `masters.test.mjs` (frontend 264).
+  Edge (playwright-core) was also run against a mock-engine server on a scratch data dir:
+  - 3 landscape + 3 portrait registered via the API and all 6 listed with their orientations.
+  - A 4th portrait master uploaded through the modal.
+  - A 3x6 ft row listed the 4 portrait masters and a 16x3 ft row the 3 landscape ones.
+  - Picking "P: Master 3 - Vertical Banner" / "L: Master 2 - Promotional" put those `master_id`s in the convert payloads,
+    and both boards' `master_used` named them (`selected: true`).
+  - Deleting a master from the modal removed it from the page and the API.
+  - No console errors apart from the known favicon 404.
+  - **Not verified**: a live CorelDRAW batch using different masters. MockEngine ignores the master file, so "the right file
+    was opened" is shown by `_convert_job`'s `master_path` and the report, not by rendered boards.
+
 ### Shop-name binding, 1.25 master routing, square/vertical boards (2026-09-30)
 
 Found on the real DARSHAN dual masters (125x48 landscape, 36x48 portrait): (1) the v2 conversion never told the engine
@@ -3874,12 +4114,13 @@ it doesn't read as an arbitrary rule.
   other pre-existing text in the master is only as good as the fonts
   already on the machine that made it.)
 - **Ungrouped multi-fragment logos** (see "Designer dataset analysis")
-  shatter under per-shape scaling; no clustering/auto-grouping was
-  implemented in `compute_layout` itself (`derive_brand_rules.py`'s
-  clustering is used only to build the static `brand_rules/*.json` file
-  offline, not applied generically at layout time).
-  `docs/master-preparation.md` is the mitigation (group future masters
-  properly) rather than a code fix.
+  used to shatter under per-shape scaling. **Partly fixed (2026-10-01)**:
+  `compute_layout`'s plain (non-tiled) path now moves loose fragments as
+  rigid units - see "Loose logo fragments move as one unit" below. Still
+  open: a gap threshold cannot tell every logo apart (house and card merge
+  on the 30x40 master), and text is never part of a unit.
+  `docs/master-preparation.md` (group future masters properly) remains the
+  reliable route.
 - **Manual creative redesign for extreme aspect ratios** (repositioning
   content to be more compact, dropping elements that don't fit, or
   choosing which elements to repeat when tiling) isn't and can't fully be

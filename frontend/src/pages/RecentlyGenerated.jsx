@@ -150,6 +150,11 @@ export default function RecentlyGenerated() {
                         <span className={`badge ${STATUS_BADGE[r.status] || "badge-queued"}`} title={r.error || undefined}>
                           {STATUS_LABELS[r.status] || r.status}
                         </span>
+                        {r.status === "done" && r.confidence && (
+                          <span className={`badge conf-badge conf-${r.confidence.label}`} title={r.confidence.reasons.join(" - ")}>
+                            {r.confidence.label === "GOOD" ? "Exact size" : r.confidence.label === "REVIEW" ? "Check" : "Draft"}
+                          </span>
+                        )}
                       </td>
                       <td>
                         {r.files ? (

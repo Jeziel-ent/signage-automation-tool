@@ -161,3 +161,34 @@ def _would_tile(master_w: float, master_h: float, new_w: float, new_h: float) ->
 
     axis, _n = _tile_plan(master_w, master_h, new_w, new_h)
     return axis is not None
+
+
+# ---------------------------------------------------------------------------------------------------------------------
+# Example-library layouts (app/example_layout.py): how far the layout was copied from a designer board.
+NEAR_DISTANCE = 0.25      # |ln aspect| + 0.35 |ln height| up to this: a close size (a few percent apart)
+
+
+def layout_confidence(layout: dict | None) -> dict | None:
+    """GOOD / REVIEW / MANUAL for a finished board from its report's `layout` record (None when the brand has no example library,
+    i.e. nothing to judge by). Measured on 62 + 46 real designer boards: copying a designer board of the SAME size lands on her
+    boxes (GOOD); any other size is a nearest-size guess that only about a third of the time lands within 5 % (REVIEW, or MANUAL
+    when the nearest board is far); a fall-back to the plain rules has no designer evidence at all (MANUAL)."""
+    if not layout:
+        return None
+    if layout.get("mode") != "example":
+        return {"label": MANUAL, "reasons": [layout.get("reason") or "no designer example fits - plain scaling rules were used"]}
+    tw, th = layout.get("W"), layout.get("H")
+    size = f"{tw / 25.4:.0f} x {th / 25.4:.0f} in" if tw and th else "?"
+    if layout.get("exact"):
+        reasons = [f"same size as a designer board ({size}): layout copied from it"]
+        label = GOOD
+    else:
+        d = float(layout.get("distance") or 0)
+        label = REVIEW if d <= NEAR_DISTANCE else MANUAL
+        reasons = [f"no designer board of this size - copied the nearest one ({size}); positions are a guess, check the board"
+                   if label == REVIEW else
+                   f"the nearest designer board ({size}) is far from this size - treat the layout as a rough draft"]
+    if (layout.get("extra") or 0) >= 3:
+        label = _worse(label, REVIEW)
+        reasons.append("the designer's board repeats artwork the master does not contain - a repeat/extra picture may be missing")
+    return {"label": label, "reasons": reasons}

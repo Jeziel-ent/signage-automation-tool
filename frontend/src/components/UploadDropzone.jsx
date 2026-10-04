@@ -42,7 +42,8 @@ export default function UploadDropzone({ brand, onUploaded, disabled, orientatio
     }
 
     const xhr = new XMLHttpRequest();
-    xhr.open("POST", "/api/v2/upload");
+    // registers the master (GET /api/masters lists it); the response is that master: {id, name, orientation, preview_url, ...}
+    xhr.open("POST", "/api/masters/upload");
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) setProgress(Math.round((e.loaded / e.total) * 100));
     };

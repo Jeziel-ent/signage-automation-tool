@@ -354,6 +354,10 @@ a.btn { text-decoration: none; display: inline-block; }
 .ws-card .shops-table tr.new-shop-row input, .ws-card .shops-table tr.new-shop-row select { border-color: #e2e8f0; background: #fff; }
 
 .badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+.conf-badge { margin-left: 6px; font-size: 11px; cursor: help; }
+.conf-GOOD { background: #ecfdf5; color: #047857; border: 1px solid rgba(167, 243, 208, 0.6); }
+.conf-REVIEW { background: #fffbeb; color: #b45309; border: 1px solid rgba(253, 230, 138, 0.7); }
+.conf-MANUAL { background: #fef2f2; color: #b91c1c; border: 1px solid rgba(254, 202, 202, 0.7); }
 .badge-done { background: #ecfdf5; color: #047857; border: 1px solid rgba(167, 243, 208, 0.6); }
 .badge-processing { background: #fffbeb; color: #b45309; border: 1px solid rgba(253, 230, 138, 0.6); animation: badge-pulse 1.6s ease-in-out infinite; }
 .badge-queued { background: #f1f5f9; color: #475569; }
@@ -889,3 +893,20 @@ a.btn { text-decoration: none; display: inline-block; }
 .ws-masters .mc-stack .file-badge-size { font-size: 10.5px; }
 .ws-masters .mc-stack .file-badge .icon-btn { padding: 2px; }
 @media (max-width: 760px) { .ws-masters .mc-stack.two { grid-template-columns: 1fr; } }
+
+/* ---- Master Templates: any number of masters per orientation (each a card), then an "Add" card */
+.ws-masters .mc-stack.many { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.ws-masters .mc-stack.many .master-card.filled .mc-filled-head { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mc-module-count { margin-left: auto; min-width: 18px; padding: 0 6px; border-radius: 999px; background: rgba(148, 163, 184, 0.18);
+  font: 600 10.5px/18px inherit; text-align: center; color: #64748b; }
+.manage-masters-btn { display: inline-flex; align-items: center; gap: 6px; }
+.manage-masters-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ws-masters .ws-card-head .mc-secondary-toggle { display: inline-flex; align-items: center; gap: 4px; }
+/* a tall (portrait) preview must not squeeze the card's name or file badge out of its fixed height: they keep their size,
+   the thumbnail takes what is left and the image scales inside it */
+.ws-masters .mc-stack .master-card.filled .mc-filled-head, .ws-masters .mc-stack .master-card.filled .file-badge { flex: none; }
+.ws-masters .mc-stack .master-card.filled .master-thumb { flex: 1 1 0; overflow: hidden; }
+.ws-masters .mc-stack .master-card.filled .master-thumb img { height: 100%; width: 100%; }
+/* the queue's Master dropdown: long master names are cut (full name in the tooltip) so they don't widen the table */
+.master-cell select { max-width: 210px; text-overflow: ellipsis; }
+.master-cell .muted { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }

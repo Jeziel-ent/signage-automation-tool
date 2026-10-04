@@ -13,7 +13,12 @@ __pycache__
 # Phase 2 example-engine data - regenerable from cached dumps via build_examples.py;
 # not wired into any runtime path yet (see CLAUDE.md "Example-based layout engine" -
 # a negative result as of this writing, unlike backend/app/brand_rules/ which IS used)
-/backend/brand_data/
+/backend/brand_data/*
+# ...except the example libraries: the layout engine reads backend/brand_data/<brand>/library.json at run time
+# (app/example_layout.py), so a fresh checkout needs them. They hold geometry of the designers' boards, not the CDRs.
+!/backend/brand_data/*/
+/backend/brand_data/*/*
+!/backend/brand_data/*/library.json
 
 *.pyc
 .venv/

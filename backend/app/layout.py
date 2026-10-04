@@ -82,6 +82,7 @@ class Obj:
     h: float  # mm
     text: str | None = None  # content, for kind=="text" objects only
     fill_cmyk: tuple | None = None  # (c, m, y, k) 0-100, best-effort - None if not a uniform fill or unreadable
+    n_desc: int = 0  # shapes nested inside this group (0 for anything else) - part of an element's signature
 
 
 @dataclass
@@ -102,6 +103,12 @@ class Placed:
     # one line of a shop name the master spreads over several text shapes (split_name_lines): CorelEngine only shrinks it to
     # fit, never wraps it onto an extra line (a wrapped line grows down over whatever sits below it)
     no_wrap: bool = False
+    # Agarpathi template layout (app/agarpathi_template.py): target boxes for the contents of the background PowerClip, and
+    # how a shop-name line is sized/anchored (CorelEngine applies both)
+    clip_plan: dict | None = None
+    text_fit: dict | None = None
+    # how the layout was made (set on the first object only): {"mode": "example", template, exact, ...} or {"mode": "rules", reason}
+    layout_source: dict | None = None
 
     def to_dict(self):
         return asdict(self)
@@ -140,6 +147,9 @@ def compute_layout(
     gst: str | None = None,
     address_lines: list[str] | None = None,
     contact_ids: set[str] | None = None,
+    template_exclude: list[str] | None = None,
+    board_type: str | None = None,
+    language: str | None = None,
 ) -> list[Placed]:
     """Return placement for every object on the new page size (all mm).
 
@@ -175,7 +185,22 @@ def compute_layout(
     shopname_ids |= {o.id for o in objects if roles[o.id] == "shopname"}
     contact_ids = set(contact_ids or ())
 
-    axis, n_tiles = _tile_plan(page_w, page_h, new_w, new_h) if tile else (None, 1)
+    tpl_plan = None
+    if brand_rule and brand_rule.get("example_library") and brand_rule.get("brand"):
+        # layout copied from the nearest designer board of this brand (app/example_layout.py); None = no usable example
+        from . import example_layout
+        tpl_plan = example_layout.plan(brand_rule["brand"], objects, page_w, page_h, new_w, new_h,
+                                       name_ids=shopname_ids, exclude=template_exclude, board_type=board_type)
+    # a master with ONE name line, a board whose designer example shows ONE script, and a shop with both names: "Both" stacks the two
+    # names as two lines of that line's text box (a second box would sit on top of the first)
+    stack_both = bool(tpl_plan and language in (None, "both") and shop_name and shop_name_local and len(shopname_ids) == 1
+                      and len(tpl_plan.get("board_scripts") or ()) == 1)
+    axis, n_tiles = _tile_plan(page_w, page_h, new_w, new_h) if (tile and not tpl_plan) else (None, 1)
+    # Not tiling: loose logo fragments are placed as rigid units (see _place_logo_units) - the tiled panel paths below
+    # already move the whole panel as one unit.
+    logo_units = {} if ((axis and n_tiles > 1) or tpl_plan) else _place_logo_units(
+        [o for o in objects if roles[o.id] == "logo" and o.id not in shopname_ids], page_w, page_h, new_w, new_h, s,
+        safe_margin)
 
     out: list[Placed] = []
     panel_objs: list[Obj] = []
@@ -185,8 +210,26 @@ def compute_layout(
         orig = {"x": o.x, "y": o.y, "w": o.w, "h": o.h}
         warns: list[str] = []
 
+        if tpl_plan and o.id in tpl_plan["boxes"]:
+            bx, by, bw, bh, _el = tpl_plan["boxes"][o.id]
+            out.append(Placed(o.id, o.name, "logo", bx, by, bw, bh, orig, warns))
+            continue
+
         if o.id in shopname_ids:
-            text, font = _shopname_replacement(o, shop_name, shop_name_local)
+            text, font = _shopname_replacement(o, shop_name, shop_name_local, language)
+            if stack_both and text:
+                text = (shop_name_local + chr(13) + shop_name) if is_tamil(text) else (shop_name + chr(13) + shop_name_local)
+            spec = None
+            if tpl_plan:
+                tamil_out = bool(text) and is_tamil(text)          # the script the line will actually carry
+                spec = tpl_plan["texts"].get("name_ta" if tamil_out else "name_en") or                     tpl_plan["texts"].get("name_en" if tamil_out else "name_ta")
+            if spec is not None:
+                k = spec["h"] / o.h                       # same proportions as the master's line; CorelEngine fits it
+                w, h = o.w * k, o.h * k
+                x = {"left": spec["ax"], "right": spec["ax"] - w, "center": spec["ax"] - w / 2}[spec["anchor"]]
+                out.append(Placed(o.id, o.name, "shopname", x, spec["cy"] - h / 2, w, h, orig, warns, text, font,
+                                  text_fit=spec))
+                continue
             # A `panel_sequence` rule's real boards keep the shop name in its
             # normal bottom-bar spot (between the "authorized dealer" footer
             # and the phone/GST line), not in a gap between panel copies -
@@ -209,6 +252,9 @@ def compute_layout(
 
         if role == "bg":
             x, y, w, h = 0.0, 0.0, new_w, new_h
+            if tpl_plan and tpl_plan["clip"]:
+                out.append(Placed(o.id, o.name, role, x, y, w, h, orig, warns, clip_plan=tpl_plan["clip"]))
+                continue
 
         elif role == "frame":
             ml, mb = o.x, o.y
@@ -233,6 +279,14 @@ def compute_layout(
             # (graphics/groups/bitmaps) gets folded into the tiled panel.
             if axis and n_tiles > 1 and role == "logo":
                 panel_objs.append(o)
+                continue
+            if o.id in logo_units:
+                x, y, w, h, unit_warns = logo_units[o.id]
+                warns.extend(unit_warns)
+                if aspect_ratio_change > 2 or aspect_ratio_change < 0.5:
+                    warns.append("very different aspect ratio; review layout manually")
+                contact_text = _contact_replacement(o, phone, gst, address_lines) if o.id in contact_ids else None
+                out.append(Placed(o.id, o.name, role, x, y, w, h, orig, warns, contact_text))
                 continue
             w, h = o.w * s, o.h * s
             cx = (o.x + o.w / 2) / page_w * new_w
@@ -269,8 +323,41 @@ def compute_layout(
                 shopname_objs, new_w, new_h, panel_scale, shop_name, shop_name_local,
             ))
 
+    if tpl_plan:
+        by_id = {o.id: o for o in objects}
+        for tid, (bx, by, bw, bh, _k) in tpl_plan["boxes"].items():
+            base = tid.partition("_tile")[0]
+            if "_tile" in tid and base in by_id:                    # a repeated copy of an element: CorelEngine duplicates the shape
+                o = by_id[base]
+                out.append(Placed(tid, o.name, "logo", bx, by, bw, bh, {"x": o.x, "y": o.y, "w": o.w, "h": o.h}, []))
+    if tpl_plan and language in (None, "both") and shop_name and shop_name_local and not stack_both:
+        _add_missing_name_line(out, objects, tpl_plan, shop_name, shop_name_local)
+    if out and brand_rule and brand_rule.get("example_library"):
+        out[0].layout_source = ({"mode": "example", **tpl_plan["template"]} if tpl_plan else
+                                {"mode": "rules", "reason": "no designer example of this brand fits this master and size"})
     _distribute_shopname_lines(out, objects)
     return out
+
+
+def _add_missing_name_line(out: list[Placed], objects: list[Obj], tpl_plan: dict, shop_name: str, shop_name_local: str) -> None:
+    """The designer's board shows the name in two scripts but the master has a single name line: a copy of that line (the engine
+    duplicates the shape for a `_tile` id) carries the other script, laid out by the designer's box for it."""
+    names = [p for p in out if p.role == "shopname" and p.text and p.text_fit]
+    texts = tpl_plan["texts"]
+    if len(names) != 1 or "name_en" not in texts or "name_ta" not in texts:
+        return
+    p = names[0]
+    o = next((o for o in objects if o.id == p.id), None)
+    if o is None:
+        return
+    tamil_primary = is_tamil(p.text)
+    spec = texts["name_en" if tamil_primary else "name_ta"]
+    other = shop_name if tamil_primary else shop_name_local
+    k = spec["h"] / o.h
+    w, h = o.w * k, o.h * k
+    x = {"left": spec["ax"], "right": spec["ax"] - w, "center": spec["ax"] - w / 2}[spec["anchor"]]
+    out.append(Placed(f"{p.id}_tile1", p.name, "shopname", x, spec["cy"] - h / 2, w, h, dict(p.orig), [], other,
+                      None if tamil_primary else TAMIL_FONT, text_fit=spec))
 
 
 def _clamp_and_warn(x, y, w, h, new_w, new_h, safe_margin, s, warns: list[str]):
@@ -779,19 +866,28 @@ def load_brand_rule(brand: str | None) -> dict | None:
     """Load backend/app/brand_rules/<brand>.json if it exists, else None -
     callers should treat a missing rule as "use the generic single-panel
     tiling", not an error (most brands won't have one).
-    """
+
+    A brand with an example library (backend/brand_data/<brand>/library.json, see app/example_layout.py) gets
+    `example_library: true` unless its rule file says otherwise (`"example_library": false` keeps the rules, e.g. dalmia)."""
     if not brand:
         return None
     import json as _json
     from pathlib import Path as _Path
 
-    path = _Path(__file__).resolve().parent / "brand_rules" / f"{brand.strip().lower()}.json"
-    if not path.exists():
-        return None
-    try:
-        return _json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    here = _Path(__file__).resolve().parent
+    rule = None
+    path = here / "brand_rules" / f"{brand.strip().lower()}.json"
+    if path.exists():
+        try:
+            rule = _json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            rule = None
+    key = brand.strip().lower()
+    if (here.parent / "brand_data" / key / "library.json").exists():
+        rule = dict(rule or {})
+        rule.setdefault("example_library", True)
+        rule.setdefault("brand", key)
+    return rule
 
 
 def _place_tile_copy(panel_objs, roles, scale, x_offset, y_offset, tile_index) -> list[Placed]:
@@ -826,8 +922,13 @@ def _place_shopname_in_gap(shopname_objs, new_w, new_h, panel_scale, shop_name, 
     return out
 
 
-def _shopname_replacement(o: Obj, shop_name, shop_name_local) -> tuple[str | None, str | None]:
-    """Pick which replacement string (and font) fits this text object's script."""
+def _shopname_replacement(o: Obj, shop_name, shop_name_local, language: str | None = None) -> tuple[str | None, str | None]:
+    """Pick which replacement string (and font) fits this text object's script. `language` ('en' / 'ta') makes a master with ONE
+    name line (no separate Tamil line) carry the requested language: Tamil Only writes the local name into its English line."""
+    if language == "ta" and shop_name_local and not is_tamil(o.text):
+        return shop_name_local, TAMIL_FONT
+    if language == "en" and shop_name and is_tamil(o.text):
+        return shop_name, None
     if is_tamil(o.text) and shop_name_local:
         return shop_name_local, TAMIL_FONT
     if shop_name:
@@ -1039,6 +1140,118 @@ def find_local_partner_ids(objects: list[Obj], name_ids: set[str]) -> set[str]:
     return out
 
 
+FRAGMENT_GAP_FRAC = 0.012  # of the master's LONG side: loose logo fragments this close belong to one visual unit
+FULL_SPAN_FRAC = 0.95      # a bare shape spanning this much of the page width (height) is a rule line / band
+
+
+def cluster_fragments(objs: list[Obj], page_w: float, page_h: float,
+                      gap_frac: float = FRAGMENT_GAP_FRAC) -> list[list[Obj]]:
+    """Union-find of `objs` whose bounding boxes lie within `gap_frac` x the page's long side of each other
+    (the same idea as derive_brand_rules.cluster / orientation_adapter._group_fragments). Order is kept: clusters
+    in the order of their first member, members in input order."""
+    gap = gap_frac * max(page_w, page_h)
+    parent = list(range(len(objs)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for i, a in enumerate(objs):
+        for j in range(i + 1, len(objs)):
+            b = objs[j]
+            if (a.x - gap <= b.x + b.w and b.x - gap <= a.x + a.w
+                    and a.y - gap <= b.y + b.h and b.y - gap <= a.y + a.h):
+                parent[find(i)] = find(j)
+    clusters: dict[int, list[Obj]] = {}
+    for i, o in enumerate(objs):
+        clusters.setdefault(find(i), []).append(o)
+    return sorted(clusters.values(), key=lambda m: objs.index(m[0]))
+
+
+SHADOW_IOU = 0.6  # a group/bitmap overlapping a fragment cluster's box this much belongs to it (a logo card's drop shadow)
+
+
+def _iou(a: tuple, b: tuple) -> float:
+    ox = min(a[2], b[2]) - max(a[0], b[0])
+    oy = min(a[3], b[3]) - max(a[1], b[1])
+    if ox <= 0 or oy <= 0:
+        return 0.0
+    inter = ox * oy
+    return inter / ((a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter)
+
+
+def _place_logo_units(logos: list[Obj], page_w: float, page_h: float, new_w: float, new_h: float, s: float,
+                      safe_margin: float) -> dict[str, tuple]:
+    """Placement (x, y, w, h, warnings) for the `logo` objects of a plain (non-tiled) resize that need more than the
+    per-object rule; objects not in the result keep it (uniform scale `s`, centre at its proportional page position).
+
+    Why: real masters draw a logo as dozens of LOOSE curves (dalmia: ~130 - a white card, its wordmark letter by letter,
+    an icon). Per object, each fragment grows by `s` but its centre moves by the page's own factor per axis; when those
+    differ (a 30x40 in master on a 90x80 in board: s = 2, 3x across) the gaps between fragments grow 3x while the
+    fragments grow 2x - wordmarks came out letter-spaced ("E X P E R T"), and blue letters slid off their white card
+    or house onto the blue background, looking clipped (seen live on a real 90x80 board).
+
+    1. Loose `shape` fragments within FRAGMENT_GAP_FRAC of each other form one unit (cluster_fragments); a group or
+       bitmap overlapping a unit's box by SHADOW_IOU joins it (dalmia's card shadows are bitmap groups). Each unit of
+       2+ objects scales by `s` as one rigid piece about its own centre, which keeps its proportional page position -
+       the per-object rule applied to the unit. A unit can therefore never leave the page (its box shrinks by s <= the
+       page factor on both axes); the safe margin may still shift it, as one piece. On a board with the master's
+       aspect ratio this is exactly the per-object result.
+    2. A bare shape spanning FULL_SPAN_FRAC of the page width (height) - a rule line, a colour band - is stretched with
+       the page along that axis (edge to edge, as drawn) and scaled by `s` across it.
+    Groups, bitmaps and text never stretch non-uniformly."""
+    out: dict[str, tuple] = {}
+    loose: list[Obj] = []
+    for o in logos:
+        span_w, span_h = _span_axes(o, page_w, page_h)
+        if span_w or span_h:
+            fx, fy = new_w / page_w, new_h / page_h
+            w = o.w * (fx if span_w else s)
+            h = o.h * (fy if span_h else s)
+            cx = (o.x + o.w / 2) * fx
+            cy = (o.y + o.h / 2) * fy
+            warns: list[str] = []
+            x, y = _clamp_and_warn(cx - w / 2, cy - h / 2, w, h, new_w, new_h, safe_margin, s, warns)
+            out[o.id] = (x, y, w, h, warns)
+        elif o.kind == "shape":
+            loose.append(o)
+    units = [u for u in cluster_fragments(loose, page_w, page_h)]
+    boxes = [(min(o.x for o in u), min(o.y for o in u), max(o.x + o.w for o in u), max(o.y + o.h for o in u)) for u in units]
+    for o in logos:
+        if o.kind in ("group", "bitmap") and o.id not in out and units:
+            ob = (o.x, o.y, o.x + o.w, o.y + o.h)
+            best = max(range(len(units)), key=lambda i: _iou(ob, boxes[i]))
+            if _iou(ob, boxes[best]) >= SHADOW_IOU:
+                units[best].append(o)
+    for u in units:
+        if len(u) < 2:
+            continue
+        x0, y0 = min(o.x for o in u), min(o.y for o in u)
+        x1, y1 = max(o.x + o.w for o in u), max(o.y + o.h for o in u)
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        ncx, ncy = cx / page_w * new_w, cy / page_h * new_h
+        uw, uh = (x1 - x0) * s, (y1 - y0) * s
+        warns = []
+        ux, uy = _clamp_and_warn(ncx - uw / 2, ncy - uh / 2, uw, uh, new_w, new_h, safe_margin, s, warns)
+        dx, dy = ux - (ncx - uw / 2), uy - (ncy - uh / 2)
+        for o in u:
+            w, h = o.w * s, o.h * s
+            ocx = ncx + (o.x + o.w / 2 - cx) * s
+            ocy = ncy + (o.y + o.h / 2 - cy) * s
+            out[o.id] = (ocx - w / 2 + dx, ocy - h / 2 + dy, w, h, list(warns))
+    return out
+
+
+def _span_axes(o: Obj, page_w: float, page_h: float) -> tuple[bool, bool]:
+    """(spans the width, spans the height) for a bare vector shape - a rule line or colour band drawn edge to edge.
+    Groups, text and bitmaps never count: stretching them non-uniformly would distort lettering or photos."""
+    if o.kind != "shape":
+        return False, False
+    return o.w >= FULL_SPAN_FRAC * page_w, o.h >= FULL_SPAN_FRAC * page_h
+
+
 def _anchor_axis(pos: float, size: float, old: float, new: float) -> float:
     """Keep the distance to the nearest edge; centre if it sits in the middle."""
     lo = pos
@@ -1065,3 +1278,15 @@ def to_mm(value: float, unit: str) -> float:
         return float(value) * UNIT_TO_MM[unit]
     except KeyError:
         raise ValueError(f"Unsupported unit: {unit}")
+
+
+def brand_rule_for_shop(brand: str | None) -> dict | None:
+    """`load_brand_rule`, plus: a brand label no example library is named after (the Hangyo masters uploaded as brand "Adinn") still
+    tries the other libraries - a master is recognised by its shapes (app/example_layout.candidate_libraries). Brands whose
+    rule file turns the feature off stay off."""
+    rule = load_brand_rule(brand)
+    if rule is None and brand:
+        from pathlib import Path as _Path
+        if any((_Path(__file__).resolve().parent.parent / "brand_data").glob("*/library.json")):
+            rule = {"brand": brand.strip().lower(), "example_library": True}
+    return rule

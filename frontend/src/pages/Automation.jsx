@@ -1,6 +1,6 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Play, Plus, Store, Trash2, X } from "lucide-react";
+import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Layers, Play, Plus, Store, Trash2, X } from "lucide-react";
 import UploadDropzone from "../components/UploadDropzone.jsx";
 import BrandSelect from "../components/BrandSelect.jsx";
 import AnimatedCount from "../components/AnimatedCount.jsx";
@@ -11,7 +11,9 @@ import ShopDownloadModal from "../components/ShopDownloadModal.jsx";
 import DownloadAllModal from "../components/DownloadAllModal.jsx";
 import PreviewGalleryModal from "../components/PreviewGalleryModal.jsx";
 import QueueGalleryModal from "../components/QueueGalleryModal.jsx";
-import { EMPTY_MASTERS, boardOrientation, fallbackWarning, masterFallback, mastersOf, primaryMaster, rowMasterIds, rowMasterSlot } from "../utils/masters.js";
+import MasterManagementModal from "../components/MasterManagementModal.jsx";
+import { useMasters } from "../context/MasterContext.jsx";
+import { boardOrientation, fallbackWarning, masterCount as countMasters, masterFallback, masterLabel, mastersOf, primaryMaster, pickedMasterId, resolveMasterId, rowMasterIdsAuto } from "../utils/masters.js";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 import { parseShopWorkbook } from "../utils/shopImport.js";
 import { BOARD_TYPES, DEFAULT_BOARD_TYPE, LANGUAGES, applyDefaultUnit, followsEnglish, isDraft, nameEditPatch, rowSno, resetForNewMaster, shopPayload, toDraftRow, withAutoTamil, withFreshAutoTamil } from "../utils/shopPayload.js";
@@ -56,14 +58,16 @@ export default function Automation() {
   const [addingBrand, setAddingBrand] = useState(false);
   const [newBrand, setNewBrand] = useState("");
 
-  // Master templates: up to two per orientation (Landscape 1 / 2, Portrait 1 / 2), all optional; Master 2 of an orientation is
-  // shown once "Add Secondary Masters" is opened. Shops are saved on the first master that exists and carry the ids of the
-  // masters they convert from (utils/masters.js rowMasterIds); the server converts from the one matching each shop's TARGET
-  // orientation (W:H >= 1.25 = landscape; square and portrait = portrait), falling back to the other orientation.
-  const [masters, setMasters] = useState(EMPTY_MASTERS); // slot -> {id, preview_url, preview_error, fileName, fileSize} | null
-  const [showSecondaryMasters, setShowSecondaryMasters] = useState(false);
-  const landscapeJob = masters.landscape_1 || masters.landscape_2;
-  const portraitJob = masters.portrait_1 || masters.portrait_2;
+  // Master templates: any number per orientation, from the server's registry (context/MasterContext.jsx), all optional. Each
+  // row converts from the master it picks in the Master column (default: the first of its orientation); shops are saved on
+  // the first master that exists and carry the ids of the masters they convert from (utils/masters.js rowMasterIds). The
+  // server converts from the picked one when it matches the shop's TARGET orientation (W:H >= 1.25 = landscape; square
+  // and portrait = portrait), else from that orientation's default, falling back to the other orientation.
+  const registry = useMasters();
+  const masters = useMemo(() => registry.forBrand(brand), [registry, brand]); // { landscape: [...], portrait: [...] }
+  const [showManageMasters, setShowManageMasters] = useState(false);
+  const landscapeJob = masters.landscape[0] || null;
+  const portraitJob = masters.portrait[0] || null;
   const job = primaryMaster(masters);
   const [shops, setShops] = useState([]);
   const [defaultUnit, setDefaultUnit] = useState(readDefaultUnit);
@@ -151,26 +155,42 @@ export default function Automation() {
     if (reset) setQueueNotice(`${reason} - ${reset} shop${reset === 1 ? "" : "s"} reset to Convert. Earlier results stay under Recently generated.`);
   }
 
-  // A master upload: remember the job plus the file name/size for the badge, then reset the queue's conversions.
-  const slotLabel = (slot) => `${slot.startsWith("landscape") ? "Landscape" : "Portrait"} Master ${slot.endsWith("2") ? 2 : 1}`;
-
-  // `slot` = "landscape_1" | "landscape_2" | "portrait_1" | "portrait_2"
-  function onUploaded(slot, body, fileName, fileSize) {
-    const replacing = masters[slot];
-    setMasters((m) => ({ ...m, [slot]: { ...body, fileName, fileSize } }));
-    resetShopsQueueStatus(`${slotLabel(slot)} ${replacing ? "replaced" : "added"}`);
+  // `m` = the registered master (POST /api/masters/upload's answer): add it to the registry, then reset the queue's conversions.
+  const orientLabel = (m) => (m.orientation === "landscape" ? "Landscape" : "Portrait");
+  function onMasterAdded(m) {
+    registry.add(m);
+    resetShopsQueueStatus(`${orientLabel(m)} master "${m.name}" added`);
   }
 
-  function removeMaster(slot) {
-    const others = Object.entries(masters).some(([k, v]) => k !== slot && v);
-    if (!others && shops.length > 0 && !window.confirm("Removing the only master clears the shops list in this view (converted shops stay under Recently generated). Continue?")) return;
-    setMasters((m) => ({ ...m, [slot]: null }));
-    resetShopsQueueStatus(`${slotLabel(slot)} removed`);
-    if (!others) {
+  // Deletes the master from the registry (soft delete on the server: boards already made from it keep working).
+  async function removeMaster(m) {
+    const last = countMasters(masters) === 1;
+    const ask = last && shops.length > 0
+      ? `Delete "${m.name}"? It is the only master, so the shops list in this view is cleared (converted shops stay under Recently generated).`
+      : `Delete ${orientLabel(m).toLowerCase()} master "${m.name}"? Boards already made from it stay under Recently generated.`;
+    if (!window.confirm(ask)) return false;
+    try {
+      await registry.remove(m.id);
+    } catch (e) {
+      setQueueNotice(e.message);
+      return false;
+    }
+    resetShopsQueueStatus(`${orientLabel(m)} master "${m.name}" deleted`);
+    if (last) {
       setShops([]);
       setQueueNotice("");
     }
+    return true;
   }
+
+  // Another brand means another set of masters: rows saved on the old brand's masters are reset like after a master change.
+  const shownBrand = useRef(brand);
+  useEffect(() => {
+    if (shownBrand.current === brand) return;
+    const from = shownBrand.current;
+    shownBrand.current = brand;
+    if (from) resetShopsQueueStatus(`Brand changed to ${brand || "none"}`);
+  }, [brand]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function addShop() {
     setShopError("");
@@ -185,7 +205,7 @@ export default function Automation() {
       body: JSON.stringify({
         ...shopPayload(f),
         sno: shops.length + 1, // the S.no this row gets - output files are numbered by it
-        ...rowMasterIds(f, masters),
+        ...rowMasterIdsAuto(f, masters),
       }),
     });
     if (!r.ok) {
@@ -225,7 +245,14 @@ export default function Automation() {
       // Browser only - no request is made here. Rows become local drafts in the table (fully editable); a draft is
       // saved to the server the moment it is converted. A row without a Tamil name gets one transliterated from its
       // English name (editable; marked "auto" until typed over).
-      const parsedShops = withShops.flatMap((sh) => sh.shops).map(withAutoTamil);
+      let masterMiss = 0;
+      const parsedShops = withShops.flatMap((sh) => sh.shops).map(withAutoTamil).map((x) => {
+        // the sheet's Master column -> an uploaded master of this brand; Convert = no -> Convert All skips the row
+        const { master, convert, ...rest } = x;
+        const id = master ? resolveMasterId(master, masters) : null;
+        if (master && !id) masterMiss += 1;
+        return { ...rest, ...(id ? { master_id: id } : {}), ...(convert === false ? { skip_convert: true } : {}) };
+      });
       const errors = withShops
         .flatMap((sh) => sh.errors.map((e) => ({ ...e, sheet: multi ? sh.name : undefined })))
         .sort((a, b) => (a.sheet || "").localeCompare(b.sheet || "") || (a.row ?? 0) - (b.row ?? 0));
@@ -237,7 +264,11 @@ export default function Automation() {
       setImportReport({
         file: file.name, added, errors, defaulted, translated, unit: defaultUnit,
         sheets: multi ? withShops.map((sh) => `${sh.name} (${sh.shops.length})`) : [],
-        note: skippedSheets.length ? `No shop list found on sheet${skippedSheets.length === 1 ? "" : "s"}: ${skippedSheets.join(", ")}` : "",
+        note: [
+          skippedSheets.length ? `No shop list found on sheet${skippedSheets.length === 1 ? "" : "s"}: ${skippedSheets.join(", ")}` : "",
+          masterMiss ? `${masterMiss} row${masterMiss === 1 ? "" : "s"} named a master that is not uploaded for this brand - the default master is used.` : "",
+          parsedShops.some((x) => x.skip_convert) ? `${parsedShops.filter((x) => x.skip_convert).length} row(s) have Convert = No: Convert All skips them.` : "",
+        ].filter(Boolean).join(" "),
       });
     } catch (e) {
       setImportReport({ file: file.name, added: 0, errors: [], note: `Import failed: ${e.message}` });
@@ -338,7 +369,7 @@ export default function Automation() {
     const gen = masterGen.current;
     // the row's S.no in the table goes with it: every output file is named "<S.no> - <W> X <H> <Unit> - <Type> - <NAME>"
     // the master ids of THIS row: the chosen Master 1 / 2 of its orientation (utils/masters.js)
-    const masterIds = { ...rowMasterIds(current, masters), sno: rowSno(current, shops.findIndex((x) => x.id === shopId)) };
+    const masterIds = { ...rowMasterIdsAuto(current, masters), sno: rowSno(current, shops.findIndex((x) => x.id === shopId)) };
     let id = shopId;
     if (isDraft(current)) {
       // First save: create the shop from the row's CURRENT (possibly edited) values, then convert that.
@@ -384,7 +415,7 @@ export default function Automation() {
   const showSheetTabs = sheetTabs.length > 1;
   const currentSheet = showSheetTabs && sheetTabs.includes(activeSheet) ? activeSheet : "";
   const inSheet = (x) => !currentSheet || sheetOf(x) === currentSheet;
-  const convertible = shops.filter((x) => inSheet(x) && (x.status === "new" || x.status === "failed"));
+  const convertible = shops.filter((x) => inSheet(x) && (x.status === "new" || x.status === "failed") && !x.skip_convert);
   // converted shops for "Create Print File", numbered by their S.no in the table (the sheet's own, else the position)
   const printable = shops.map((x, i) => ({ ...x, no: rowSno(x, i) })).filter((x) => x.status === "done" && !isDraft(x));
 
@@ -471,48 +502,48 @@ export default function Automation() {
   }, []);
 
   const bothMasters = !!(landscapeJob && portraitJob);
-  const masterCount = Object.values(masters).filter(Boolean).length;
-  const masterBadge = bothMasters ? `Dual-Master Ready${masterCount > 2 ? ` (${masterCount} masters)` : ""}`
-    : landscapeJob ? "Landscape master only" : portraitJob ? "Portrait master only" : "No master yet";
-  const hasSecondary = !!(masters.landscape_2 || masters.portrait_2);
-  const masterCards = (slots) => (
-    <div className={"mc-stack" + (slots.length > 1 ? " two" : "")}>
-      {slots.map(([slot, card]) => {
-        const mjob = masters[slot];
-        return mjob ? (
-          <div key={slot} className="master-card filled" data-slot={slot}>
-            <div className="mc-filled-head">{card.title}</div>
-            <div className="master-thumb">
-              {mjob.preview_url ? (
-                <img src={mjob.preview_url} alt={`${card.title} preview`} />
-              ) : (
-                <div className="preview-missing">{mjob.preview_error || "Preview not available"}</div>
-              )}
-            </div>
-            <div className="file-badge">
-              <FileCheck2 size={18} className="ok" />
-              <div className="file-badge-text">
-                <div className="file-badge-name" title={mjob.fileName}>{mjob.fileName || "master.cdr"}</div>
-                <div className="file-badge-size">{fmtBytes(mjob.fileSize)}</div>
-              </div>
-              <button className="icon-btn" onClick={() => removeMaster(slot)} title={`Remove ${card.title}`} aria-label={`Remove ${card.title}`}>
-                <X size={16} />
-              </button>
-            </div>
+  const nMasters = countMasters(masters);
+  const masterBadge = bothMasters ? `${nMasters} Masters Ready (${masters.landscape.length} L / ${masters.portrait.length} P)`
+    : landscapeJob ? `Landscape only (${masters.landscape.length})` : portraitJob ? `Portrait only (${masters.portrait.length})` : "No master yet";
+  // every master of one orientation as a card, then an "Add" card - any number of masters per orientation
+  const masterCards = (o, addCard) => (
+    <div className="mc-stack many">
+      {mastersOf(masters, o).map((m, i) => (
+        <div key={m.id} className="master-card filled" data-master-id={m.id}>
+          <div className="mc-filled-head" title={m.name}>
+            {m.name}
+            {i === 0 && mastersOf(masters, o).length > 1 && <span className="mc-default">default</span>}
           </div>
-        ) : (
-          <div key={slot} className="mc-slot" data-slot={slot}>
-            <UploadDropzone
-              card={card}
-              disabled={!brand}
-              brand={brand}
-              orientation={slot.startsWith("landscape") ? "landscape" : "portrait"}
-              label={card.title}
-              onUploaded={(body, name, size) => onUploaded(slot, body, name, size)}
-            />
+          <div className="master-thumb">
+            {m.preview_url ? (
+              <img src={m.preview_url} alt={`${m.name} preview`} />
+            ) : (
+              <div className="preview-missing">{m.preview_error || "Preview not available"}</div>
+            )}
           </div>
-        );
-      })}
+          <div className="file-badge">
+            <FileCheck2 size={18} className="ok" />
+            <div className="file-badge-text">
+              <div className="file-badge-name" title={m.file_name}>{m.file_name || "master.cdr"}</div>
+              <div className="file-badge-size">{fmtBytes(m.file_size)}</div>
+            </div>
+            <button className="icon-btn" onClick={() => removeMaster(m)} title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
+              <X size={16} />
+            </button>
+          </div>
+        </div>
+      ))}
+      <div className="mc-slot" data-add={o}>
+        <UploadDropzone
+          key={`${o}-${mastersOf(masters, o).length}`}
+          card={addCard}
+          disabled={!brand}
+          brand={brand}
+          orientation={o}
+          label={addCard.title}
+          onUploaded={(body) => onMasterAdded(body)}
+        />
+      </div>
     </div>
   );
 
@@ -547,6 +578,10 @@ export default function Automation() {
               <Plus size={14} /> New Brand
             </button>
           )}
+          <button className="ws-cta-ghost manage-masters-btn" onClick={() => setShowManageMasters(true)} disabled={!brand}
+            title={brand ? `View, upload and delete ${brand}'s master templates` : "Pick a brand first"}>
+            <Layers size={14} /> Manage Masters <span className="count-badge">{nMasters}</span>
+          </button>
         </div>
         <div className="ws-badges">
           <span className="ws-badge">
@@ -563,35 +598,34 @@ export default function Automation() {
         <section className="ws-card ws-masters" aria-label="Master Templates">
           <div className="ws-card-head">
             <h2>Master Templates</h2>
-            {/* optional second master per orientation: a row of that orientation then chooses Master 1 or 2 in the queue */}
-            <button type="button" className="mc-secondary-toggle" aria-expanded={showSecondaryMasters || hasSecondary}
-              onClick={() => setShowSecondaryMasters((v) => !v)} disabled={hasSecondary}
-              title={hasSecondary ? "Remove the secondary masters to hide them" : undefined}>
-              {showSecondaryMasters || hasSecondary ? "\u2212 Hide Secondary Masters" : "+ Add Secondary Masters (Optional)"}
+            <button type="button" className="mc-secondary-toggle" onClick={() => setShowManageMasters(true)} disabled={!brand}>
+              <Plus size={13} /> Add Master
             </button>
           </div>
           <div className="ws-card-body">
-            {/* two modules side by side - Landscape Masters left, Portrait Masters right; each holds Master 1 and, once the
-                secondary masters are shown, Master 2 of its orientation. A file card becomes a badge once uploaded. */}
+            {/* Landscape Masters left, Portrait Masters right: every uploaded master of that orientation, then an "Add" card.
+                A row of that orientation picks one of them in the queue's Master column. */}
             <div className="mc-modules">
               {[
-                ["landscape", "Landscape Masters", "W:H \u2265 1.25", "red", "Browse Landscape", "Optional second landscape design"],
-                ["portrait", "Portrait Masters", "W:H < 1.25, incl. square", "rose", "Browse Portrait", "Optional second portrait design"],
-              ].map(([o, title, rule, tone, browse, help2]) => (
+                ["landscape", "Landscape Masters", "W:H \u2265 1.25", "red", "Browse Landscape"],
+                ["portrait", "Portrait Masters", "W:H < 1.25, incl. square", "rose", "Browse Portrait"],
+              ].map(([o, title, rule, tone, browse]) => (
                 <div key={o} className={`mc-module ${o}`} data-orientation={o}>
                   <div className="mc-module-head">
                     <h3>{title}</h3>
                     <span className="mc-module-rule">({rule})</span>
+                    <span className="mc-module-count">{mastersOf(masters, o).length}</span>
                   </div>
-                  {masterCards([
-                    [`${o}_1`, { title: `${o === "landscape" ? "Landscape" : "Portrait"} Master 1`, help: "Drag & drop .cdr or browse", browse, tone }],
-                    ...(showSecondaryMasters || hasSecondary
-                      ? [[`${o}_2`, { title: `${o === "landscape" ? "Landscape" : "Portrait"} Master 2 (Optional)`, help: help2, browse: "Browse Secondary", tone: "muted" }]]
-                      : []),
-                  ])}
+                  {masterCards(o, {
+                    title: mastersOf(masters, o).length ? `Add ${o} master` : `${o === "landscape" ? "Landscape" : "Portrait"} Master 1`,
+                    help: "Drag & drop .cdr or browse",
+                    browse,
+                    tone: mastersOf(masters, o).length ? "muted" : tone,
+                  })}
                 </div>
               ))}
             </div>
+            {registry.error && <p className="err">{registry.error}</p>}
             {!brand && <p className="hint hero-note">Pick or create a brand above to enable uploads.</p>}
           </div>
         </section>
@@ -799,6 +833,12 @@ export default function Automation() {
         {showZip && <GenerateZipModal key="zip" shops={printable} onClose={() => setShowZip(false)} />}
       </AnimatePresence>
       <AnimatePresence>
+        {showManageMasters && (
+          <MasterManagementModal key="masters" brand={brand} masters={masters} onAdded={onMasterAdded} onDelete={removeMaster}
+            onClose={() => setShowManageMasters(false)} />
+        )}
+      </AnimatePresence>
+      <AnimatePresence>
         {showPrintFile && <PrintFileModal key="print" shops={printable} brand={brand} onClose={() => setShowPrintFile(false)} />}
       </AnimatePresence>
       <AnimatePresence>
@@ -945,7 +985,7 @@ function ShopRow({ shop, index, masters, onEdit, onSave, onDelete, onConvert, on
         />
       </td>
       <td>
-        <MasterCell shop={shop} masters={masters} locked={locked} onChoose={(slot) => onEdit({ master_slot: slot })} />
+        <MasterCell shop={shop} masters={masters} locked={locked} onChoose={(id) => onEdit({ master_id: id })} />
       </td>
       <td>
         <ConvertCell shop={shop} onConvert={onConvert} onExport={onExport} onPreview={onPreview} stepEstimates={stepEstimates} />
@@ -1051,37 +1091,40 @@ function LanguageSelect({ value, disabled, hasTamil, onChange }) {
   );
 }
 
-// The row's master: its orientation (from its own width and height, the server's W:H >= 1.25 rule) and - only when two
-// masters exist for that orientation - a Master 1 / Master 2 choice. With one master it is used automatically.
+// The row's master: its orientation (from its own width and height, the server's W:H >= 1.25 rule) and a dropdown of EVERY
+// master of that orientation (any number). With one master it is shown and used automatically; with none, the row is
+// flagged when it would be made from the other orientation's master.
 function MasterCell({ shop, masters, locked, onChoose }) {
   const o = boardOrientation(shop);
-  if (!o) return <span className="muted">{"\u2014"}</span>;
+  if (!o) return <span className="muted">{"—"}</span>;
   const list = mastersOf(masters, o);
-  const tag = <span className={"orient-tag " + o} title={`${o === "landscape" ? "Landscape" : "Portrait"} board (W:H ${o === "landscape" ? "\u2265" : "<"} 1.25)`}>{o === "landscape" ? "L" : "P"}</span>;
+  const tag = <span className={"orient-tag " + o} title={`${o === "landscape" ? "Landscape" : "Portrait"} board (W:H ${o === "landscape" ? "≥" : "<"} 1.25)`}>{o === "landscape" ? "L" : "P"}</span>;
   if (list.length < 2) {
     const only = list[0];
     const fallback = !only && masterFallback(shop, masters);
     if (fallback) {
       return (
         <span className="master-cell master-fallback" title={`No ${o} master is uploaded - this board would be made from the ${fallback} master and its layout will not fit. Upload a ${o} master.`}>
-          {tag} <span className="fallback-warn">{"\u26a0"} {fallback} master</span>
+          {tag} <span className="fallback-warn">{"⚠"} {fallback} master</span>
         </span>
       );
     }
     return (
-      <span className="master-cell" title={only ? `${only.job.fileName || "master.cdr"} (${o} Master ${only.slot})` : `No master uploaded yet`}>
-        {tag} <span className="muted">{only ? `Master ${only.slot}` : "\u2014"}</span>
+      <span className="master-cell" title={only ? `${only.name} - ${only.file_name || "master.cdr"}` : "No master uploaded yet"}>
+        {tag} <span className="muted">{only ? only.name : "—"}</span>
       </span>
     );
   }
-  const slot = rowMasterSlot(shop, masters);
+  const id = pickedMasterId(shop, masters) || "";
+  const current = list.find((m) => m.id === id);
   return (
     <span className="master-cell">
       {tag}
-      <select value={slot} disabled={locked} aria-label={`${o} master`} onChange={(e) => onChoose(+e.target.value)}
-        title={list.find((m) => m.slot === slot)?.job.fileName || undefined}>
+      <select value={id} disabled={locked} aria-label={`${o} master`} onChange={(e) => onChoose(e.target.value || null)}
+        title={current ? `${current.name} - ${current.file_name || "master.cdr"}` : "Auto: the best-fitting master for this board's size and type"}>
+        <option value="">Auto (best match)</option>
         {list.map((m) => (
-          <option key={m.slot} value={m.slot} title={m.job.fileName || undefined}>Master {m.slot}</option>
+          <option key={m.id} value={m.id} title={m.file_name || undefined}>{masterLabel(m)}</option>
         ))}
       </select>
     </span>
@@ -1162,6 +1205,11 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, stepEstimates }) {
         <span className="badge badge-done">
           <CheckCircle2 size={13} /> Completed
         </span>
+        {shop.confidence && (
+          <span className={`badge conf-badge conf-${shop.confidence.label}`} title={shop.confidence.reasons.join(" - ")}>
+            {shop.confidence.label === "GOOD" ? "Exact size" : shop.confidence.label === "REVIEW" ? "Check" : "Draft"}
+          </span>
+        )}
         <button className="icon-btn row-dl-btn" onClick={onPreview} title="Preview the converted output" aria-label={`Preview the output of ${shop.name}`}>
           <Eye size={16} />
         </button>

@@ -15,8 +15,6 @@ export function shopPayload(x) {
     // which shop-name line(s) the board shows: "both" (default) / "en" / "ta" - always sent, so switching back to Both
     // also reaches a saved row
     language: LANGUAGES.some((l) => l.value === x.language) ? x.language : "both",
-    // the chosen Master 1 / 2 of the row's orientation (utils/masters.js) - kept with the row through saving
-    ...(x.master_slot ? { master_slot: x.master_slot } : {}),
     // the imported sheet's own S.No, when it had one - output files are numbered by it
     ...(rowSnoValue(x) ? { sno: rowSnoValue(x) } : {}),
     width: x.width === "" || x.width == null ? "" : +x.width,
@@ -54,7 +52,10 @@ export function toDraftRow(parsed) {
     id: `draft-${Date.now().toString(36)}-${draftCounter}`,
     name: parsed.name,
     ...(rowSnoValue(parsed) ? { sno: rowSnoValue(parsed) } : {}),
-    ...(parsed.master_slot ? { master_slot: parsed.master_slot } : {}),
+    // the master picked in the queue's Master column (utils/masters.js rowMasterId), sent with Convert
+    ...(parsed.master_id ? { master_id: parsed.master_id } : {}),
+    // the sheet's Convert column said no / skip: Convert All leaves the row alone (its own Convert button still works)
+    ...(parsed.skip_convert ? { skip_convert: true } : {}),
     ...(parsed.language && parsed.language !== "both" ? { language: parsed.language } : {}),
     ...(parsed.shop_name_local ? { shop_name_local: parsed.shop_name_local } : {}),
     ...(parsed.board_type ? { board_type: parsed.board_type } : {}),
@@ -83,7 +84,7 @@ export function resetForNewMaster(shops) {
   const out = shops.map((x) => {
     if (isDraft(x) && (x.status === "new" || !x.status)) return x;
     reset += 1;
-    return toDraftRow({ name: x.name, sno: rowSnoValue(x), master_slot: x.master_slot, language: x.language, shop_name_local: x.shop_name_local, board_type: x.board_type, sheet_name: x.sheet_name,
+    return toDraftRow({ name: x.name, sno: rowSnoValue(x), master_id: x.master_id, skip_convert: x.skip_convert, language: x.language, shop_name_local: x.shop_name_local, board_type: x.board_type, sheet_name: x.sheet_name,
       ta_auto: x.ta_auto, width: x.width, height: x.height, unit: x.unit || x.width_unit || "in", unitSource: x.unitSource });
   });
   return { shops: out, reset };

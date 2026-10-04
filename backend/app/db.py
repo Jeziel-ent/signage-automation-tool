@@ -138,6 +138,20 @@ _MIGRATIONS = [
     ("shops", "sno_label", "ALTER TABLE shops ADD COLUMN sno_label TEXT"),
     # which shop-name line(s) the board shows: NULL / 'both' (default), 'en' (English only), 'ta' (Tamil only)
     ("shops", "language", "ALTER TABLE shops ADD COLUMN language TEXT"),
+    # Master template registry (GET/POST/DELETE /api/masters): any number of landscape and portrait masters per brand.
+    # A master is still its own `jobs` row; these add a display name ("Master 3 - Compact"), an optional default board
+    # size, `registered` = 1 for masters uploaded since the registry exists (older uploads stay unlisted - they still
+    # work for the shops made from them) and `deleted_at` (soft delete: the master's folder also holds the boards made
+    # from it, which Recently generated still shows).
+    ("jobs", "master_name", "ALTER TABLE jobs ADD COLUMN master_name TEXT"),
+    ("jobs", "default_width", "ALTER TABLE jobs ADD COLUMN default_width REAL"),
+    ("jobs", "default_height", "ALTER TABLE jobs ADD COLUMN default_height REAL"),
+    ("jobs", "default_unit", "ALTER TABLE jobs ADD COLUMN default_unit TEXT"),
+    ("jobs", "registered", "ALTER TABLE jobs ADD COLUMN registered INTEGER"),
+    ("jobs", "deleted_at", "ALTER TABLE jobs ADD COLUMN deleted_at REAL"),
+    # the master the user picked for this shop in the queue's Master column; NULL = the default master of the board's
+    # orientation (landscape_master_id / portrait_master_id). main._select_shop_master falls back when it is unusable.
+    ("shops", "master_id", "ALTER TABLE shops ADD COLUMN master_id TEXT"),
 ]
 
 
@@ -180,13 +194,51 @@ def add_brand(name: str) -> list[str]:
 # ------------------------------------------------------------------ jobs
 
 def create_job(job_id: str, brand: str, master_filename: str, master_path: str, orientation: str = "landscape",
-               master_shop_name: str | None = None, master_shop_name_local: str | None = None) -> None:
+               master_shop_name: str | None = None, master_shop_name_local: str | None = None,
+               master_name: str | None = None, default_size: tuple[float, float, str] | None = None,
+               registered: bool = False) -> None:
+    dw, dh, du = default_size or (None, None, None)
     with _conn() as conn:
         conn.execute(
             "INSERT INTO jobs (id, brand, master_filename, master_path, orientation, master_shop_name, master_shop_name_local,"
-            " created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (job_id, brand, master_filename, master_path, orientation, master_shop_name, master_shop_name_local, time.time()),
+            " master_name, default_width, default_height, default_unit, registered, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (job_id, brand, master_filename, master_path, orientation, master_shop_name, master_shop_name_local,
+             master_name, dw, dh, du, 1 if registered else None, time.time()),
         )
+
+
+def list_masters(brand: str | None = None, orientation: str | None = None) -> list[dict]:
+    """Registered, not deleted masters, oldest first (so "Master 1" is listed first and is each orientation's default)."""
+    sql, args = "SELECT * FROM jobs WHERE registered = 1 AND deleted_at IS NULL", []
+    if brand is not None:
+        sql, args = sql + " AND brand = ?", args + [brand]
+    if orientation is not None:
+        sql, args = sql + " AND orientation = ?", args + [orientation]
+    with _conn() as conn:
+        rows = conn.execute(sql + " ORDER BY created_at, rowid", args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_registered_masters(brand: str, orientation: str) -> int:
+    """Every master ever registered for this brand + orientation, deleted ones included - numbers default names so a
+    name is never reused after a delete."""
+    with _conn() as conn:
+        return conn.execute("SELECT COUNT(*) FROM jobs WHERE registered = 1 AND brand = ? AND orientation = ?",
+                            (brand, orientation)).fetchone()[0]
+
+
+def delete_master(job_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE jobs SET deleted_at = ? WHERE id = ?", (time.time(), job_id))
+
+
+def count_active_shops_using_master(job_id: str) -> int:
+    """Shops queued/converting that are saved on, or may convert from, this master."""
+    with _conn() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) FROM shops WHERE status IN ('queued', 'converting') AND (job_id = ? OR master_id = ?"
+            " OR landscape_master_id = ? OR portrait_master_id = ?)", (job_id,) * 4).fetchone()[0]
 
 
 def set_job_master_shop_names(job_id: str, master_shop_name: str | None, master_shop_name_local: str | None) -> None:
@@ -224,7 +276,7 @@ def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float,
                  landscape_master_id: str | None = None, portrait_master_id: str | None = None,
                  shop_name_local: str | None = None, board_type: str | None = None,
                  font_en: str | None = None, font_ta: str | None = None, sheet_name: str | None = None,
-                 language: str | None = None) -> None:
+                 language: str | None = None, master_id: str | None = None) -> None:
     """`reference` is the free-text note shown in the UI today.
     `reference_file_path`, if given, is a path to an uploaded reference
     file - the data model supports it (per review feedback) ahead of any
@@ -242,11 +294,11 @@ def create_shop(shop_id: str, job_id: str, seq_no: int, name: str, width: float,
             """INSERT INTO shops
                (id, job_id, seq_no, name, width, width_unit, height, height_unit,
                 reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
-                shop_name_local, board_type, font_en, font_ta, sheet_name, language, status, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
+                shop_name_local, board_type, font_en, font_ta, sheet_name, language, master_id, status, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)""",
             (shop_id, job_id, seq_no, name, width, width_unit, height, height_unit,
              reference, reference_file_path, phone, gst, address, landscape_master_id, portrait_master_id,
-             shop_name_local, board_type, font_en, font_ta, sheet_name, language, time.time()),
+             shop_name_local, board_type, font_en, font_ta, sheet_name, language, master_id, time.time()),
         )
 
 
@@ -301,6 +353,11 @@ def set_shop_masters(shop_id: str, landscape_master_id: str | None, portrait_mas
                      (landscape_master_id, portrait_master_id, shop_id))
 
 
+def set_shop_master_id(shop_id: str, master_id: str | None) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE shops SET master_id = ? WHERE id = ?", (master_id, shop_id))
+
+
 def set_shop_status(shop_id: str, status: str, step: str | None = None, error: str | None = None) -> None:
     with _conn() as conn:
         conn.execute(
@@ -337,7 +394,8 @@ def list_all_shops_with_job() -> list[dict]:
     """
     with _conn() as conn:
         rows = conn.execute(
-            """SELECT shops.*, jobs.brand AS brand, jobs.master_filename AS master_filename
+            """SELECT shops.*, jobs.brand AS brand, jobs.master_filename AS master_filename,
+                      json_extract(shops.report_json, '$.layout') AS layout_json
                FROM shops JOIN jobs ON shops.job_id = jobs.id
                ORDER BY shops.created_at DESC"""
         ).fetchall()

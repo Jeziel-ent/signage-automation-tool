@@ -15,7 +15,7 @@ const HEIGHT_RE = /height|length|^h$|^ht\.?$|^hgt\.?$|h\s*\(/i;
 // never a shop-name column, even if the word 'shop'/'store'/'name' appears in it ("Store Size", "Contact Name")
 // the LOCAL-script shop name ("Shop Name (Local)", "Local Name", "Tamil Name", "Shop Name (Tamil)") - read into
 // shop_name_local, never picked as the English name column
-const LOCAL_NAME_RE = /local|tamil|regional|vernacular|native/i;
+const LOCAL_NAME_RE = /local|tamil|regional|vernacular|native|\(\s*ta\s*\)|\bta\b|தமிழ்/i;   // "Shop Name (TA)" is the Tamil column
 // "Type", "Board Type", "Type of Board", "Sign Type", "Lit / Nonlit", "Lighting", "Illumination"
 const TYPE_RE = /\btype\b|lighting|illumination|^lit\b|non\s*-?\s*lit/i;
 const NAME_EXCLUDE_RE = new RegExp(
@@ -31,6 +31,16 @@ const UNIT_COL_RE = /\bunits?\b|\buom\b|\bu\.o\.m\b/i;
 
 // which shop-name line(s) the board shows: "Language", "Lang", "Language Mode", "Mode", "Text Language"
 const LANG_COL_RE = /^\s*(language(\s*mode)?|lang\.?|mode|text\s*language)\s*$/i;
+// which uploaded master a row converts from: "Master", "Master Name", "Master Template", "Template", "Creative", "Design"
+const MASTER_COL_RE = /^\s*(master(\s*(name|template|design|creative|file))?|template|creative|design)\s*$/i;
+// "Convert": a per-row yes / no (the table's own Convert column is a button, so a sheet that has the header is saying which rows to run)
+const CONVERT_COL_RE = /^\s*(convert|auto\s*convert|generate|process)\s*$/i;
+const NO_WORDS = new Set(["no", "n", "false", "0", "skip", "hold", "off", "nil", "x", "✗", "✘", "இல்லை"]);
+/** false for an explicit no / skip / hold; true for yes, a tick, any other text or a blank cell (blank = convert as usual). */
+export function parseConvertFlag(v) {
+  const t = String(v ?? "").trim().toLowerCase();
+  return !(t && NO_WORDS.has(t));
+}
 const EN_WORDS = new Set(["english", "eng", "en", "e", "ஆங்கிலம்"]);
 const TA_WORDS = new Set(["tamil", "tam", "ta", "t", "தமிழ்"]);
 const BOTH_WORDS = new Set(["both", "all", "bilingual", "dual"]);
@@ -269,11 +279,13 @@ export function mapSheetRows(rows, { defaultUnit = "in" } = {}) {
   const unitCol = headers.findIndex((h, i) => h && !taken.has(i) && UNIT_COL_RE.test(h) && share(col(i), (v) => !!detectUnit(v)) >= 0.5);
   const snoCol = headers.findIndex((h, i) => h && !taken.has(i) && i !== unitCol && SNO_RE.test(h));
   const langCol = headers.findIndex((h, i) => h && !taken.has(i) && i !== unitCol && i !== snoCol && LANG_COL_RE.test(h));
+  const masterCol = headers.findIndex((h, i) => h && !taken.has(i) && i !== unitCol && i !== snoCol && i !== langCol && MASTER_COL_RE.test(h));
+  const convertCol = headers.findIndex((h, i) => h && !taken.has(i) && i !== unitCol && i !== snoCol && i !== langCol && i !== masterCol && CONVERT_COL_RE.test(h));
 
   const missing = [];
   if (nameCol < 0) missing.push("name");
   if (sizeCol < 0 && widthCol < 0) missing.push("size");
-  const layout = { headerRow: headerRow >= 0 ? headerRow + 1 : null, nameCol, localCol, typeCol, unitCol, snoCol, langCol, sizeCol, widthCol, heightCol };
+  const layout = { headerRow: headerRow >= 0 ? headerRow + 1 : null, nameCol, localCol, typeCol, unitCol, snoCol, langCol, masterCol, convertCol, sizeCol, widthCol, heightCol };
   const shops = [];
   const errors = [];
   if (missing.length) return { shops, errors, missing, layout };
@@ -309,7 +321,10 @@ export function mapSheetRows(rows, { defaultUnit = "in" } = {}) {
     const sno = snoCol >= 0 ? cellText(cells[snoCol]) : "";
     // the row's Language (Both / English Only / Tamil Only) when the sheet has such a column; Both otherwise
     const language = langCol >= 0 ? parseShopRowLanguage(cells[langCol]) : "both";
-    shops.push({ name, ...(sno ? { sno } : {}), ...(language !== "both" ? { language } : {}), ...(local ? { shop_name_local: local } : {}), ...(boardType ? { board_type: boardType } : {}), ...dims, unitSource: detected ? "excel" : "default", row });
+    // the row's Master (a name or file name, resolved against the uploaded masters by the page) and its Convert flag
+    const master = masterCol >= 0 ? cellText(cells[masterCol]) : "";
+    const convert = convertCol >= 0 ? parseConvertFlag(cells[convertCol]) : true;
+    shops.push({ name, ...(sno ? { sno } : {}), ...(master ? { master } : {}), ...(convert ? {} : { convert: false }), ...(language !== "both" ? { language } : {}), ...(local ? { shop_name_local: local } : {}), ...(boardType ? { board_type: boardType } : {}), ...dims, unitSource: detected ? "excel" : "default", row });
   });
   return { shops, errors, missing, layout };
 }

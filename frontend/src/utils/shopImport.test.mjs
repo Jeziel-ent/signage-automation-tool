@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import * as XLSX from "xlsx";
-import { cleanShopName, detectUnit, mapSheetRows, parseShopFile, parseSize } from "./shopImport.js";
+import { cleanShopName, detectUnit, mapSheetRows, parseConvertFlag, parseShopFile, parseSize } from "./shopImport.js";
 
 const summary = (r) => r.shops.map((s) => [s.name, s.width, s.height, s.unit]);
 const fileOf = (aoa, name = "x.xlsx") => {
@@ -319,4 +319,34 @@ test("a UTF-8 CSV keeps its Tamil names (no byte-order mark needed)", async () =
   const bom = await parseShopFile(new File([new TextEncoder().encode("﻿" + csv)], "shops.csv"));
   assert.equal(bom.shops[0].name, "Wide Shop");
   assert.equal(bom.shops[0].shop_name_local, "விட் ஷாப்");
+});
+
+test("the Shops Queue header row: S.NO | SHOP NAME (EN) | SHOP NAME (TA) | WIDTH | HEIGHT | UNIT | TYPE OF BOARD | LANGUAGE | MASTER | CONVERT", () => {
+  const rows = [
+    ["S.NO", "SHOP NAME (EN)", "SHOP NAME (TA)", "WIDTH", "HEIGHT", "UNIT", "TYPE OF BOARD", "LANGUAGE", "MASTER", "CONVERT"],
+    [1, "Asian Juice bar", "ஏசியன் ஜூஸ் பார்", 16, 3, "ft", "Frontlit", "Both", "Master 8", "Yes"],
+    [2, "Sri Sai cafe", "ஸ்ரீ சாய் கஃபே", 3, 6, "ft", "Double Side GSB", "Tamil Only", "L: Master 7", "No"],
+    [3, "Lakshmi Store", "", 10, 3, "ft", "Nonlit", "English Only", "6 X 3.cdr", ""],
+  ];
+  const r = mapSheetRows(rows);
+  assert.deepEqual(r.missing, []);
+  assert.equal(r.shops.length, 3);
+  const [a, b, c] = r.shops;
+  assert.equal(a.name, "Asian Juice bar"); assert.equal(a.sno, "1"); assert.equal(a.shop_name_local, "ஏசியன் ஜூஸ் பார்");
+  assert.equal(a.width, 16); assert.equal(a.height, 3); assert.equal(a.unit, "ft"); assert.equal(a.board_type, "Frontlit");
+  assert.equal(a.master, "Master 8"); assert.equal(a.convert, undefined);          // Yes: converts as usual
+  assert.equal(b.language, "ta"); assert.equal(b.convert, false); assert.equal(b.master, "L: Master 7");   // No: Convert All skips it
+  assert.equal(c.language, "en"); assert.equal(c.master, "6 X 3.cdr"); assert.equal(c.convert, undefined);  // blank: converts
+  assert.equal(r.layout.masterCol, 8); assert.equal(r.layout.convertCol, 9);
+});
+
+test("parseConvertFlag: explicit no / skip / hold only", () => {
+  for (const v of ["No", "n", "FALSE", "0", "skip", "Hold"]) assert.equal(parseConvertFlag(v), false);
+  for (const v of ["Yes", "y", "✓", "convert", "", null, "later?"]) assert.equal(parseConvertFlag(v), true);
+});
+
+test("a header that merely contains the letters 'ta' is not the Tamil column", () => {
+  const r = mapSheetRows([["Shop Name", "Status", "Quantity", "Width", "Height"], ["A Store", "ok", 2, 10, 4]]);
+  assert.equal(r.shops.length, 1);
+  assert.equal(r.shops[0].shop_name_local, undefined);
 });

@@ -586,3 +586,89 @@ def test_panel_sequence_keeps_unmatched_shape_at_its_own_proportional_position()
     # and it must not have inflated any group's bounding box - the 3 real groups still fit their cells
     card_a = next(p for k, p in r.items() if k.startswith("card_a_tile"))
     assert card_a.w < 3000 / 3  # sane cell-relative size, not blown up by contamination
+
+
+# ---- loose logo fragments move as one unit; edge-to-edge rules stretch with the page (layout._place_logo_units)
+# A 30x40 in master (762 x 1016 mm) on a 90x80 in board (2286 x 2032 mm): uniform scale 2, page 3x across, 2x up.
+MP, BP = (762.0, 1016.0), (2286.0, 2032.0)
+
+
+def _card_with_word():
+    """A white card (one curve), its drop shadow (a group, as on the real dalmia masters) and a five-letter word drawn
+    as five loose curves on the card - plus a lone badge far away."""
+    card = Obj("card", "", "shape", 140, 490, 380, 230)
+    shadow = Obj("shadow", "", "group", 150, 480, 385, 230)
+    letters = [Obj(f"L{i}", "", "shape", 180 + i * 60, 560, 50, 70) for i in range(5)]
+    badge = Obj("badge", "", "shape", 600, 900, 120, 60)
+    bg = Obj("bg", "", "shape", 0, 0, *MP)
+    return [bg, shadow, card, *letters, badge]
+
+
+def _cx(p):
+    return p.x + p.w / 2
+
+
+def test_loose_fragments_scale_as_one_unit_instead_of_spreading_apart():
+    objs = _card_with_word()
+    r = by_id(compute_layout(objs, *MP, *BP, tile=True))
+    s = 2.0
+    # letter spacing grows with the letters (x2), not with the page width (x3) - was x3 before
+    for i in range(4):
+        assert _cx(r[f"L{i + 1}"]) - _cx(r[f"L{i}"]) == pytest.approx(60 * s)
+        assert r[f"L{i}"].w == pytest.approx(50 * s)
+    # every letter stays on its card, and the shadow keeps its offset from the card
+    card = r["card"]
+    for i in range(5):
+        p = r[f"L{i}"]
+        assert card.x <= p.x and p.x + p.w <= card.x + card.w and card.y <= p.y and p.y + p.h <= card.y + card.h
+    assert r["shadow"].x - card.x == pytest.approx(10 * s) and r["shadow"].y - card.y == pytest.approx(-10 * s)
+    # the unit itself keeps its proportional page position (its centre moves x3 across, x2 up)
+    unit_cx = (min(r[k].x for k in ("card", "shadow")) + max(r[k].x + r[k].w for k in ("card", "shadow"))) / 2
+    assert unit_cx == pytest.approx((140 + 535) / 2 * 3)
+    # a lone fragment far from the card keeps the per-object rule
+    b = r["badge"]
+    assert _cx(b) == pytest.approx(660 * 3) and b.w == pytest.approx(240)
+
+
+def test_fragment_units_match_the_per_object_rule_when_the_aspect_ratio_is_unchanged():
+    objs = _card_with_word()
+    r = by_id(compute_layout(objs, *MP, MP[0] * 2.5, MP[1] * 2.5, tile=True))
+    for o in objs[1:]:
+        p = r[o.id]
+        assert _cx(p) == pytest.approx((o.x + o.w / 2) * 2.5) and p.y + p.h / 2 == pytest.approx((o.y + o.h / 2) * 2.5)
+        assert (p.w, p.h) == (pytest.approx(o.w * 2.5), pytest.approx(o.h * 2.5))
+
+
+def test_fragment_units_stay_inside_the_page():
+    # fragments hugging the right edge: the unit's box scales by s <= the page factor, so it cannot overflow
+    objs = [Obj("a", "", "shape", 700, 500, 50, 50), Obj("b", "", "shape", 752, 500, 10, 50)]
+    for size in (BP, (1000.0, 3000.0), (800.0, 1016.0)):
+        r = compute_layout(objs, *MP, *size, tile=True)
+        for p in r:
+            assert -1e-6 <= p.x and p.x + p.w <= size[0] + 1e-6 and -1e-6 <= p.y and p.y + p.h <= size[1] + 1e-6
+
+
+def test_edge_to_edge_rule_line_stretches_with_the_page_but_groups_do_not():
+    rule = Obj("rule", "", "shape", -3.8, 122, 762, 5.5)      # the real master's rule above the footer
+    footer = Obj("footer", "", "group", 6.5, 58.5, 748, 35)   # a full-width group of lettering: never stretched
+    r = by_id(compute_layout([rule, footer], *MP, *BP, tile=True))
+    assert r["rule"].w == pytest.approx(762 * 3) and r["rule"].h == pytest.approx(5.5 * 2)
+    assert r["rule"].x == pytest.approx(0) and r["rule"].x + r["rule"].w == pytest.approx(BP[0])  # edge to edge
+    assert (r["footer"].w, r["footer"].h) == (pytest.approx(748 * 2), pytest.approx(35 * 2))
+
+
+def test_groups_and_bitmaps_are_not_merged_with_each_other():
+    # Agarpathi 12x4 ft: a product photo and a badge group 43 mm apart stay independent units
+    photo = Obj("photo", "", "bitmap", 3121, 54, 427, 953)
+    badge = Obj("badge", "", "group", 2712, 802, 366, 297)
+    r = by_id(compute_layout([photo, badge], 3658, 1219, 3658 * 1.5, 1219 * 2))
+    for o in (photo, badge):
+        assert _cx(r[o.id]) == pytest.approx((o.x + o.w / 2) * 1.5)
+
+
+def test_tiled_boards_keep_the_panel_path():
+    # tiling moves the whole panel as one unit already; the fragment units must not interfere
+    objs = _card_with_word()
+    plain = by_id(compute_layout(objs, *MP, MP[0] * 4, MP[1], tile=False))
+    tiled = compute_layout(objs, *MP, MP[0] * 4, MP[1], tile=True)
+    assert len(tiled) > len(plain)   # panel copies were added

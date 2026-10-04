@@ -870,3 +870,33 @@ def ensure_tamil_font_renders(shape, text: str | None, warnings: list[str]) -> N
             )
     except Exception as e:
         warnings.append(f"could not verify/fix Tamil font on a text shape: {e}")
+
+
+def cdr_core_version(path) -> float | None:
+    """The CorelDRAW version a .cdr was saved by (X4+ files are zip archives: META-INF/metadata.xml `CoreVersion`, e.g. 2510 ->
+    25.10, 2100 -> 21.0). None for anything unreadable (an older, pre-X4 file, a damaged zip)."""
+    import re
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            m = re.search(r"CoreVersion>\s*(\d+)", z.read("META-INF/metadata.xml").decode("utf-8", "ignore"))
+        return int(m.group(1)) / 100 if m else None
+    except Exception:
+        return None
+
+
+def check_file_not_newer(path, app) -> None:
+    """Raise a clear error when `path` was saved by a newer CorelDRAW than the running one - OpenDocument would only say
+    'Failed to open document' (seen with the Hangyo files: saved by CorelDRAW 2024, v25.10, opened with 2019, v21)."""
+    saved = cdr_core_version(path)
+    if saved is None:
+        return
+    try:
+        running = float(app.VersionMajor)
+    except Exception:
+        return
+    if int(saved) > int(running):
+        raise RuntimeError(
+            f"this file was saved by CorelDRAW version {saved:g} but the CorelDRAW on this machine is version {running:g}, "
+            "which cannot open files from a newer version - open it in the newer CorelDRAW and 'Save As' an older version "
+            f"(v{int(running)} or lower), or install a CorelDRAW that is at least version {int(saved)}")
