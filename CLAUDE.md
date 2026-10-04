@@ -17,6 +17,47 @@ is being built alongside it, not as a replacement yet. Engine-side work
 (layout rules, validation, tiling) is unaffected by either UI and
 continues independently - none of it was touched building the new UI.
 
+## Continue here (handoff, 2026-10-05) - read this first on another machine
+
+**State.** `main` holds everything: the example-library layout engine, master routing ("Auto (best match)"), Excel MASTER / CONVERT / (TA)
+columns, the masters registry UI, tests (backend 902 passed / 37 skipped, frontend 269) and the decks in `presentations/` (`presentations/final/` =
+the two final UI-run decks). Details of every change are in "Example-library layout" -> Round 2 / Round 3 below.
+
+**What is NOT in git (bring it or rebuild it).** `signage_dataset/` (the designers' CDRs - client data), `backend/data/` (SQLite + outputs),
+`backend/dataset_analysis/` (dumps, eval results - regenerable), `node_modules`, `.venv`. `backend/brand_data/*/library.json` IS tracked (the engine
+needs it). Without `signage_dataset` you cannot rebuild libraries or run `example_eval.py`; the app itself still runs.
+
+**Set up.** Windows + CorelDRAW (27 for the Hangyo files, which were saved by CorelDRAW 2024 / CoreVersion 2510; 2019 opens only older files).
+```
+cd backend && python -m venv .venv && .venv\Scripts\pip install -r requirements.txt     # pywin32, fastapi, Pillow, python-pptx, openpyxl ...
+cd backend && python -m uvicorn app.main:app --port 8000        # NO --reload (it leaves orphan workers on Windows)
+cd frontend && npm install && npm run dev                       # :5173, proxies /api -> :8000; SIGNAGE_API=http://localhost:8001 points it elsewhere
+cd backend && python -m pytest -q ; cd ../frontend && npm test
+```
+Env knobs worth knowing: `SIGNAGE_DATA` (data dir), `SIGNAGE_ENGINE=corel|mock`, `SIGNAGE_SHOP_TIMEOUT_S` (default 45 - raise to 240 for the
+100-350 MB Agarpathi masters), `SIGNAGE_KEEP_MASTER_OPEN`, `SIGNAGE_MAX_BITMAP_DPI`. Restart the backend after pulling: a server started before the
+change keeps the old engine (this bit us repeatedly).
+
+**Testing through the UI the way it was done (visible, reproducible).** Run a second backend on :8001 with a scratch `SIGNAGE_DATA`, vite with
+`SIGNAGE_API=http://localhost:8001 npx vite --port 5174`, open it in the browser pane, and inject files into the real inputs with
+`DataTransfer` (a tiny CORS file server serves the masters / the xlsx): `.master-card input[type=file]` index 0 = landscape, 1 = portrait, the
+"Add Master" dialog's file input for more, `[data-testid=shop-import-input]` for the sheet. Sheet headers: `S.NO | SHOP NAME (EN) | SHOP NAME (TA) |
+WIDTH | HEIGHT | UNIT | TYPE OF BOARD | LANGUAGE | MASTER | CONVERT` (Hangyo double-sided boards: side 1 = "Tamil Only", side 2 = name + " (2)" and
+"English Only"). **Convert All starts immediately - import only the rows you mean to run** (a stopped script had already pressed it once).
+Pairing outputs with the designer pictures + the deck: `tools/build_hangyo_jpg_deck.py <pairs.json> <out.pptx> [TITLE] [note]` (pairs = designer
+image, app PNG, name, similarity); Agarpathi designer pictures are in `dataset_analysis/example_eval/agarpathi/refs.json` (regenerable).
+
+**Open items, in the order I would take them.**
+1. Hangyo wide boards (12-26 ft, from the 10 X 3 master) now have the right structure but the shop names are far smaller than the designer's
+   (name block sized from the three 10x3 library boards). Look at `_text_spec` / `_apply_text_fit` for the m0 master and wide targets.
+2. Hangyo 10x4 ft GSB boards show one logo, the designer two (art the master lacks); 3x6 ft portrait boards use the rules layout (the 4 X 8 master
+   matches no library element; the library records them as built from the landscape 6 X 3 master).
+3. Agarpathi: only the 8 weakest boards were re-run through the UI after the routing fix (the other 55 were not); 6x5, 2x6, 6x4 ft need art the
+   master lacks. A full Agarpathi UI run takes ~45 min and ~2 GB RAM free; use `SIGNAGE_SHOP_TIMEOUT_S=240`.
+4. Tamil spelling can only come from the sheet's TA column; transliteration differs from the designer's (flag for review, do not "fix").
+5. Not yet tested: Dalmia / Agni through the example library (dalmia keeps its rules: `"example_library": false`), "approve and add to library".
+6. The browser pane is small (800x450) and screenshots time out when the Claude window is behind another window; prefer `read_page`/`javascript_tool`.
+
 ## New UI (in progress, phased - `frontend/src/pages/`, `backend/app/db.py`)
 
 A ground-up UI rebuild, kept deliberately separate from the original
