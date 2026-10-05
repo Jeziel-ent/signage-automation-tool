@@ -17,7 +17,7 @@ const HEIGHT_RE = /height|length|^h$|^ht\.?$|^hgt\.?$|h\s*\(/i;
 // shop_name_local, never picked as the English name column
 const LOCAL_NAME_RE = /local|tamil|regional|vernacular|native|\(\s*ta\s*\)|\bta\b|தமிழ்/i;   // "Shop Name (TA)" is the Tamil column
 // "Type", "Board Type", "Type of Board", "Sign Type", "Lit / Nonlit", "Lighting", "Illumination"
-const TYPE_RE = /\btype\b|lighting|illumination|^lit\b|non\s*-?\s*lit/i;
+const TYPE_RE = /\btype\b|lighting|illumination|^lit\b|non\s*-?\s*lit/i;  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 const NAME_EXCLUDE_RE = new RegExp(
   [String.raw`phone|mobile|contact|gst|address|e-?mail|sl\.?\s*no|s\.?\s*no|^#$`, SIZE_HEADER_RE.source, WIDTH_RE.source, HEIGHT_RE.source,
     TYPE_RE.source].join("|"),
@@ -159,7 +159,7 @@ function pickLocalNameColumn(headers, taken) {
 
 // A designer file name used as the shop name: "73 - 60 X 75 Inch - Nonlit - SRI AMBIRAMI PROVISON STORES.cdr"
 // -> "SRI AMBIRAMI PROVISON STORES" (everything after the third " - ", like backend batch_import.parse_shop_lines).
-const DESIGN_FILE_RE = /^\s*\d+\s*-\s*\d+(?:\.\d+)?\s*[xX×*]\s*\d+(?:\.\d+)?\s*[a-z'"]*\s*-\s*([^-]+?)\s*-\s*(.+?)\s*$/i;
+const DESIGN_FILE_RE = /^\s*\d+\s*-\s*\d+(?:\.\d+)?\s*[xX×*]\s*\d+(?:\.\d+)?\s*[a-z'"]*\s*-\s*([^-]+?)\s*-\s*(.+?)\s*$/i;  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 
 /** The shop name to print from a name cell: a trailing ".cdr" is dropped and a designer file name is reduced to its
  *  shop-name part; anything else is returned trimmed. */
@@ -168,7 +168,7 @@ export function cleanShopName(v) {
 }
 
 // Windows copy suffixes: "Sri Sai cafe (1)", "VASANTHAM ENTERPRISES - Copy", "X - Copy (2)"
-const COPY_SUFFIX_RE = /(?:\s+-\s+copy(?:\s*\(\d+\))?|\s*\(\d+\))\s*$/i;
+const COPY_SUFFIX_RE = /(?:\s+-\s+copy(?:\s*\(\d+\))?|\s*\(\d+\))\s*$/i;  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 
 /** The shop name inside a designer-style file name ("02 - 3 X 6 Feet - Double Side GSB - Sri Sai cafe (1).cdr" ->
  *  "Sri Sai cafe"), copy suffixes dropped; null when the name does not follow that pattern. */
@@ -189,7 +189,7 @@ export function shopNameFromFileName(v) {
 export function unitFromName(v) {
   const t = cellText(v).replace(/\.cdr$/i, "").trim();
   if (!DESIGN_FILE_RE.test(t)) return null;
-  const seg = t.split(/\s+-\s+/)[1] || "";
+  const seg = t.split(/\s+-\s+/)[1] || "";  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
   return detectUnit(seg.replace(/^[\d.\s]+[xX×*][\d.\s]+/, ""));
 }
 

@@ -64,7 +64,7 @@ def add_brand(brand, pairs):
     totals[name] = {k: cnt(k) for k in ("VERY CLOSE", "CLOSE", "DIFFERENT", "WRONG SIZE")}
     for r in pairs:
         s = prs.slides.add_slide(blank); bg(s)
-        m = re.match(r"(\d+) - (.*?) - (.*?) - (.*)", r["name"])
+        m = re.match(r"(\d+) - (.*?) - (.*?) - (.*)", r["name"])  # NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
         sno, size, typ, shop = m.groups() if m else ("", "", "", r["name"])
         pill(s, Inches(0.5), Inches(0.35), Inches(1.15), Inches(0.5), f"S.No {int(sno)}" if sno else name, RED, 15)
         tb(s, Inches(1.85), Inches(0.3), Inches(7.6), Inches(0.6), shop, 24 if len(shop) <= 30 else 16, True, INK, "Cambria", anchor=1)

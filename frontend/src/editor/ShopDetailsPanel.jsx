@@ -74,13 +74,13 @@ export default function ShopDetailsPanel({ scene, shop, shopId, onSelect, onComm
   const texts = useMemo(() => textNodes(scene), [scene]);
   const contacts = useMemo(() => contactIds(scene), [scene]);
   const [choice, setChoice] = useState(() => readChoice(shopId));
-  const found = findShopNameNode(scene, shop && shop.name, choice);
+  const found = findShopNameNode(scene, shop?.name, choice);
   const candidates = texts.filter((t) => !contacts.includes(t.id));
 
   const entry = (id) => idx.get(id);
   const isLocked = (id) => {
     const e = entry(id);
-    return !e || !!e.node.locked || !!(e.layer && e.layer.locked) || ancestry(idx, id).some((a) => a.locked);
+    return !e || !!e.node.locked || !!(e.layer?.locked) || ancestry(idx, id).some((a) => a.locked);
   };
   const focusOnCanvas = (id) => {
     const chain = ancestry(idx, id);
@@ -100,7 +100,7 @@ export default function ShopDetailsPanel({ scene, shop, shopId, onSelect, onComm
   };
 
   const nameNode = found && entry(found.id) ? entry(found.id).node : null;
-  const recordName = shop && shop.name ? shop.name : "";
+  const recordName = shop?.name ? shop.name : "";
 
   return (
     <section className="ed-panel ed-shop">

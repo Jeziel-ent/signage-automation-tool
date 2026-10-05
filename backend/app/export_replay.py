@@ -231,7 +231,7 @@ def index_doc(page) -> tuple[dict, dict]:
 
     for i in range(1, int(page.Layers.Count) + 1):
         layer = page.Layers.Item(i)
-        if _safe(lambda: layer.IsSpecialLayer, False):
+        if _safe(lambda layer=layer: layer.IsSpecialLayer, False):
             continue
         layers[f"L{i}"] = layer
         for s in _children(layer):
@@ -358,7 +358,7 @@ class Replayer:
         for nid in _subtree_ids(node):
             s = self.shapes.pop(nid, None)
             if s is not None:
-                self.sid.pop(int(_safe(lambda: s.StaticID, -1)), None)
+                self.sid.pop(int(_safe(lambda s=s: s.StaticID, -1)), None)
 
     def _container(self, parent_id: str):
         return self.layers.get(parent_id) or self._shape(parent_id)
@@ -559,7 +559,7 @@ class Replayer:
 
     def _finish_deletions(self) -> None:
         for i, shape in list(self.ghosts.items()):
-            _safe(lambda: shape.Delete())
+            _safe(lambda shape=shape: shape.Delete())
             self.ghosts.pop(i)
 
     def _op_group(self, op, before):

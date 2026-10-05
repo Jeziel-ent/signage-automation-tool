@@ -47,8 +47,8 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
       }
       return next.size === prev.size ? prev : next;
     });
-    const el = listRef.current && listRef.current.querySelector(`[data-row="${sel[0]}"]`);
-    if (el && el.scrollIntoView) el.scrollIntoView({ block: "nearest" });
+    const el = listRef.current?.querySelector(`[data-row="${sel[0]}"]`);
+    if (el?.scrollIntoView) el.scrollIntoView({ block: "nearest" });
   }, [sel, idx]);
 
   const rows = useMemo(() => buildRows(scene, expanded), [scene, expanded]);

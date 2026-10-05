@@ -100,7 +100,7 @@ export default function EditorPage() {
           setLoad({ phase: "building", progress: b.progress_pct, step: b.step });
           setProg({
             progress: mapBuild(b.progress_pct),
-            text: b.step && b.step.startsWith("images ") ? `CorelDRAW is rendering objects ${b.step.slice(7)}` : b.step === "page_image" ? "Rendering the full-page reference" : "CorelDRAW is opening the master...",
+            text: b.step?.startsWith("images ") ? `CorelDRAW is rendering objects ${b.step.slice(7)}` : b.step === "page_image" ? "Rendering the full-page reference" : "CorelDRAW is opening the master...",
           });
           timer = setTimeout(go, 800);
           return;
@@ -219,7 +219,7 @@ export default function EditorPage() {
     const stack = scene.layers.flatMap((l) => l.children);
     while (stack.length) {
       const n = stack.pop();
-      if (n.text && n.text.font && n.text.font.toLowerCase() === family.toLowerCase() && n.text.content) return n.text.content.split(/\r|\n/)[0];
+      if (n.text?.font && n.text.font.toLowerCase() === family.toLowerCase() && n.text.content) return n.text.content.split(/\r|\n/)[0];
       if (n.children) stack.push(...n.children);
     }
     return "";
@@ -302,7 +302,7 @@ export default function EditorPage() {
       const now = Date.now();
       const prev = ops[cursor - 1];
       // Holding an arrow key must not create one undo step per repeat: merge consecutive nudges of the same objects.
-      if (opts.coalesce && cursor === ops.length && prev && prev.op === "move" && now - lastNudge.current.at < 800 &&
+      if (opts.coalesce && cursor === ops.length && prev?.op === "move" && now - lastNudge.current.at < 800 &&
           prev.ids.length === op.ids.length && prev.ids.every((i, k) => i === op.ids[k])) {
         const merged = { ...prev, dx: Math.round((prev.dx + op.dx) * 1e4) / 1e4, dy: Math.round((prev.dy + op.dy) * 1e4) / 1e4 };
         setOps((o) => [...o.slice(0, cursor - 1), merged]);
@@ -538,7 +538,7 @@ export default function EditorPage() {
       } else if (mod && key === "u") {
         e.preventDefault();
         const n = k.sel.length === 1 && k.scene ? buildIndex(k.scene).get(k.sel[0])?.node : null;
-        if (n && n.kind === "group") k.commit({ op: "ungroup", id: n.id });
+        if (n?.kind === "group") k.commit({ op: "ungroup", id: n.id });
       } else if (e.key === "F2") {
         e.preventDefault();
         if (k.sel.length === 1) k.startEdit(k.sel[0]);
@@ -559,7 +559,7 @@ export default function EditorPage() {
         if (k.ctx) {
           const g = k.scene ? buildIndex(k.scene).get(k.ctx) : null;
           setSel([k.ctx]); // leaving a group selects the group itself, like CorelDRAW
-          setCtx(g && g.parent ? g.parent.id : null);
+          setCtx(g?.parent ? g.parent.id : null);
         } else setSel([]);
       }
     };
@@ -603,7 +603,7 @@ export default function EditorPage() {
               </p>
               <div className="progress-bar"><div className="progress-fill" style={{ width: `${load.progress || 3}%` }} /></div>
               <p className="ed-hint">
-                {load.step && load.step.startsWith("images ")
+                {load.step?.startsWith("images ")
                   ? `Rendering objects ${load.step.slice(7)}`
                   : load.step === "page_image"
                     ? "Rendering the full-page reference"
@@ -757,7 +757,7 @@ export default function EditorPage() {
           </span>
         )}
         <span>{ops.length ? `${cursor}/${ops.length} operations` : "No edits"}</span>
-        <span>{scene.stats && scene.stats.mock ? "Mock scene (no CorelDRAW)" : `${scene.stats?.leaves ?? "?"} rendered objects`}</span>
+        <span>{scene.stats?.mock ? "Mock scene (no CorelDRAW)" : `${scene.stats?.leaves ?? "?"} rendered objects`}</span>
       </footer>
 
 

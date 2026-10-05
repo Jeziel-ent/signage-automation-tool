@@ -33,7 +33,7 @@ export function missingFonts(scene, fonts) {
   const seen = new Map();
   const walk = (children) => {
     for (const n of children) {
-      if (n.stale && n.text && n.text.font && !known.has(n.text.font.toLowerCase())) seen.set(n.text.font, (seen.get(n.text.font) || 0) + 1);
+      if (n.stale && n.text?.font && !known.has(n.text.font.toLowerCase())) seen.set(n.text.font, (seen.get(n.text.font) || 0) + 1);
       if (n.children) walk(n.children);
     }
   };

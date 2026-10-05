@@ -94,7 +94,7 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
   }, [closable, onClose]);
 
   // ------------------------------------------------------------------- validity
-  const page = board && board.scene.page;
+  const page = board?.scene.page;
   const previews = useMemo(() => {
     if (!page || !settings) return {};
     return {
@@ -140,7 +140,7 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
     return () => clearInterval(t);
   }, [phase, running, base]);
 
-  const pct = useSteppedProgress(running ? running.plan : [], status && status.step, status && status.status === "done", estimates);
+  const pct = useSteppedProgress(running ? running.plan : [], status?.step, status?.status === "done", estimates);
 
   const fileUrl = (name) => `${base}/exports/${running.export_id}/files/${encodeURIComponent(name)}`;
   const zipUrl = running ? `${base}/exports/${running.export_id}/zip` : "";
@@ -304,8 +304,8 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
             <div className="progress-bar"><div className="progress-fill" style={{ width: `${pct}%` }} /></div>
             <div className="xm-progress-line">
               <span>
-                {status && status.step ? STEP_LABELS[status.step] || status.step : "Queued"}
-                {status && status.sub ? ` (${status.sub.done} of ${status.sub.total})` : "..."}
+                {status?.step ? STEP_LABELS[status.step] || status.step : "Queued"}
+                {status?.sub ? ` (${status.sub.done} of ${status.sub.total})` : "..."}
               </span>
               <span>{pct}%</span>
             </div>
@@ -326,8 +326,8 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
         {phase === "done" && status && (
           <>
             <div className="xm-body">
-              {status.report && status.report.mock && <div className="xm-warn">Mock engine: placeholder files, not a CorelDRAW export.</div>}
-              {status.report && status.report.verification && !status.report.verification.ok && (
+              {status.report?.mock && <div className="xm-warn">Mock engine: placeholder files, not a CorelDRAW export.</div>}
+              {status.report?.verification && !status.report.verification.ok && (
                 <div className="xm-warn">The exported file differs from the editor in {status.report.verification.mismatches.length} place(s).</div>
               )}
               {status.report && (status.report.warnings || []).filter((w) => !w.startsWith("Mock") && !w.startsWith("The exported document differs")).map((w, i) => (
@@ -338,8 +338,8 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
                 {Object.entries(status.files).map(([kind, name]) => {
                   const Icon = ICON[kind] || FileText;
                   const meta = [
-                    status.report && status.report.file_bytes && status.report.file_bytes[kind] ? fmtBytes(status.report.file_bytes[kind]) : "",
-                    status.report && status.report.pixels && status.report.pixels[kind] ? `${status.report.pixels[kind][0]} × ${status.report.pixels[kind][1]} px` : "",
+                    status.report?.file_bytes && status.report.file_bytes[kind] ? fmtBytes(status.report.file_bytes[kind]) : "",
+                    status.report?.pixels && status.report.pixels[kind] ? `${status.report.pixels[kind][0]} × ${status.report.pixels[kind][1]} px` : "",
                   ].filter(Boolean);
                   return (
                     <div className="xm-file" key={kind}>

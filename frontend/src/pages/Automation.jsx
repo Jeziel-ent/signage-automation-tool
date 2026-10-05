@@ -239,7 +239,7 @@ export default function Automation() {
       const missingText = (m) => `Could not find the ${m.map((k) => (k === "size" ? "size (a Size column like 10*4, or Width and Height columns)" : "shop name")).join(" or the ")}.`;
       if (!withShops.length) {
         const first = sheets.find((sh) => sh.missing.length) || sheets[0];
-        setImportReport({ file: file.name, added: 0, errors: [], note: first && first.missing.length ? missingText(first.missing) : "No data rows found." });
+        setImportReport({ file: file.name, added: 0, errors: [], note: first?.missing.length ? missingText(first.missing) : "No data rows found." });
         return;
       }
       const multi = sheets.length > 1;
@@ -861,7 +861,7 @@ export default function Automation() {
         {exportShop && (
           <ExportModal
             key={exportShop.id}
-            jobId={exportShop.job_id || (job && job.id)}
+            jobId={exportShop.job_id || (job?.id)}
             shopId={exportShop.id}
             shopName={exportShop.name}
             onClose={() => setExportShop(null)}

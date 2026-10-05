@@ -97,10 +97,10 @@ export default function LiveText({ node, content, font, origLines = 1, pageH, as
     // this text was first drawn in a fallback font, and a different font means different glyph metrics.
     const fonts = document.fonts;
     if (fonts && "ready" in fonts) fonts.ready.then(measure);
-    if (fonts && fonts.addEventListener) fonts.addEventListener("loadingdone", measure);
+    if (fonts?.addEventListener) fonts.addEventListener("loadingdone", measure);
     return () => {
       alive = false;
-      if (fonts && fonts.removeEventListener) fonts.removeEventListener("loadingdone", measure);
+      if (fonts?.removeEventListener) fonts.removeEventListener("loadingdone", measure);
     };
   }, [content, family, w, h, origLines, lines.length, styleKey]); // eslint-disable-line react-hooks/exhaustive-deps
 

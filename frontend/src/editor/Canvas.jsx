@@ -428,9 +428,9 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
   const sx = (mx) => view.x + mx * view.zoom;
   const sy = (my) => view.y + (pageH - my) * view.zoom;
   const sbox = (b) => ({ x: sx(b.x), y: sy(b.y + b.h), w: b.w * view.zoom, h: b.h * view.zoom });
-  const liveBox = overlay && overlay.box ? overlay.box : selBox;
+  const liveBox = overlay?.box ? overlay.box : selBox;
   const lb = liveBox ? sbox(liveBox) : null;
-  const showHandles = lb && selNodes.length > 0 && !selLocked && !(overlay && overlay.marquee);
+  const showHandles = lb && selNodes.length > 0 && !selLocked && !(overlay?.marquee);
   const ctxNode = ctx ? idx.get(ctx)?.node : null;
   const editNode = editingId ? idx.get(editingId)?.node : null;
   const hoverNode = hover && !sel.includes(hover) ? idx.get(hover)?.node : null;
@@ -509,7 +509,7 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
           return <rect key={"stale" + n.id} pointerEvents="none" x={b.x} y={b.y} width={b.w} height={b.h} fill="none" stroke="var(--color-warn)" strokeDasharray="5 3" />;
         })}
 
-        {lb && selNodes.length > 0 && !(overlay && overlay.marquee) && (
+        {lb && selNodes.length > 0 && !(overlay?.marquee) && (
           <g>
             <rect pointerEvents="none" x={lb.x} y={lb.y} width={lb.w} height={lb.h} fill="none" stroke="var(--ed-box-stroke, var(--color-black))" strokeWidth="1" strokeDasharray="5 3" />
             {showHandles &&
@@ -529,18 +529,18 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
           </g>
         )}
 
-        {overlay && overlay.guideX != null && (
+        {overlay?.guideX != null && (
           <line pointerEvents="none" x1={sx(overlay.guideX)} x2={sx(overlay.guideX)} y1="0" y2={size.h} stroke="var(--color-red)" strokeWidth="1" strokeDasharray="4 3" />
         )}
-        {overlay && overlay.guideY != null && (
+        {overlay?.guideY != null && (
           <line pointerEvents="none" y1={sy(overlay.guideY)} y2={sy(overlay.guideY)} x1="0" x2={size.w} stroke="var(--color-red)" strokeWidth="1" strokeDasharray="4 3" />
         )}
 
-        {overlay && overlay.marquee && (
+        {overlay?.marquee && (
           <rect pointerEvents="none" x={overlay.marquee.x} y={overlay.marquee.y} width={overlay.marquee.w} height={overlay.marquee.h} fill="rgba(224,24,47,0.08)" stroke="var(--color-red)" strokeDasharray="4 3" />
         )}
       </svg>
-      {editNode && editNode.text && (
+      {editNode?.text && (
         <TextEditor
           key={editNode.id}
           node={editNode}

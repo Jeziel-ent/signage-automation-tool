@@ -288,7 +288,6 @@ def map_slots(scene: dict) -> tuple[list[ProductSlot], list[str]]:
             text_slot(n, SLOT_CONTACT, "heuristic")
 
     for s in slots:
-        clip = idx[s.node_id]["parent"]
         if s.kind in IMAGE_KINDS and s.container_id and idx[s.container_id]["node"].get("frame_rect") is False:
             warnings.append(f"{s.slot_id}: its PowerClip frame is not a plain rectangle - images are fitted to the frame's bounding box")
     order = {n["id"]: i for i, n in enumerate(nodes)}

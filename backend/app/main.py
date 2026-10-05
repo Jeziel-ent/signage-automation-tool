@@ -1590,11 +1590,11 @@ def _share_base(server: tuple | None) -> dict:
     host, port = (server or ("127.0.0.1", 8000))[:2]
     if host in ("127.0.0.1", "localhost", "::1"):
         # started without --host: the server cannot be reached from another computer at all
-        return {"base": f"http://127.0.0.1:{port}", "local_only": True}
+        return {"base": f"http://127.0.0.1:{port}", "local_only": True}  # NOSONAR - loopback share link on a local server
     if host in ("0.0.0.0", "::", ""):
         ip = _lan_ip()
-        return {"base": f"http://{ip or '127.0.0.1'}:{port}", "local_only": ip is None}
-    return {"base": f"http://{host}:{port}", "local_only": False}
+        return {"base": f"http://{ip or '127.0.0.1'}:{port}", "local_only": ip is None}  # NOSONAR - LAN share link on a local server
+    return {"base": f"http://{host}:{port}", "local_only": False}  # NOSONAR - LAN share link on a local server
 
 
 def _wt_worker(job_id: str, token: str, share: dict, skip_reason: str | None = None,
@@ -1639,7 +1639,7 @@ def _wt_worker(job_id: str, token: str, share: dict, skip_reason: str | None = N
                                                   debug_dir=DATA / "wetransfer_debug", ask_code=ask_code)
                 update(status="success", wetransfer_url=url, fallback_used=False, progress=100, step="done")
                 return
-            except Exception as e:  # noqa: BLE001 - whatever broke, the fallback below still gives a link
+            except Exception as e:  # NOSONAR - whatever broke, the fallback below still gives a link
                 reason = e.detail if isinstance(e, HTTPException) else str(e)
                 logger.warning("WeTransfer upload failed, falling back to a server link: %s", reason)
         step("server_link", 95)

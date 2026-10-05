@@ -9,7 +9,7 @@ import FontCombobox from "./FontCombobox.jsx";
  * SERVER's installed fonts, because CorelDRAW on the server writes the exported files and ignores a font it does not have.
  */
 export default function FontSubstituteModal({ font, webSource, position, total, sample, installed, current, onApply, onCancel, onRemove }) {
-  const [choice, setChoice] = useState(() => defaultReplacement(installed, current && current.font));
+  const [choice, setChoice] = useState(() => defaultReplacement(installed, current?.font));
   const [permanent, setPermanent] = useState(current ? !!current.permanent : false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -73,7 +73,7 @@ export default function FontSubstituteModal({ font, webSource, position, total, 
             <span><strong>Permanent (Save to Shop Config)</strong> - saved for this shop: every export of this board sets the text to the replacement in CorelDRAW.</span>
           </label>
         </fieldset>
-        {current && current.permanent && !permanent && (
+        {current?.permanent && !permanent && (
           <p className="ed-hint">Choosing Temporary removes the saved (permanent) substitution for this shop.</p>
         )}
         <p className="ed-hint">The canvas draws that text live in the replacement (browser typesetting - close to, not identical with, CorelDRAW's).</p>

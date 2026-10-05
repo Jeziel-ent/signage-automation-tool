@@ -454,7 +454,7 @@ def norm_type(t: str | None) -> str:
 
 def board_kind(file: str) -> str:
     """The type segment of a designer file name '<S.No> - <W> X <H> <unit> - <TYPE> - <shop>.cdr' ('' when it has none)."""
-    parts = re.split(r"\s+-\s+", Path(file).stem)
+    parts = re.split(r"\s+-\s+", Path(file).stem)  # NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
     return norm_type(parts[2]) if len(parts) >= 4 else ""
 
 

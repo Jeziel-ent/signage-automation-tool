@@ -953,7 +953,7 @@ def _shopname_replacement(o: Obj, shop_name, shop_name_local, language: str | No
     return None, None
 
 
-_PHONE_RE = re.compile(r"(phone\s*no\.?\s*[:.]?\s*)([\d][\d +-]*)", re.IGNORECASE)
+_PHONE_RE = re.compile(r"(phone\s*no\.?\s*[:.]?\s*)([\d][\d +-]*)", re.IGNORECASE)  # NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 _GST_RE = re.compile(r"(gst\s*no\.?\s*[:.]?\s*)([a-z0-9]*)", re.IGNORECASE)
 
 

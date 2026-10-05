@@ -72,7 +72,7 @@ export default function PillSelect({ value, options, onChange, icon: Icon, label
   }
 
   return (
-    <div className="brand-select" ref={rootRef} onKeyDown={onKeyDown}>
+    <div className="brand-select" ref={rootRef} onKeyDown={onKeyDown} /* NOSONAR - key events bubble up from the native buttons inside */>
       <button
         type="button"
         ref={triggerRef}

@@ -182,8 +182,6 @@ def main(out):
             tbl.cell(r, c).text = v
     fill_row(1, "Known sizes - all boards", kc)
     fill_row(2, "Unseen sizes - all boards", uc)
-    for r in range(3):
-        pass
     tbl.cell(3, 0).text = "Landscape / portrait split (known)"
     land = {f: v for f, v in kc.items() if next(x for x in rows if x["file"] == f)["fam"] == "L"}
     port = {f: v for f, v in kc.items() if next(x for x in rows if x["file"] == f)["fam"] == "P"}

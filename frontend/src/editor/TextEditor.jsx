@@ -20,7 +20,7 @@ export default function TextEditor({ node, box, fonts, onApply, onCancel }) {
   }, []);
 
   const font = node.text.font || "";
-  const known = fonts && fonts.available ? new Set(fonts.fonts.map((f) => f.toLowerCase())) : null;
+  const known = fonts?.available ? new Set(fonts.fonts.map((f) => f.toLowerCase())) : null;
   const missing = known && font && !known.has(font.toLowerCase());
 
   const finish = () => {

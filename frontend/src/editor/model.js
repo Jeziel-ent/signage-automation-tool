@@ -153,7 +153,7 @@ export function marqueeSelect(scene, ctx, box) {
 /** True when `id` sits anywhere inside a PowerClip (contents there accept text/move/resize/order and a same-parent reorder - see ops.js checkEditable). */
 export function insidePowerclip(idx, id) {
   const e = idx.get(id);
-  for (let p = e && e.parent; p; p = idx.get(p.id).parent) if (p.kind === "powerclip") return true;
+  for (let p = e?.parent; p; p = idx.get(p.id).parent) if (p.kind === "powerclip") return true;
   return false;
 }
 
@@ -164,7 +164,7 @@ export function clipChildAt(powerclip, pt) {
     for (let i = children.length - 1; i >= 0; i--) {
       const c = children[i];
       if (c.visible === false) continue;
-      if (c.children && c.children.length) walk(c.children);
+      if (c.children?.length) walk(c.children);
       else if (pt.x >= c.x && pt.x <= c.x + c.w && pt.y >= c.y && pt.y <= c.y + c.h) hits.push(c);
     }
   };
@@ -177,7 +177,7 @@ export function buildRows(scene, expanded) {
   const walk = (children, depth, layerId, parentLocked) => {
     for (let i = children.length - 1; i >= 0; i--) {
       const n = children[i];
-      const has = !!(n.children && n.children.length);
+      const has = !!(n.children?.length);
       rows.push({ id: n.id, node: n, depth, layerId, isLayer: false, hasChildren: has, locked: parentLocked || !!n.locked });
       if (has && expanded.has(n.id)) walk(n.children, depth + 1, layerId, parentLocked || !!n.locked);
     }

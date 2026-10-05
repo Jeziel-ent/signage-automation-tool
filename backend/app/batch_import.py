@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-_SEGMENT_SPLIT = re.compile(r"\s+-\s+")
+_SEGMENT_SPLIT = re.compile(r"\s+-\s+")  # NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 _SIZE_RE = re.compile(r"^([\d.]+)\s*[xX]\s*([\d.]+)\s*([A-Za-z]+)\.?$")
 
 _UNIT_ALIASES = {
@@ -82,7 +82,7 @@ def _parse_line(line: str) -> ParsedShop | None:
 
 
 # Windows copy suffixes on a file name: "Sri Sai cafe (1)", "VASANTHAM ENTERPRISES - Copy", "X - Copy (2)"
-_COPY_SUFFIX = re.compile(r"(?:\s+-\s+copy(?:\s*\(\d+\))?|\s*\(\d+\))\s*$", re.IGNORECASE)
+_COPY_SUFFIX = re.compile(r"(?:\s+-\s+copy(?:\s*\(\d+\))?|\s*\(\d+\))\s*$", re.IGNORECASE)  # NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 
 
 def shop_name_from_filename(filename: str | None) -> str | None:

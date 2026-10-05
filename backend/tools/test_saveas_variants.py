@@ -73,7 +73,7 @@ def main():
     if OUT_DIR.exists():
         shutil.rmtree(OUT_DIR)
     OUT_DIR.mkdir(parents=True)
-    Path(r"C:\temp").mkdir(parents=True, exist_ok=True)
+    Path(r"C:\temp").mkdir(parents=True, exist_ok=True)  # NOSONAR - deliberate short-path diagnostic, one-off dev script
 
     # (c) saving the master's own content unmodified, to a path that doesn't exist yet
     run_experiment("c_no_changes_new_path", lambda app, doc: doc.SaveAs(str(OUT_DIR / "c_new.cdr"), None))
@@ -114,7 +114,7 @@ def main():
     run_experiment("b_explicit_options_existing_path_overwrite_true", _options_existing)
 
     # (e) short path vs long project path
-    run_experiment("e_short_path_c_temp", lambda app, doc: doc.SaveAs(r"C:\temp\diag_test.cdr", None))
+    run_experiment("e_short_path_c_temp", lambda app, doc: doc.SaveAs(r"C:\temp\diag_test.cdr", None))  # NOSONAR - deliberate short-path diagnostic
     run_experiment("e_long_project_path", lambda app, doc: doc.SaveAs(str(OUT_DIR / "e_long_path_baseline.cdr"), None))
 
     # (f) doc.Save() vs doc.SaveAs() - Save() only ever called after SaveAs() has

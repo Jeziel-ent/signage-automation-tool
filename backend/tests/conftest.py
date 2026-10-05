@@ -17,4 +17,3 @@ from app import corel_util
 def _isolated_corel_tracking(tmp_path_factory, monkeypatch):
     data = tmp_path_factory.mktemp("signage_data")
     monkeypatch.setattr(corel_util, "PID_FILE", data / "corel_launched_pids.json")
-    yield

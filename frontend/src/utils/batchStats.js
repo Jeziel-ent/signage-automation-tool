@@ -43,7 +43,7 @@ export function batchStats(batch, shops, now) {
 /** `finishTimes` extended to `settled` entries (new ones stamped `now`) - called whenever the settled count changes. */
 export function recordFinishes(finishTimes, settled, now) {
   const t = finishTimes || [];
-  return settled > t.length ? [...t, ...Array(settled - t.length).fill(now)] : t;
+  return settled > t.length ? [...t, ...new Array(settled - t.length).fill(now)] : t;
 }
 
 /** The displayed batch %: never below what was already shown in this batch (the page resets `peak` to 0 per batch). */

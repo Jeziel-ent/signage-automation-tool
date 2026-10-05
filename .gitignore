@@ -40,3 +40,4 @@ coverage.xml
 coverage-lcov.info
 frontend-lcov.info
 .scannerwork/
+frontend/lcov.info

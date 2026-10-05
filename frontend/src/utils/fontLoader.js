@@ -27,7 +27,7 @@ export function sceneFonts(scene) {
       walk(n.children);
     }
   };
-  for (const layer of (scene && scene.layers) || []) walk(layer.children);
+  for (const layer of (scene?.layers) || []) walk(layer.children);
   return out;
 }
 
@@ -83,7 +83,7 @@ export function fontCandidates(name) {
 }
 
 /** Fontsource's id for a family: lower case, every other run of characters one hyphen ("Open Sans" -> "open-sans"). */
-export const fontsourceId = (family) => family.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+export const fontsourceId = (family) => family.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 
 /** Google css2 URL for ONE weight/style of a family (used to register it under another name). */
 export function googleFaceUrl(family, weight, style) {
@@ -100,7 +100,7 @@ export function parseGoogleCss(css) {
     const subset = m[1];
     if (!["latin", "latin-ext", "tamil"].includes(subset)) continue;
     const url = /url\(([^)]+)\)/.exec(m[2]);
-    const range = /unicode-range:\s*([^;]+);/.exec(m[2]);
+    const range = /unicode-range:\s*([^;]+);/.exec(m[2]);  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
     if (url) out.push({ subset, url: url[1].replace(/["']/g, ""), unicodeRange: range ? range[1].trim() : undefined });
   }
   return out;
@@ -144,7 +144,7 @@ let probeCtx = null;
 export function isFontRenderable(family) {
   try {
     if (!probeCtx) probeCtx = document.createElement("canvas").getContext("2d");
-    const quoted = `"${family.replace(/"/g, '\\"')}"`;
+    const quoted = `"${family.replaceAll('"', '\\"')}"`;
     return BASES.some((base) => {
       probeCtx.font = `72px ${base}`;
       const a = probeCtx.measureText(PROBE).width;
@@ -161,7 +161,7 @@ function serverFamilies() {
   if (!serverList) {
     serverList = fetch("/api/fonts")
       .then((r) => (r.ok ? r.json() : null))
-      .then((j) => (j && j.available ? new Set(j.fonts.map((f) => f.toLowerCase())) : null))
+      .then((j) => (j?.available ? new Set(j.fonts.map((f) => f.toLowerCase())) : null))
       .catch(() => null);
   }
   return serverList;

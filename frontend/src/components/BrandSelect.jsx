@@ -62,7 +62,7 @@ export default function BrandSelect({ value, options, onChange, placeholder = "S
   }
 
   return (
-    <div className="brand-select" ref={rootRef} onKeyDown={onKeyDown}>
+    <div className="brand-select" ref={rootRef} onKeyDown={onKeyDown} /* NOSONAR - key events bubble up from the native buttons inside */>
       <button
         type="button"
         ref={triggerRef}

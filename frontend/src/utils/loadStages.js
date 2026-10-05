@@ -25,11 +25,11 @@ export const mapPreload = (loaded, total) => (total > 0 ? 35 + clamp(loaded / to
 export function collectImageUrls(scene, assetBase) {
   const files = new Set();
   const walk = (n) => {
-    if (n && n.image && n.image.file) files.add(n.image.file);
-    (n && n.children ? n.children : []).forEach(walk);
+    if (n?.image && n.image.file) files.add(n.image.file);
+    (n?.children ? n.children : []).forEach(walk);
   };
   (scene.layers || []).forEach((l) => (l.children || []).forEach(walk));
-  if (scene.page_image && scene.page_image.file) files.add(scene.page_image.file);
+  if (scene.page_image?.file) files.add(scene.page_image.file);
   return [...files].map((f) => assetBase + f);
 }
 

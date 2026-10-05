@@ -7,7 +7,7 @@ export function useOnClickOutside(ref, handler, active = true) {
     if (!active) return undefined;
     const onDown = (e) => {
       const refs = Array.isArray(ref) ? ref : [ref];
-      if (refs.some((r) => r.current && r.current.contains(e.target))) return;
+      if (refs.some((r) => r.current?.contains(e.target))) return;
       if (refs.some((r) => r.current)) handler(e);
     };
     document.addEventListener("mousedown", onDown);

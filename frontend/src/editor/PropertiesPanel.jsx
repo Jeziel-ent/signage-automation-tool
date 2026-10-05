@@ -35,7 +35,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
       x: fmtField(box.x + box.w / 2, unit),
       y: fmtField(box.y + box.h / 2, unit),
     });
-  }, [box && box.x, box && box.y, box && box.w, box && box.h, unit]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [box?.x, box?.y, box?.w, box?.h, unit]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!nodes.length) {
     return (
@@ -90,7 +90,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
   );
 
   const order = (mode) => onCommit({ op: "order", id: single.id, mode });
-  const hasText = !!(single && single.text);
+  const hasText = !!(single?.text);
   const active = tab === "text" && !hasText ? "dimensions" : tab;
   const tabs = [
     ["dimensions", "Dimensions"],
@@ -137,7 +137,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
               <input type="checkbox" checked={lockRatio} disabled={geomLocked} onChange={(e) => setLockRatio(e.target.checked)} /> Keep proportions
             </label>
             {inClip && <div className="ed-hint">Inside a PowerClip - resizing or moving this changes the clipped result; the preview image refreshes after Save and Generate.</div>}
-            {single && single.rotation ? <div className="ed-hint">Rotation {single.rotation}° (already in the rendered image)</div> : null}
+            {single?.rotation ? <div className="ed-hint">Rotation {single.rotation}° (already in the rendered image)</div> : null}
           </>
         )}
 
@@ -172,7 +172,7 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
 }
 
 function TextFields({ node, locked, onCommit, fonts, onTextPreview }) {
-  const known = fonts && fonts.available ? new Set(fonts.fonts.map((f) => f.toLowerCase())) : null;
+  const known = fonts?.available ? new Set(fonts.fonts.map((f) => f.toLowerCase())) : null;
   const installed = (name) => !known || known.has(name.toLowerCase());
   const [fontError, setFontError] = useState("");
   const t = node.text;
@@ -233,7 +233,7 @@ function TextFields({ node, locked, onCommit, fonts, onTextPreview }) {
             setFontError("");
             push({ font });
           }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
-          <datalist id="ed-fonts">{(fonts && fonts.available ? fonts.fonts : FONTS).map((n) => <option key={n} value={n} />)}</datalist>
+          <datalist id="ed-fonts">{(fonts?.available ? fonts.fonts : FONTS).map((n) => <option key={n} value={n} />)}</datalist>
         </label>
         <label className="ed-field">
           <span>Size pt</span>

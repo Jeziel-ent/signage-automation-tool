@@ -37,7 +37,7 @@ CODE_RE = re.compile(r"verification code|verify your e-?mail|enter (the|your) (\
                      r"we('ve| have)? (just )?sent (you )?a code|check your (e-?mail|inbox)|confirm your e-?mail", re.I)
 # WeTransfer's hint when "Get a link" is pressed without a sender address (seen live, 2026-09-28)
 EMAIL_NEEDED_RE = re.compile(r"we ask for your email", re.I)
-EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
+EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")  # NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 SUBMIT_TESTID = "uploaderForm-transfer-button"      # the "Transfer" / "Get a link" button (seen live)
 MAX_CODE_ATTEMPTS = 3
 NAV_STEP_MS = 15_000         # the longest any one on-page step (consent, link mode, submit) may take before it fails

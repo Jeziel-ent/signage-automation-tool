@@ -43,14 +43,14 @@ export function isBitmap(node) {
 // -------------------------------------------------------------------- geometry
 
 export function checkAsset(asset) {
-  const name = asset && asset.name != null ? String(asset.name).trim() : "";
+  const name = asset?.name != null ? String(asset.name).trim() : "";
   const w = asset ? Number(asset.w) : Number.NaN;
   const h = asset ? Number(asset.h) : Number.NaN;
   if (!name || !(w > 0) || !(h > 0)) throw new OpError("asset must be an object with a name and positive numeric w, h (pixels)");
   const out = { name, w, h };
   // the filename POST /api/editor/{job}/{shop}/product-assets returned - resolved against that
   // shop's assets directory at replay time (see backend/app/export_replay.py's Replayer)
-  if (asset && asset.path) out.path = String(asset.path);
+  if (asset?.path) out.path = String(asset.path);
   return out;
 }
 

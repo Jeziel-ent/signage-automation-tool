@@ -24,7 +24,7 @@ export function buildIndex(scene) {
   const walk = (children, parent, layer) => {
     for (const n of children) {
       idx.set(n.id, { node: n, list: children, parent, layer });
-      if (n.children && n.children.length) walk(n.children, n, layer);
+      if (n.children?.length) walk(n.children, n, layer);
     }
   };
   for (const layer of scene.layers) {
@@ -44,7 +44,7 @@ export function* iterNodes(scene) {
   function* walk(children) {
     for (const n of children) {
       yield n;
-      if (n.children && n.children.length) yield* walk(n.children);
+      if (n.children?.length) yield* walk(n.children);
     }
   }
   for (const layer of scene.layers) yield* walk(layer.children);
@@ -94,7 +94,7 @@ function checkEditable(idx, id, allowPowerclip = false) {
   while (n) {
     if (n.locked) throw new OpError(`'${n.id}' is locked`);
     const p = idx.get(n.id).parent;
-    if (p && p.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip - only text, move, resize and order can be applied to its contents`);
+    if (p?.kind === "powerclip" && !allowPowerclip) throw new OpError(`'${id}' is inside a PowerClip - only text, move, resize and order can be applied to its contents`);
     n = p;
   }
 }
@@ -145,7 +145,7 @@ function scaleSubtree(node, frm, to) {
     n.y = r(to.y + (n.y - frm.y) * sy);
     n.w = r(n.w * sx);
     n.h = r(n.h * sy);
-    if (n.text && n.text.size_pt) n.text.size_pt = r(n.text.size_pt * sy);
+    if (n.text?.size_pt) n.text.size_pt = r(n.text.size_pt * sy);
     for (const c of n.children || []) go(c);
   };
   go(node);
@@ -461,8 +461,8 @@ const APPLY = {
 
 /** Mutates `scene` in place. Throws OpError (scene may be partially changed). */
 export function applyOp(scene, op) {
-  const fn = APPLY[op && op.op];
-  if (!fn) throw new OpError(`unknown op '${op && op.op}'`);
+  const fn = APPLY[op?.op];
+  if (!fn) throw new OpError(`unknown op '${op?.op}'`);
   fn(scene, op);
 }
 

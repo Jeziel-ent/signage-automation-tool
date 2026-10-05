@@ -124,7 +124,7 @@ export default function RecentlyGenerated() {
               </thead>
               <tbody>
                 {visible.map((r) => {
-                  const previewUrl = r.files && r.files.preview && isImage(r.files.preview) ? fileUrl(r, r.files.preview) : null;
+                  const previewUrl = r.files?.preview && isImage(r.files.preview) ? fileUrl(r, r.files.preview) : null;
                   // the cell shows a ~10 KB server-made thumbnail; clicking still opens the full preview
                   const thumbUrl = previewUrl && `/api/v2/shops/${r.shop_id}/thumb?v=${r.completed_at || 0}`;
                   return (

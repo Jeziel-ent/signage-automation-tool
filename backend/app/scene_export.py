@@ -215,16 +215,16 @@ def walk_page(page) -> tuple[list[dict], list]:
     leaves: list = []
     for i in range(1, int(page.Layers.Count) + 1):
         layer = page.Layers.Item(i)
-        if _safe(lambda: layer.IsSpecialLayer, False):
+        if _safe(lambda layer=layer: layer.IsSpecialLayer, False):
             continue
         top = _children(layer)
         kids = [walk_shape(s, leaves) for s in top]
         kids.reverse()
         layers.append({
             "id": f"L{i}",
-            "name": _safe(lambda: layer.Name, "") or f"Layer {i}",
-            "visible": bool(_safe(lambda: layer.Visible, True)),
-            "locked": not bool(_safe(lambda: layer.Editable, True)),
+            "name": _safe(lambda layer=layer: layer.Name, "") or f"Layer {i}",
+            "visible": bool(_safe(lambda layer=layer: layer.Visible, True)),
+            "locked": not bool(_safe(lambda layer=layer: layer.Editable, True)),
             "children": kids,
         })
     # page.Layers.Item(1) is the topmost layer in the Object Manager, so reverse to bottom -> top

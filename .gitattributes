@@ -1,0 +1,4 @@
+# keep the GitHub "Download ZIP" / git archive small: decks are 200+ MB and are not source
+presentations/ export-ignore
+*.pptx export-ignore
+.claude/ export-ignore

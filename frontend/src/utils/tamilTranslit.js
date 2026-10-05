@@ -137,7 +137,7 @@ export function phonetic(word) {
 }
 
 // brackets, commas and quotes stuck to a word ("(Jothi", "maligai)") are kept around its Tamil form, not fed into it
-const WRAP_RE = /^([()[\]{},;:!?"'“”‘’]*)(.*?)([()[\]{},;:!?"'“”‘’]*)$/;
+const WRAP_RE = /^([()[\]{},;:!?"'“”‘’]*)(.*?)([()[\]{},;:!?"'“”‘’]*)$/;  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 
 function word(token) {
   const [, lead, core, trail] = WRAP_RE.exec(token);

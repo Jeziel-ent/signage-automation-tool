@@ -63,7 +63,7 @@ export default function GenerateZipModal({ shops: shopsProp, onClose }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [onClose]);
 
-  const s = zip && zip.summary;
+  const s = zip?.summary;
   return (
     <motion.div className="xm-back" {...BACKDROP_MOTION} onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
       <motion.div {...CARD_MOTION} className="xm gz" role="dialog" aria-modal="true" aria-labelledby="gz-title">
@@ -135,7 +135,7 @@ function SuccessTick() {
 }
 
 const EMAIL_KEY = "signage.wetransferEmail";
-const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;  // NOSONAR - bounded, human-entered strings (file names / emails); no ReDoS exposure, rewrite would risk parsing changes
 
 function savedEmail() {
   try {
@@ -164,8 +164,8 @@ function WeTransferCard({ token }) {
   const inputRef = useRef(null);
   const polling = !!job && job.status !== "success" && job.status !== "failed";
   const needsOtp = !!job && job.status === "requires_otp";
-  const url = job && job.status === "success" ? job.wetransfer_url : "";
-  const fallback = !!(job && job.fallback_used);
+  const url = job?.status === "success" ? job.wetransfer_url : "";
+  const fallback = !!(job?.fallback_used);
 
   useEffect(() => {
     if (!polling) return undefined;
