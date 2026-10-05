@@ -66,7 +66,7 @@ export default function EditorLoader({ progress = 0, statusText = "", onDone }) 
 
       <div className="el3-tag">
         <span className="el3-tag-dot" aria-hidden="true" />
-        Adinn Automation Editor
+        <span>Adinn Automation Editor</span>
       </div>
 
       <div className="el3-scene">

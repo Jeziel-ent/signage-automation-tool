@@ -274,7 +274,7 @@ class CorelEngine:
     _ensure_tamil_font_renders = staticmethod(corel_util.ensure_tamil_font_renders)
 
     @staticmethod
-    def _set_replacement_text(shape, placed) -> None:
+    def _set_replacement_text(shape, placed, page_w: float | None = None) -> None:
         """Write the replacement text (and font, for Tamil content) via COM,
         then fit it into the space the layout actually gave this shape.
 
@@ -303,8 +303,33 @@ class CorelEngine:
         corel_util.ensure_tamil_font_renders(shape, placed.text, placed.warnings)
         if placed.text_fit:
             CorelEngine._apply_text_fit(shape, placed.text_fit, placed.warnings)
+        else:
+            CorelEngine._fit_text(shape, placed.w, placed.warnings, allow_wrap=not placed.no_wrap)
+        CorelEngine._keep_on_page(shape, page_w, placed.warnings)
+
+    PAGE_TEXT_MAX = 0.96   # a replaced name is never wider than this share of the page (its box may be nearly page wide)
+    PAGE_TEXT_MARGIN = 0.02
+
+    @classmethod
+    def _keep_on_page(cls, shape, page_w: float | None, warnings: list[str]) -> None:
+        """A name written into a nearly page-wide box (portrait boards on the rules layout) may still end a few percent
+        wider than the page after _fit_text's 5 % tolerance, so its first and last letters were cut off at the page
+        edges. Only a shape wider than PAGE_TEXT_MAX of the page is touched: scaled uniformly about its centre to
+        that width, then moved inside the margins."""
+        if not page_w or page_w <= 0:
             return
-        CorelEngine._fit_text(shape, placed.w, placed.warnings, allow_wrap=not placed.no_wrap)
+        try:
+            w, h = float(shape.SizeWidth), float(shape.SizeHeight)
+            if w <= page_w * cls.PAGE_TEXT_MAX:
+                return
+            k = page_w * cls.PAGE_TEXT_MAX / w
+            cx, cy = float(shape.LeftX) + w / 2, float(shape.BottomY) + h / 2
+            shape.SetSize(w * k, h * k)
+            nw = w * k
+            shape.LeftX = max(page_w * cls.PAGE_TEXT_MARGIN, min(cx - nw / 2, page_w * (1 - cls.PAGE_TEXT_MARGIN) - nw))
+            shape.BottomY = cy - h * k / 2
+        except Exception as e:
+            warnings.append(f"could not keep the name on the page: {e}")
 
     CLIP_FOREGROUND_MAX_AREA = 0.9   # of the page: bigger clipped children are backdrop and keep the frame's stretch
     CLIP_FOREGROUND_MIN_INSIDE = 0.9  # share of the child's box inside the page: art hanging off the page is backdrop
@@ -1105,7 +1130,7 @@ class CorelEngine:
                         except Exception as e:
                             p.warnings.append(f"could not recolor shape: {e}")
                     if p.text is not None:
-                        self._set_replacement_text(shape, p)
+                        self._set_replacement_text(shape, p, new_w)
                 # Shop-name texts INSIDE a group or PowerClip are not layout objects of their own (only top-level shapes
                 # are); their parent was placed above, so they are rewritten in place.
                 self._apply_language(shop_language(shop, warnings), placed, {o.id: o for o in objs}, shapes_by_id, warnings)

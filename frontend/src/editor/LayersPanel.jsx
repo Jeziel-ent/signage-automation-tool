@@ -89,7 +89,7 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
   return (
     <section className="ed-panel ed-layers">
       <h3>
-        Layers
+        <span>Layers</span>
         <span className="ed-panel-actions">
           <button className="ed-icon-btn" title="Group (Ctrl+G)" disabled={!canGroup} onClick={group}><GroupIcon /> Group</button>
           <button className="ed-icon-btn" title="Ungroup (Ctrl+U)" disabled={!selGroup} onClick={() => selGroup && ungroup(selGroup)}><UngroupIcon /> Ungroup</button>
