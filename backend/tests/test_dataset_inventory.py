@@ -54,7 +54,8 @@ def test_extract_preview_reports_a_clear_error_for_a_non_zip_file(tmp_path):
     cdr.write_bytes(b"not a zip at all")
     out = tmp_path / "out" / "preview.png"
     err = extract_preview(cdr, out)
-    assert err is not None and "zip" in err.lower()
+    assert err is not None
+    assert "zip" in err.lower()
     assert not out.exists()
 
 
@@ -64,5 +65,6 @@ def test_extract_preview_reports_a_clear_error_when_no_preview_entry_exists(tmp_
         z.writestr("mimetype", "application/x-cdr")
     out = tmp_path / "out" / "preview.png"
     err = extract_preview(cdr, out)
-    assert err is not None and "no preview" in err.lower()
+    assert err is not None
+    assert "no preview" in err.lower()
     assert not out.exists()

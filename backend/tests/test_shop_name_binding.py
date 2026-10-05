@@ -61,7 +61,8 @@ def test_both_lines_are_rewritten_with_the_imported_names():
     placed = {p.id: p for p in compute_layout(objs, 914, 1219, 914, 1219, shop_name="ANISH STORES",
                                               shop_name_local="அனிஷ் ஸ்டோர்ஸ்", shopname_ids=ids)}
     assert placed["en"].text == "ANISH STORES"
-    assert placed["ta"].text == "அனிஷ் ஸ்டோர்ஸ்" and placed["ta"].font == layout.TAMIL_FONT
+    assert placed["ta"].text == "அனிஷ் ஸ்டோர்ஸ்"
+    assert placed["ta"].font == layout.TAMIL_FONT
     assert placed["far"].text is None
 
 
@@ -129,11 +130,14 @@ def test_stretched_background_clip_keeps_its_foreground_in_proportion():
     clip = _Shape(0, 0, page, page, kids=[table, backdrop, offpage])
     warnings = []
     assert CorelEngine._undistort_clip_contents(clip, 2.0, 1.5, page, page, warnings) == 1
-    assert table.SizeWidth == pytest.approx(600 * 1.5) and table.SizeHeight == pytest.approx(400 * 1.5)
+    assert table.SizeWidth == pytest.approx(600 * 1.5)
+    assert table.SizeHeight == pytest.approx(400 * 1.5)
     assert table.BottomY == 300.0
     assert table.LeftX + table.SizeWidth / 2 == pytest.approx(200 + 1200 / 2)      # same centre
-    assert backdrop.SizeWidth == page + 100 and offpage.SizeWidth == 1200.0       # backdrop keeps the stretch
-    assert warnings and "in proportion" in warnings[0]
+    assert backdrop.SizeWidth == page + 100
+    assert offpage.SizeWidth == 1200.0  # backdrop keeps the stretch
+    assert warnings
+    assert "in proportion" in warnings[0]
 
 
 def test_uniform_scale_leaves_clip_contents_alone():
@@ -151,7 +155,8 @@ def test_nested_shop_name_texts_are_rewritten_in_place():
             "master_shop_name": "SRI KANNIYAMMAN NATTU MARUNTHU KADAI"}
     assert CorelEngine._replace_nested_shopnames([group], shop, []) == 2
     assert en.Text.Story.Text == "ANISH STORES"
-    assert ta.Text.Story.Text == "அனிஷ் ஸ்டோர்ஸ்" and ta.Text.Story.Font == layout.TAMIL_FONT
+    assert ta.Text.Story.Text == "அனிஷ் ஸ்டோர்ஸ்"
+    assert ta.Text.Story.Font == layout.TAMIL_FONT
     assert other.Text.Story.Text == "DARSHAN INCENSE"
 
 
@@ -185,11 +190,13 @@ def test_upload_stores_the_masters_shop_name_and_convert_passes_every_name(clien
     assert used["orientation"] == "portrait"
 
     p = client.patch(f"/api/v2/jobs/{job['id']}/master-shop-name", json={"master_shop_name_local": TAMIL})
-    assert p.status_code == 200 and p.json()["master_shop_name_local"] == TAMIL
+    assert p.status_code == 200
+    assert p.json()["master_shop_name_local"] == TAMIL
     assert main._convert_job(shop["id"])[0]["shop"]["master_shop_name_local"] == TAMIL
 
     e = client.patch(f"/api/v2/shops/{shop['id']}", json={"shop_name_local": ""})
-    assert e.status_code == 200 and e.json()["shop_name_local"] is None
+    assert e.status_code == 200
+    assert e.json()["shop_name_local"] is None
     assert "shop_name_local" not in main._convert_job(shop["id"])[0]["shop"]
 
 
@@ -210,7 +217,8 @@ def test_clip_child_on_the_left_edge_stays_on_it():
     assert CorelEngine._undistort_clip_contents(clip, sx, sy, page_w, page_h, []) == 1
     k = min(sx, sy)
     assert table.LeftX == pytest.approx(ox * k)                      # still bleeding off the left edge
-    assert table.SizeWidth == pytest.approx(ow * k) and table.SizeHeight == pytest.approx(oh * k)
+    assert table.SizeWidth == pytest.approx(ow * k)
+    assert table.SizeHeight == pytest.approx(oh * k)
 
 
 def test_clip_child_on_the_right_edge_stays_on_it():
@@ -243,8 +251,10 @@ def test_hangyo_asian_juice_bar_board_layout():
     placed = {p.id: p for p in compute_layout(objs, 4876.8, 914.4, 4876.8, 914.4, shop_name="Asian Juice bar",
                                               shop_name_local="ஏசியன் ஜூஸ் பார்", shopname_ids={"1", "2", "3"})}
     assert placed["3"].text == "ஏசியன்" and placed["2"].text == "ஜூஸ் பார்"      # top line first, not the whole name twice
-    assert placed["3"].no_wrap and placed["2"].no_wrap
-    assert placed["1"].text == "ASIAN JUICE BAR" and not placed["1"].no_wrap  # capitals kept, single line wraps as before
+    assert placed["3"].no_wrap
+    assert placed["2"].no_wrap
+    assert placed["1"].text == "ASIAN JUICE BAR"
+    assert not placed["1"].no_wrap  # capitals kept, single line wraps as before
 
 
 def test_mixed_case_master_line_keeps_typed_case():
@@ -281,7 +291,8 @@ def test_vector_panels_in_the_background_clip_stretch_with_it():
     panel = _Shape(1000.0 * 0.75, 0.0, 2000.0 * 0.75, 914.0)
     clip = _Shape(0, 0, 3658, 914, kids=[panel])
     assert CorelEngine._undistort_clip_contents(clip, 0.75, 1.0, 3658, 914, []) == 0
-    assert panel.SizeHeight == 914.0 and panel.SizeWidth == 1500.0
+    assert panel.SizeHeight == 914.0
+    assert panel.SizeWidth == 1500.0
 
 
 def test_text_too_wide_even_at_the_font_floor_is_scaled_to_its_box():
@@ -300,8 +311,10 @@ def test_text_too_wide_even_at_the_font_floor_is_scaled_to_its_box():
 
     s, w = _S(), []
     CorelEngine._fit_text(s, 1000.0, w, allow_wrap=False)
-    assert s.SizeWidth == 1000.0 and s.SizeHeight == 200.0             # uniform, to the box width
-    assert s.LeftX + s.SizeWidth / 2 == 1000.0 and s.BottomY + s.SizeHeight / 2 == 300.0   # same centre
+    assert s.SizeWidth == 1000.0
+    assert s.SizeHeight == 200.0  # uniform, to the box width
+    assert s.LeftX + s.SizeWidth / 2 == 1000.0
+    assert s.BottomY + s.SizeHeight / 2 == 300.0  # same centre
     assert not w
 
 
@@ -311,7 +324,8 @@ def test_one_text_broken_over_lines_keeps_its_line_count():
     p = compute_layout(objs, 914.4, 1828.8, 914.4, 1828.8, shop_name="Om Guru Sweets & Bakery",
                        shop_name_local="ஓம் குரு ஸ்வீட்ஸ் அண்ட் பேக்கரி",
                        shopname_ids=layout.find_shopname_ids(objs, "Sri Sai cafe", "ஸ்ரீ சாய் கஃபே"))[0]
-    assert p.text.split("\r") == ["ஓம் குரு ஸ்வீட்ஸ்", "அண்ட் பேக்கரி"] and p.no_wrap
+    assert p.text.split("\r") == ["ஓம் குரு ஸ்வீட்ஸ்", "அண்ட் பேக்கரி"]
+    assert p.no_wrap
 
 
 def test_a_tie_in_line_length_follows_the_masters_line_shape():
@@ -331,7 +345,9 @@ def test_nested_shop_names_follow_the_designer_name_specs_when_given(monkeypatch
     monkeypatch.setattr(CorelEngine, "_apply_text_fit", classmethod(lambda cls, sh, spec, w: fitted.append((sh, spec["tag"]))))
     monkeypatch.setattr(CorelEngine, "_fit_text", staticmethod(lambda *a, **k: fitted.append("old")))
     assert CorelEngine._replace_nested_shopnames([group], shop, [], specs) == 2
-    assert (en, "en") in fitted and (ta, "ta") in fitted and "old" not in fitted           # sized by the spec, not to the old width
+    assert (en, "en") in fitted
+    assert (ta, "ta") in fitted
+    assert "old" not in fitted  # sized by the spec, not to the old width
     fitted.clear()
     assert CorelEngine._replace_nested_shopnames([_Shape(0, 0, 1000, 1000, kids=[
         _Shape(100, 134, 800, 29, text="SRI KANNIYAMMAN NATTU MARUNTHU KADAI")])], shop, []) == 1      # no specs: the old fit to width
@@ -344,7 +360,8 @@ def test_nested_english_name_is_set_in_capitals_when_the_library_says_so():
     group = _Shape(0, 0, 1000, 1000, kids=[en, ta])
     shop = {"name": "Anish Stores", "shop_name_local": "அனிஷ் ஸ்டோர்ஸ்", "master_shop_name": "SRI KANNIYAMMAN NATTU MARUNTHU KADAI"}
     assert CorelEngine._replace_nested_shopnames([group], shop, [], None, "upper") == 2
-    assert en.Text.Story.Text == "ANISH STORES" and ta.Text.Story.Text == "அனிஷ் ஸ்டோர்ஸ்"
+    assert en.Text.Story.Text == "ANISH STORES"
+    assert ta.Text.Story.Text == "அனிஷ் ஸ்டோர்ஸ்"
 
 
 def test_the_white_name_panel_is_resized_to_the_designers_width():
@@ -356,8 +373,10 @@ def test_the_white_name_panel_is_resized_to_the_designers_width():
     kids = [(pic, 1500.0, 0.0, 500.0, 400.0), (panel, 2032.0, 0.0, 2032.0, page_h), (band, 0.0, 0.0, 6096.0, 300.0)]
     warnings = []
     assert CorelEngine._place_panel(kids, (1932.0, 0.0, 2232.0, page_h), page_w, page_h, warnings) == 1
-    assert (panel.LeftX, panel.SizeWidth, panel.SizeHeight) == (1932.0, 2232.0, page_h) and not warnings
-    assert pic.SizeWidth == 500.0 and band.SizeWidth == 6096.0                # nothing else is touched
+    assert (panel.LeftX, panel.SizeWidth, panel.SizeHeight) == (1932.0, 2232.0, page_h)
+    assert not warnings
+    assert pic.SizeWidth == 500.0
+    assert band.SizeWidth == 6096.0  # nothing else is touched
     assert CorelEngine._place_panel([kids[0], kids[2]], (0, 0, 1, 1), page_w, page_h, []) == 0   # no panel-like child: nothing to do
 
 
@@ -366,4 +385,5 @@ def test_name_lines_are_split_so_that_the_longest_line_is_shortest():
     assert split(["ஏசியன்", "ஜூஸ்", "பார்"], 2) == ["ஏசியன்", "ஜூஸ் பார்"]              # her break, not 'ஏசியன் ஜூஸ்' / 'பார்'
     assert split(["KANISH", "COOL", "DRINK'S"], 3) == ["KANISH", "COOL", "DRINK'S"]
     assert split(["Guru", "tea", "stall"], 2) == ["Guru tea", "stall"]
-    assert split(["ONE"], 3) == ["ONE"] and split(["A", "B"], 5) == ["A", "B"]
+    assert split(["ONE"], 3) == ["ONE"]
+    assert split(["A", "B"], 5) == ["A", "B"]

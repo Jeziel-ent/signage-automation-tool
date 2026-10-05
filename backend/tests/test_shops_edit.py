@@ -32,7 +32,8 @@ def test_patch_updates_only_the_named_fields_and_clears_blank_contacts(client):
     assert r.status_code == 200
     row = r.json()
     assert (row["name"], row["width"], row["width_unit"], row["height"], row["height_unit"]) == ("Sri Kumar", 12, "ft", 4, "in")
-    assert row["phone"] is None and row["address"] == "Somewhere"
+    assert row["phone"] is None
+    assert row["address"] == "Somewhere"
 
 
 def test_patch_validates_and_rejects_unknown_shop(client):
@@ -63,7 +64,8 @@ def test_convert_uses_the_values_sent_with_it_even_if_no_patch_landed(client):
         "phone": "", "gst": "", "address": ""})
     assert r.status_code == 200
     st = _wait(client, shop["id"])
-    assert st["status"] == "done" and st["width"] == 12
+    assert st["status"] == "done"
+    assert st["width"] == 12
     rep = st["report"]
     assert abs(rep["page"]["width"] - 12 * 25.4) < 0.01 if "page" in rep else True      # mock report carries the page size
     assert st["phone"] is None                                                             # blank stays "leave the master's text"
@@ -97,6 +99,7 @@ def test_one_shared_unit_sets_both_dimensions_on_add_patch_and_convert(client):
     assert client.patch(f"/api/v2/shops/{shop['id']}", json={"unit": "yard"}).status_code == 400
     # a body of only name/width/height/unit (what the table sends) converts fine and keeps contact fields untouched
     r = client.post(f"/api/v2/shops/{shop['id']}/convert", json={"name": "S", "width": 12, "height": 4, "unit": "ft"})
-    assert r.status_code == 200 and _wait(client, shop["id"])["status"] == "done"
+    assert r.status_code == 200
+    assert _wait(client, shop["id"])["status"] == "done"
     done = client.get(f"/api/v2/shops/{shop['id']}/status").json()
     assert (done["width"], done["width_unit"], done["height_unit"], done["phone"]) == (12, "ft", "ft", None)

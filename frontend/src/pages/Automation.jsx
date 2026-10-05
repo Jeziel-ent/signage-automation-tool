@@ -479,7 +479,7 @@ export default function Automation() {
   useEffect(() => {
     if (isBatchConverting && stats.allSettled) {
       setIsBatchConverting(false);
-      setBatchSummary(`Batch finished: ${stats.done} converted${stats.failed + batch.notStarted ? `, ${stats.failed + batch.notStarted} failed` : ""}.`);
+      setBatchSummary(`Batch finished: ${stats.done} converted${stats.failed + batch.notStarted ? ", " + (stats.failed + batch.notStarted) + " failed" : ""}.`);
     }
   }, [isBatchConverting, stats.allSettled, stats.done, stats.failed, batch]);
 

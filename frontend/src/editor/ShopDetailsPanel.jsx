@@ -151,7 +151,7 @@ export default function ShopDetailsPanel({ scene, shop, shopId, onSelect, onComm
       </div>
 
       <div className="ed-shop-field">
-        <label className="ed-shop-label">Contact &amp; GST info</label>
+        <span className="ed-shop-label">Contact &amp; GST info</span>
         {contacts.length ? (
           contacts.map((id) => {
             const e = entry(id);

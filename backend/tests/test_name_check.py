@@ -20,7 +20,9 @@ def test_a_clean_board_passes():
 
 def test_a_name_off_the_page_two_names_on_top_of_each_other_and_a_covered_name_are_flagged():
     r = check_names(dump(sh("text", 900, 20, 300, 60, "RUNS OFF"), sh("text", 100, 20, 300, 60, "ONE"), sh("text", 120, 30, 300, 60, "TWO")))
-    assert not r["ok"] and any("off the page" in i for i in r["issues"]) and any("overlaps" in i for i in r["issues"])
+    assert not r["ok"]
+    assert any("off the page" in i for i in r["issues"])
+    assert any("overlaps" in i for i in r["issues"])
     r = check_names(dump(sh("text", 700, 20, 150, 60, "UNDER A PICTURE"), sh("bitmap", 650, 0, 300, 200)))
     assert r["issues"] == ["'UNDER A PICTURE' is covered by a picture"]
 

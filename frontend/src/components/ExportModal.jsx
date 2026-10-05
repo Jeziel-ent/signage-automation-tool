@@ -164,7 +164,7 @@ export default function ExportModal({ jobId, shopId, shopName, onClose }) {
             <p className="xm-sub">
               {shopName}
               {page ? ` · ${fmtIn(page.width)} × ${fmtIn(page.height)} in` : ""}
-              {board ? ` · ${board.ops ? `${board.ops} saved edit${board.ops === 1 ? "" : "s"} included` : "no editor edits"}` : ""}
+              {board ? ` · ${board.ops ? board.ops + " saved edit" + (board.ops === 1 ? "" : "s") + " included" : "no editor edits"}` : ""}
             </p>
           </div>
           {closable && (

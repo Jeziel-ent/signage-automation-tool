@@ -15,10 +15,13 @@ def test_batch_adds_all_rows_in_order_with_contact_fields(client):
     r = client.post(f"/api/v2/jobs/{job}/shops/batch", json={"shops": rows})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["errors"] == [] and [s["name"] for s in body["added"]] == [f"Shop {i}" for i in range(5)]
+    assert body["errors"] == []
+    assert [s["name"] for s in body["added"]] == [f"Shop {i}" for i in range(5)]
     assert [s["seq_no"] for s in body["added"]] == [1, 2, 3, 4, 5]
-    assert body["added"][0]["phone"] == "9876543210" and body["added"][1]["address"] == "Addr"
-    assert body["added"][2]["phone"] is None and body["added"][2]["gst"] is None       # "" -> None, never blank text
+    assert body["added"][0]["phone"] == "9876543210"
+    assert body["added"][1]["address"] == "Addr"
+    assert body["added"][2]["phone"] is None
+    assert body["added"][2]["gst"] is None  # "" -> None, never blank text
     assert [s["name"] for s in client.get(f"/api/v2/jobs/{job}/shops").json()] == [f"Shop {i}" for i in range(5)]
 
 

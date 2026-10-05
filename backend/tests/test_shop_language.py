@@ -29,21 +29,24 @@ def _pair(stacked=True):
 def test_english_only_removes_the_tamil_line_and_centres_the_english_one():
     en, ta, objs, placed = _pair()
     assert CorelEngine._apply_language("en", placed, objs, {"0": en, "1": ta}, []) == 1
-    assert ta.deleted and not en.deleted
+    assert ta.deleted
+    assert not en.deleted
     assert en.BottomY + en.SizeHeight / 2 == pytest.approx((57 + 164) / 2)     # centred on the old two-line block
 
 
 def test_tamil_only_removes_the_english_line():
     en, ta, objs, placed = _pair()
     assert CorelEngine._apply_language("ta", placed, objs, {"0": en, "1": ta}, []) == 1
-    assert en.deleted and not ta.deleted
+    assert en.deleted
+    assert not ta.deleted
     assert ta.BottomY + ta.SizeHeight / 2 == pytest.approx((57 + 164) / 2)
 
 
 def test_side_by_side_kept_line_is_centred_horizontally():
     en, ta, objs, placed = _pair(stacked=False)                # English 100..900, Tamil 1000..1700 on one row
     CorelEngine._apply_language("ta", placed, objs, {"0": en, "1": ta}, [])
-    assert en.deleted and ta.BottomY == 134                    # same row
+    assert en.deleted
+    assert ta.BottomY == 134  # same row
     assert ta.LeftX + ta.SizeWidth / 2 == pytest.approx((100 + 1700) / 2)
 
 
@@ -52,14 +55,17 @@ def test_both_and_missing_line_change_nothing():
     assert CorelEngine._apply_language("both", placed, objs, {"0": en, "1": ta}, []) == 0
     w = []
     assert CorelEngine._apply_language("ta", placed[:1], objs, {"0": en}, w) == 0        # no Tamil line to keep
-    assert not en.deleted and w
+    assert not en.deleted
+    assert w
 
 
 def test_tamil_only_without_a_tamil_name_falls_back_to_english():
     w = []
-    assert shop_language({"language": "ta"}, w) == "en" and w
+    assert shop_language({"language": "ta"}, w) == "en"
+    assert w
     assert shop_language({"language": "ta", "shop_name_local": TAMIL}) == "ta"
-    assert shop_language({}) == "both" and shop_language({"language": "xx"}) == "both"
+    assert shop_language({}) == "both"
+    assert shop_language({"language": "xx"}) == "both"
 
 
 def test_nested_lines_follow_the_language():
@@ -68,7 +74,8 @@ def test_nested_lines_follow_the_language():
     group = _Shape(0, 0, 1000, 1000, kids=[en, ta])
     shop = {"name": "ANISH STORES", "language": "en", "master_shop_name": "SRI KANNIYAMMAN"}
     CorelEngine._replace_nested_shopnames([group], shop, [])
-    assert en.Text.Story.Text == "ANISH STORES" and ta.deleted
+    assert en.Text.Story.Text == "ANISH STORES"
+    assert ta.deleted
 
 
 def test_api_stores_and_passes_the_language(client):
@@ -79,6 +86,7 @@ def test_api_stores_and_passes_the_language(client):
     import app.main as main
     assert main._convert_job(shop["id"])[0]["shop"]["language"] == "en"
     r = client.patch(f"/api/v2/shops/{shop['id']}", json={"language": "both"})
-    assert r.status_code == 200 and r.json()["language"] is None
+    assert r.status_code == 200
+    assert r.json()["language"] is None
     assert "language" not in main._convert_job(shop["id"])[0]["shop"]
     assert client.patch(f"/api/v2/shops/{shop['id']}", json={"language": "fr"}).status_code == 400

@@ -37,7 +37,9 @@ def test_v2_fonts_endpoint(client, monkeypatch):
     monkeypatch.setattr(fonts, "installed_fonts", lambda refresh=False: {"available": True, "fonts": ["Arial", "Latha"], "source": "test"})
     monkeypatch.setattr(fonts, "_registry_entries", lambda: ([], [""]))
     r = client.get("/api/v2/fonts?refresh=1").json()
-    assert r["all_fonts"] == ["Arial", "Latha"] and r["english_fonts"] == ["Arial", "Latha"] and r["tamil_fonts"] == ["Latha"]
+    assert r["all_fonts"] == ["Arial", "Latha"]
+    assert r["english_fonts"] == ["Arial", "Latha"]
+    assert r["tamil_fonts"] == ["Latha"]
     monkeypatch.setattr(fonts, "_script_cache", None)
 
 
@@ -82,4 +84,6 @@ def test_queue_fonts_are_not_forwarded_to_the_engine(client):
         "font_en": "Arial Black", "font_ta": "Latha", "sheet_name": "Chennai"}).json()
     assert shop["sheet_name"] == "Chennai"
     spec = main._convert_job(shop["id"])[0]["shop"]
-    assert "font_en" not in spec and "font_ta" not in spec and spec["shop_name_local"] == "ஸ்ரீ குமார்"
+    assert "font_en" not in spec
+    assert "font_ta" not in spec
+    assert spec["shop_name_local"] == "ஸ்ரீ குமார்"

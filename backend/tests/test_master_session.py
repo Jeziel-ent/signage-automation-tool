@@ -35,7 +35,9 @@ def test_fingerprint_walks_powerclip_contents():
     clip = _Shape(0, 0, 1000, 500, kids=[inner])
     clip.Fill = None
     fp = engines.doc_fingerprint(_Doc([clip]))
-    assert len(fp) == 3 and fp[2][0] == 1 and "SRI KANNIYAMMAN" in fp[2]   # the nested text is part of it
+    assert len(fp) == 3
+    assert fp[2][0] == 1
+    assert "SRI KANNIYAMMAN" in fp[2]  # the nested text is part of it
     inner.Text.Story.Text = "ANISH STORES"
     assert not engines.same_fingerprint(fp, engines.doc_fingerprint(_Doc([clip])))
 

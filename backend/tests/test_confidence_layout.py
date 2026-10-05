@@ -8,7 +8,9 @@ def example(exact, distance=0.0, extra=0):
 
 def test_same_size_is_good():
     r = C.layout_confidence(example(True))
-    assert r["label"] == "GOOD" and "same size" in r["reasons"][0] and "120 x 48 in" in r["reasons"][0]
+    assert r["label"] == "GOOD"
+    assert "same size" in r["reasons"][0]
+    assert "120 x 48 in" in r["reasons"][0]
 
 
 def test_near_size_is_review_far_size_is_manual():
@@ -18,12 +20,14 @@ def test_near_size_is_review_far_size_is_manual():
 
 def test_repeated_art_lowers_a_good_label_to_review():
     r = C.layout_confidence(example(True, extra=5))
-    assert r["label"] == "REVIEW" and len(r["reasons"]) == 2
+    assert r["label"] == "REVIEW"
+    assert len(r["reasons"]) == 2
 
 
 def test_rules_fallback_is_manual_and_no_layout_means_no_label():
     r = C.layout_confidence({"mode": "rules", "reason": "nothing fits"})
-    assert r["label"] == "MANUAL" and r["reasons"] == ["nothing fits"]
+    assert r["label"] == "MANUAL"
+    assert r["reasons"] == ["nothing fits"]
     assert C.layout_confidence(None) is None
 
 

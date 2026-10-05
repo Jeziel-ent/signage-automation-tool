@@ -29,7 +29,8 @@ def test_role_heuristics():
 def test_bg_fills_new_page_and_frame_keeps_margin():
     r = by_id(compute_layout(OBJS, *PAGE, 4500, 1500))
     assert (r["0"].w, r["0"].h) == (4500, 1500)
-    assert r["1"].x == 50 and r["1"].w == pytest.approx(4500 - 100)
+    assert r["1"].x == 50
+    assert r["1"].w == pytest.approx(4500 - 100)
     assert r["1"].h == pytest.approx(1500 - 100)
 
 
@@ -85,7 +86,8 @@ def test_tile_horizontal_repeats_panel_with_even_gaps():
     assert xs == sorted(xs)
     gaps = [xs[i + 1] - (xs[i] + tiles[i].w) for i in range(2)]
     assert gaps[0] == pytest.approx(gaps[1])  # even gaps between copies
-    assert tiles[0].x >= 0 and tiles[-1].x + tiles[-1].w <= 3000 + 1e-6
+    assert tiles[0].x >= 0
+    assert tiles[-1].x + tiles[-1].w <= 3000 + 1e-6
 
 
 def test_tile_vertical_stacks_panel():
@@ -94,7 +96,8 @@ def test_tile_vertical_stacks_panel():
     ys = sorted(t.y for t in tiles)  # tile0 is placed at the top (reading order), not the bottom
     gaps = [ys[i + 1] - ys[i] - tiles[0].h for i in range(2)]
     assert gaps[0] == pytest.approx(gaps[1])
-    assert ys[0] >= 0 and ys[-1] + tiles[0].h <= 1000 + 1e-6
+    assert ys[0] >= 0
+    assert ys[-1] + tiles[0].h <= 1000 + 1e-6
 
 
 def test_tile_does_not_duplicate_standalone_footer_text():
@@ -105,7 +108,9 @@ def test_tile_does_not_duplicate_standalone_footer_text():
     assert "footer" in r  # single instance, not "footer_tile0"/"footer_tile1"...
     assert "footer_tile0" not in r
     assert r["footer"].role == "text"
-    assert "logo_tile0" in r and "logo_tile1" in r and "logo_tile2" in r  # the logo still tiles
+    assert "logo_tile0" in r
+    assert "logo_tile1" in r
+    assert "logo_tile2" in r  # the logo still tiles
 
 
 def test_tile_moves_shopname_into_the_gap_and_replaces_text():
@@ -169,7 +174,8 @@ def test_brand_rule_repeats_only_the_matched_group():
     small_ids = [k for k in r if k.startswith("small_tile")]
     assert len(big_ids) == 2  # nearest-aspect lookup: target aspect 12.5 -> nearest table entry is 5.0 -> count 2
     assert len(small_ids) == 1  # "never" group always gets exactly one copy
-    assert "big" not in r and "small" not in r  # replaced by their _tileN copies
+    assert "big" not in r
+    assert "small" not in r  # replaced by their _tileN copies
 
 
 def test_brand_rule_groups_ordered_left_to_right_by_master_position():
@@ -291,7 +297,9 @@ def test_panel_sequence_uses_3_slots_below_aspect_split():
     card_a_ids = [k for k in r if k.startswith("card_a_tile")]
     filler_ids = [k for k in r if k.startswith("filler_tile")]
     badge_ids = [k for k in r if k.startswith("badge_tile")]
-    assert len(card_a_ids) == 1 and len(filler_ids) == 1 and len(badge_ids) == 1
+    assert len(card_a_ids) == 1
+    assert len(filler_ids) == 1
+    assert len(badge_ids) == 1
 
 
 def test_panel_sequence_adds_a_second_filler_copy_beyond_aspect_split():
@@ -301,7 +309,8 @@ def test_panel_sequence_adds_a_second_filler_copy_beyond_aspect_split():
     card_a_ids = [k for k in r if k.startswith("card_a_tile")]
     badge_ids = [k for k in r if k.startswith("badge_tile")]
     assert len(filler_ids) == 2  # the repeating slot appears twice in sequence_4
-    assert len(card_a_ids) == 1 and len(badge_ids) == 1  # the two "card" slots still appear exactly once
+    assert len(card_a_ids) == 1
+    assert len(badge_ids) == 1  # the two "card" slots still appear exactly once
 
 
 def test_panel_sequence_enlarges_badge_to_its_target_height_not_its_master_size():
@@ -524,7 +533,8 @@ def test_panel_sequence_card_from_gives_the_bare_group_a_matching_card_backgroun
     # badge's own content sits INSIDE the borrowed card, not stretched to fill it
     assert badge_content.w < borrowed_bg.w
     assert badge_content.h < borrowed_bg.h
-    assert borrowed_bg.x <= badge_content.x and badge_content.x + badge_content.w <= borrowed_bg.x + borrowed_bg.w
+    assert borrowed_bg.x <= badge_content.x
+    assert badge_content.x + badge_content.w <= borrowed_bg.x + borrowed_bg.w
 
 
 def test_panel_sequence_card_from_content_matches_measured_proportion():
@@ -620,14 +630,19 @@ def test_loose_fragments_scale_as_one_unit_instead_of_spreading_apart():
     card = r["card"]
     for i in range(5):
         p = r[f"L{i}"]
-        assert card.x <= p.x and p.x + p.w <= card.x + card.w and card.y <= p.y and p.y + p.h <= card.y + card.h
-    assert r["shadow"].x - card.x == pytest.approx(10 * s) and r["shadow"].y - card.y == pytest.approx(-10 * s)
+        assert card.x <= p.x
+        assert p.x + p.w <= card.x + card.w
+        assert card.y <= p.y
+        assert p.y + p.h <= card.y + card.h
+    assert r["shadow"].x - card.x == pytest.approx(10 * s)
+    assert r["shadow"].y - card.y == pytest.approx(-10 * s)
     # the unit itself keeps its proportional page position (its centre moves x3 across, x2 up)
     unit_cx = (min(r[k].x for k in ("card", "shadow")) + max(r[k].x + r[k].w for k in ("card", "shadow"))) / 2
     assert unit_cx == pytest.approx((140 + 535) / 2 * 3)
     # a lone fragment far from the card keeps the per-object rule
     b = r["badge"]
-    assert _cx(b) == pytest.approx(660 * 3) and b.w == pytest.approx(240)
+    assert _cx(b) == pytest.approx(660 * 3)
+    assert b.w == pytest.approx(240)
 
 
 def test_fragment_units_match_the_per_object_rule_when_the_aspect_ratio_is_unchanged():
@@ -635,7 +650,8 @@ def test_fragment_units_match_the_per_object_rule_when_the_aspect_ratio_is_uncha
     r = by_id(compute_layout(objs, *MP, MP[0] * 2.5, MP[1] * 2.5, tile=True))
     for o in objs[1:]:
         p = r[o.id]
-        assert _cx(p) == pytest.approx((o.x + o.w / 2) * 2.5) and p.y + p.h / 2 == pytest.approx((o.y + o.h / 2) * 2.5)
+        assert _cx(p) == pytest.approx((o.x + o.w / 2) * 2.5)
+        assert p.y + p.h / 2 == pytest.approx((o.y + o.h / 2) * 2.5)
         assert (p.w, p.h) == (pytest.approx(o.w * 2.5), pytest.approx(o.h * 2.5))
 
 
@@ -645,15 +661,20 @@ def test_fragment_units_stay_inside_the_page():
     for size in (BP, (1000.0, 3000.0), (800.0, 1016.0)):
         r = compute_layout(objs, *MP, *size, tile=True)
         for p in r:
-            assert -1e-6 <= p.x and p.x + p.w <= size[0] + 1e-6 and -1e-6 <= p.y and p.y + p.h <= size[1] + 1e-6
+            assert -1e-6 <= p.x
+            assert p.x + p.w <= size[0] + 1e-6
+            assert -1e-6 <= p.y
+            assert p.y + p.h <= size[1] + 1e-6
 
 
 def test_edge_to_edge_rule_line_stretches_with_the_page_but_groups_do_not():
     rule = Obj("rule", "", "shape", -3.8, 122, 762, 5.5)      # the real master's rule above the footer
     footer = Obj("footer", "", "group", 6.5, 58.5, 748, 35)   # a full-width group of lettering: never stretched
     r = by_id(compute_layout([rule, footer], *MP, *BP, tile=True))
-    assert r["rule"].w == pytest.approx(762 * 3) and r["rule"].h == pytest.approx(5.5 * 2)
-    assert r["rule"].x == pytest.approx(0) and r["rule"].x + r["rule"].w == pytest.approx(BP[0])  # edge to edge
+    assert r["rule"].w == pytest.approx(762 * 3)
+    assert r["rule"].h == pytest.approx(5.5 * 2)
+    assert r["rule"].x == pytest.approx(0)
+    assert r["rule"].x + r["rule"].w == pytest.approx(BP[0])  # edge to edge
     assert (r["footer"].w, r["footer"].h) == (pytest.approx(748 * 2), pytest.approx(35 * 2))
 
 

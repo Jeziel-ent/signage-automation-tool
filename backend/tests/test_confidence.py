@@ -30,7 +30,9 @@ BOUNDS = {
 
 def test_good_when_aspect_is_within_the_validated_untiled_range_and_nothing_else_is_wrong():
     r = confidence_label(3048.0, 1219.2, "dalmia", bounds=BOUNDS)  # exactly the master's own size, aspect 2.5
-    assert r["label"] == GOOD and r["tiled"] is False and r["regime"] == "untiled"
+    assert r["label"] == GOOD
+    assert r["tiled"] is False
+    assert r["regime"] == "untiled"
     assert r["aspect_ratio"] == pytest.approx(2.5)
     assert any("validated" in reason for reason in r["reasons"])
 
@@ -38,7 +40,8 @@ def test_good_when_aspect_is_within_the_validated_untiled_range_and_nothing_else
 def test_review_when_the_request_would_tile_because_tiled_boards_have_large_historical_error():
     # 216in x 48in on a 120x48in master -> aspect 4.5, tiles, well within the tiled range
     r = confidence_label(5486.4, 1219.2, "dalmia", bounds=BOUNDS)
-    assert r["tiled"] is True and r["regime"] == "tiled"
+    assert r["tiled"] is True
+    assert r["regime"] == "tiled"
     assert r["label"] == REVIEW
     assert any("historically had a median" in reason for reason in r["reasons"])
 
@@ -78,11 +81,13 @@ def test_content_check_failure_can_only_make_the_label_worse_never_better():
 def test_layout_check_failure_and_warning_affect_the_label_correctly():
     fail = confidence_label(3048.0, 1219.2, "dalmia", bounds=BOUNDS,
                             layout_checks=[{"check": "within_page", "status": "fail", "detail": "x"}])
-    assert fail["label"] == MANUAL and any("within_page" in r for r in fail["reasons"])
+    assert fail["label"] == MANUAL
+    assert any("within_page" in r for r in fail["reasons"])
     warn = confidence_label(3048.0, 1219.2, "dalmia", bounds=BOUNDS,
                             layout_checks=[{"check": "min_margin", "status": "warn", "detail": "x"},
                                           {"check": "text_legibility", "status": "pass", "detail": "x"}])
-    assert warn["label"] == REVIEW and any("min_margin" in r for r in warn["reasons"])
+    assert warn["label"] == REVIEW
+    assert any("min_margin" in r for r in warn["reasons"])
 
 
 def test_a_manual_from_aspect_range_is_not_downgraded_by_a_clean_content_check():
@@ -95,7 +100,8 @@ def test_no_bounds_for_the_regime_at_all_is_manual():
         "untiled": BOUNDS["dalmia"]["regimes"]["untiled"],
     }}}
     r = confidence_label(5486.4, 1219.2, "dalmia", bounds=thin)  # would tile; no tiled regime known at all
-    assert r["label"] == MANUAL and any("no validated tiled samples" in reason for reason in r["reasons"])
+    assert r["label"] == MANUAL
+    assert any("no validated tiled samples" in reason for reason in r["reasons"])
 
 
 def test_real_confidence_bounds_file_is_present_and_gives_sane_labels_for_every_validated_dalmia_board():

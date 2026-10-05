@@ -732,7 +732,7 @@ export default function EditorPage() {
           <span
             className={fontsMissing.length ? "ed-fonts-missing" : undefined}
             title={
-              fontEntries.map(([f, s]) => `${f}: ${FONT_SOURCE[s] || s}${fontSourceDetail(f) ? ` [${fontSourceDetail(f)}]` : ""}${fontSubs[f] ? ` -> drawn in ${fontSubs[f].font} (${fontSubs[f].permanent ? "saved for this shop" : "this session"})` : ""}`).join("\n") +
+              fontEntries.map(([f, s]) => `${f}: ${FONT_SOURCE[s] || s}${fontSourceDetail(f) ? " [" + fontSourceDetail(f) + "]" : ""}${fontSubs[f] ? " -> drawn in " + fontSubs[f].font + " (" + (fontSubs[f].permanent ? "saved for this shop" : "this session") + ")" : ""}`).join("\n") +
               "\n\nOnly edited or substituted text is drawn by the browser; everything else is CorelDRAW's own render."
             }
           >

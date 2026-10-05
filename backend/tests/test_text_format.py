@@ -55,7 +55,8 @@ def test_scene_export_reads_the_formatting():
                                             "line_spacing": 120.0, "char_spacing": -5.0}
     st._align, st.LineSpacingType = 6, 1          # mixed alignment, line spacing in points: reported as unknown, not guessed
     fmt = scene_export.text_format(st)
-    assert "align" not in fmt and "line_spacing" not in fmt
+    assert "align" not in fmt
+    assert "line_spacing" not in fmt
 
 
 def test_replay_applies_every_field_and_keeps_the_text_in_place():
@@ -100,4 +101,6 @@ def test_unchanged_values_are_not_rewritten():
     t = ids_of(scene)[2]["id"]
     x = shape.LeftX
     _, r, _, v = run([{"op": "text", "id": t, "align": "left", "bold": False, "line_spacing": 100}], doc, scene)
-    assert shape.LeftX == x and r.warnings == [] and v["ok"]
+    assert shape.LeftX == x
+    assert r.warnings == []
+    assert v["ok"]

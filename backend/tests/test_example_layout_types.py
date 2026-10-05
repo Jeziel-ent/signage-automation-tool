@@ -79,8 +79,10 @@ def test_overlapping_side_by_side_name_lines_are_separated():
     board = {"texts": {"name_ta": {"x": 0.03, "w": 0.86, "cy": 0.13, "h": 0.09}, "name_en": {"x": 0.74, "w": 0.23, "cy": 0.13, "h": 0.16}}}
     X._separate_name_lines(texts, board, 3048.0)
     ta = texts["name_ta"]
-    assert ta["anchor"] == "left" and abs(ta["ax"] - 0.03 * 3048) < 1e-6
-    assert ta["w_cap"] <= (0.74 - 0.03) * 3048 and texts["name_en"]["w_cap"] == 700.0        # only the left line moved
+    assert ta["anchor"] == "left"
+    assert abs(ta["ax"] - 0.03 * 3048) < 1e-6
+    assert ta["w_cap"] <= (0.74 - 0.03) * 3048
+    assert texts["name_en"]["w_cap"] == 700.0  # only the left line moved
     # lines on different rows are untouched
     t2 = {"name_ta": dict(texts["name_ta"], anchor="center"), "name_en": dict(texts["name_en"])}
     b2 = {"texts": {"name_ta": {"x": 0.1, "w": 0.8, "cy": 0.2, "h": 0.1}, "name_en": {"x": 0.1, "w": 0.8, "cy": 0.05, "h": 0.06}}}
@@ -103,7 +105,8 @@ def test_name_spec_width_is_capped_to_the_page(monkeypatch):
         "name_ta": {"cx": 0.6, "cy": 0.14, "w": 1.139, "h": 0.08, "x": 0.03, "lines": 1}})])
     b = lib["boards"][0]
     spec = X._text_spec(lib, lib["masters"][0], b, "name_ta", 1828.8, 914.4)
-    assert spec["w_cap"] <= X.PAGE_FIT * 1828.8 and spec["page_w"] == 1828.8
+    assert spec["w_cap"] <= X.PAGE_FIT * 1828.8
+    assert spec["page_w"] == 1828.8
 
 
 def test_style_master_routing_recognises_masters_uploaded_under_another_brand(monkeypatch):
@@ -115,7 +118,8 @@ def test_style_master_routing_recognises_masters_uploaded_under_another_brand(mo
     ms = [{"id": "a", "master_filename": "10 X 3.cdr", "deleted_at": None}, {"id": "b", "master_filename": "6 x 3.CDR", "deleted_at": None}]
     monkeypatch.setattr(db, "list_masters", lambda brand=None, orientation=None: ms)
     r = main._example_style_master("Adinn", "landscape", 2438.4, 1219.2, "GSB")
-    assert r and r["id"] == "b"                                       # file names compare case-insensitively
+    assert r
+    assert r["id"] == "b"  # file names compare case-insensitively
     monkeypatch.setattr(db, "list_masters", lambda brand=None, orientation=None: ms[:1])
     assert main._example_style_master("Adinn", "landscape", 2438.4, 1219.2) is None     # a single master is the default anyway
 
@@ -262,7 +266,9 @@ def test_panel_boards_of_one_height_share_the_biggest_name_block(monkeypatch):
     lib["boards"].append(other)
     p = _plan(monkeypatch, lib, m0, near10, 6096)
     en = p["texts"]["name_en"]
-    assert round(en["h"] / 914.4, 2) == 0.36 and en["max_lines"] == 3 and en["mode"] == "block"   # the biggest block of that height, kept on the page
+    assert round(en["h"] / 914.4, 2) == 0.36
+    assert en["max_lines"] == 3
+    assert en["mode"] == "block"  # the biggest block of that height, kept on the page
     assert round(en["w_cap"]) == round(X.PANEL_EN_FIT * 0.366 * 6096)                               # the panel limits the width
     assert en["cy"] == pytest.approx(0.36 * 914.4 / 2 + X.BLOCK_EDGE_FRAC * 914.4)                  # the nearest board's 0.2 would clip the tall block: raised clear of the edge
 
@@ -273,7 +279,8 @@ def test_left_name_line_is_limited_to_the_room_before_the_right_one_even_without
     board = {"texts": {"name_ta": {"x": 0.02, "w": 0.63, "cy": 0.13, "h": 0.2}, "name_en": {"x": 0.70, "w": 0.28, "cy": 0.13, "h": 0.2}}}
     X._separate_name_lines(texts, board, 2438.4)
     assert texts["name_ta"]["w_cap"] == pytest.approx(min(0.70 * 2438.4, 2385.0 - 677.0) - 0.03 * 2438.4 - 51.0)   # ends before the English line starts (its planned width)
-    assert texts["name_ta"]["ax"] == 51.0 and texts["name_ta"]["anchor"] == "left"                    # position untouched
+    assert texts["name_ta"]["ax"] == 51.0
+    assert texts["name_ta"]["anchor"] == "left"  # position untouched
     assert texts["name_en"]["w_cap"] == 677.0
     texts2 = {"name_ta": {"anchor": "center", "ax": 1500.0, "w_cap": 700.0, "h": 100, "cy": 600}, "name_en": {"anchor": "center", "ax": 1500.0, "w_cap": 500.0, "h": 100, "cy": 200}}
     board2 = {"texts": {"name_ta": {"x": 0.3, "w": 0.4, "cy": 0.7, "h": 0.3}, "name_en": {"x": 0.4, "w": 0.2, "cy": 0.2, "h": 0.2}}}
@@ -285,7 +292,8 @@ def test_stacked_name_blocks_stay_on_the_page_and_apart():
     texts = {"name_ta": {"h": 600.0, "cy": 649.0, "w_cap": 1, "anchor": "center", "ax": 0}, "name_en": {"h": 360.0, "cy": 200.0, "w_cap": 1, "anchor": "center", "ax": 0}}
     X._fit_blocks_in_panel(texts, 914.4)
     ta, en = texts["name_ta"], texts["name_en"]
-    assert ta["cy"] + ta["h"] / 2 <= 914.4 and en["cy"] - en["h"] / 2 >= 0                              # on the page
+    assert ta["cy"] + ta["h"] / 2 <= 914.4
+    assert en["cy"] - en["h"] / 2 >= 0  # on the page
     assert ta["cy"] - ta["h"] / 2 - (en["cy"] + en["h"] / 2) >= 0.059 * 914.4                           # a gap between the two blocks
 
 
@@ -293,7 +301,8 @@ def test_name_blocks_keep_clear_of_the_board_edges():
     texts = {"name_en": {"h": 300.0, "cy": 120.0, "w_cap": 1, "anchor": "center", "ax": 0}, "name_ta": {"h": 300.0, "cy": 820.0, "w_cap": 1, "anchor": "center", "ax": 0}}
     X._fit_blocks_in_panel(texts, 914.4)
     for t in texts.values():
-        assert t["cy"] - t["h"] / 2 >= 0.039 * 914.4 and t["cy"] + t["h"] / 2 <= 914.4 - 0.039 * 914.4
+        assert t["cy"] - t["h"] / 2 >= 0.039 * 914.4
+        assert t["cy"] + t["h"] / 2 <= 914.4 - 0.039 * 914.4
 
 
 def test_left_name_line_ends_before_the_right_one_even_when_that_one_is_wider_than_on_the_designers_board():
@@ -311,7 +320,8 @@ def test_panel_english_name_keeps_the_designers_line_count_and_a_narrower_cap(mo
         b["clip"] = {"panel": {"cx": 0.5, "cy": 0.5, "w": 0.366, "h": 1.0, "x": 0.317}}
     wide20["texts"] = {"name_en": _name(0.5, 0.2, 0.26, 0.30, 2)}
     en = _plan(monkeypatch, lib, m0, near10, 6096)["texts"]["name_en"]
-    assert en["pref_lines"] == 2 and X.PANEL_EN_FIT == 0.66
+    assert en["pref_lines"] == 2
+    assert X.PANEL_EN_FIT == 0.66
     assert round(en["w_cap"]) == round(X.PANEL_EN_FIT * 0.366 * 6096)
 
 

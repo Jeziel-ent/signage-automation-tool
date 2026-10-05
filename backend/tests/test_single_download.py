@@ -29,13 +29,17 @@ def test_pick_single_prefers_a_current_export_and_explains_the_fallbacks(tmp_pat
     exports = [{"id": "e1", "status": "done", "files": {"pdf": "b.pdf"}, "ops": [{"op": "x"}]}]
     # edits saved AND exported: the export's PDF; the CDR still comes from the conversion (with a note)
     pdf = az.pick_single(tmp_path, conv, exports, [{"op": "x"}], "pdf")
-    assert pdf["source"] == "editor export" and pdf["note"] is None
+    assert pdf["source"] == "editor export"
+    assert pdf["note"] is None
     cdr = az.pick_single(tmp_path, conv, exports, [{"op": "x"}], "cdr")
-    assert cdr["source"] == "conversion" and "never exported" in cdr["note"]
+    assert cdr["source"] == "conversion"
+    assert "never exported" in cdr["note"]
     # edits changed since that export: the export no longer counts
     assert az.pick_single(tmp_path, conv, exports, [{"op": "y"}], "pdf")["path"] is None
     jpg = az.pick_single(tmp_path, conv, [], [], "jpg")
-    assert jpg["to_jpeg"] and jpg["path"].name == "b.png" and "preview resolution" in jpg["note"]
+    assert jpg["to_jpeg"]
+    assert jpg["path"].name == "b.png"
+    assert "preview resolution" in jpg["note"]
     assert az.pick_single(tmp_path, {"preview": "b.svg"}, [], [], "png")["reason"]
 
 
@@ -44,9 +48,12 @@ def test_row_download_names_files_by_the_standard_and_reports_availability(clien
     shop = _done_shop(client, job)
     sid = shop["id"]
     avail = client.get(f"/api/v2/shops/{sid}/downloads").json()
-    assert avail["cdr"]["available"] and not avail["pdf"]["available"] and avail["pdf"]["reason"]   # MockEngine: no PDF
+    assert avail["cdr"]["available"]
+    assert not avail["pdf"]["available"]
+    assert avail["pdf"]["reason"]  # MockEngine: no PDF
     r = client.get(f"/api/v2/shops/{sid}/download/cdr?no=5")
-    assert r.status_code == 200 and _name(r) == "5 - 214 X 36 Inch - Nonlit - Sri Kumar.cdr"
+    assert r.status_code == 200
+    assert _name(r) == "5 - 214 X 36 Inch - Nonlit - Sri Kumar.cdr"
     assert client.get(f"/api/v2/shops/{sid}/download/pdf").status_code == 404
     assert client.get(f"/api/v2/shops/{sid}/download/tiff").status_code == 422
     # a PNG from an editor export of the current edits -> JPG re-encoded on white, PNG as is
@@ -58,11 +65,14 @@ def test_row_download_names_files_by_the_standard_and_reports_availability(clien
     monkeypatch.setattr(main.db, "get_export", lambda e: {"id": "ex1", "status": "done",
                                                           "files_json": json.dumps({"png": "board.png"}), "ops_json": "[]"})
     r = client.get(f"/api/v2/shops/{sid}/download/jpg?no=2")
-    assert r.status_code == 200 and _name(r) == "2 - 214 X 36 Inch - Nonlit - Sri Kumar.jpg"
+    assert r.status_code == 200
+    assert _name(r) == "2 - 214 X 36 Inch - Nonlit - Sri Kumar.jpg"
     im = Image.open(io.BytesIO(r.content))
-    assert im.format == "JPEG" and im.size == (40, 10)
+    assert im.format == "JPEG"
+    assert im.size == (40, 10)
     r = client.get(f"/api/v2/shops/{sid}/download/png")
-    assert r.status_code == 200 and Image.open(io.BytesIO(r.content)).format == "PNG"
+    assert r.status_code == 200
+    assert Image.open(io.BytesIO(r.content)).format == "PNG"
 
 
 def test_not_converted_is_refused(client):

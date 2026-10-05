@@ -4,7 +4,8 @@ from app.batch_import import parse_shop_lines
 
 def test_parses_standard_line():
     r = parse_shop_lines("16 - 12 X 4 Feet - Nonlit - AL MADEENA POOJA STORE")
-    assert len(r.shops) == 1 and not r.errors
+    assert len(r.shops) == 1
+    assert not r.errors
     s = r.shops[0]
     assert (s.name, s.width, s.height, s.unit, s.type) == ("AL MADEENA POOJA STORE", 12.0, 4.0, "ft", "Nonlit")
 
@@ -39,12 +40,14 @@ def test_multiple_lines_and_blank_lines():
 def test_unparseable_line_reported_as_error():
     r = parse_shop_lines("this is not a valid line")
     assert not r.shops
-    assert len(r.errors) == 1 and r.errors[0]["line"] == "this is not a valid line"
+    assert len(r.errors) == 1
+    assert r.errors[0]["line"] == "this is not a valid line"
 
 
 def test_bad_size_segment_is_an_error():
     r = parse_shop_lines("16 - not a size - Nonlit - A STORE")
-    assert not r.shops and r.errors
+    assert not r.shops
+    assert r.errors
 
 
 def test_master_name_drops_windows_copy_suffixes():

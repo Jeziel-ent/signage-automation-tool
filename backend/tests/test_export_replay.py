@@ -310,8 +310,10 @@ def test_normalize_options_defaults_and_validation():
     o = er.normalize_options(["pdf", "png"], None)
     assert o["pdf"] == {"color_mode": "native", "text": "embed", "bitmap_dpi": 200, "crop_marks": False, "bleed": False}
     assert o["cdr"] == {"version": None, "text": "editable"}
-    assert o["raster"]["mode"] == "max_px" and o["raster"]["png_background"] == "transparent"
-    assert o["png"]["padding_mm"] == 0 and o["jpeg"]["color"] == "rgb"
+    assert o["raster"]["mode"] == "max_px"
+    assert o["raster"]["png_background"] == "transparent"
+    assert o["png"]["padding_mm"] == 0
+    assert o["jpeg"]["color"] == "rgb"
     for bad in ({"pdf": {"color_mode": "lab"}}, {"pdf": {"text": "x"}}, {"pdf": {"bitmap_dpi": 123}},
                 {"raster": {"mode": "zoom"}}, {"raster": {"png_background": "red"}},
                 {"cdr": {"version": 19}}, {"cdr": {"text": "outline"}}, {"jpeg": {"color": "lab"}},
@@ -332,10 +334,12 @@ def test_per_format_raster_options_override_the_shared_block():
     })
     assert (o["png"]["mode"], o["png"]["dpi"], o["png"]["padding_mm"], o["png"]["png_background"]) == ("dpi", 72, 25, "white")
     assert (o["jpeg"]["dpi"], o["jpeg"]["color"]) == (150, "cmyk")
-    assert o["png"]["antialias"] is False and o["jpeg"]["antialias"] is False      # inherited from `raster`
+    assert o["png"]["antialias"] is False
+    assert o["jpeg"]["antialias"] is False  # inherited from `raster`
     sizes = er.raster_sizes(1000, 500, o, ["png", "jpeg"])
     # PNG padding widens the exported area by 25 mm on every side: (1000 + 50) mm at 72 dpi
-    assert sizes["png"]["w_px"] == round(1050 / 25.4 * 72) and sizes["png"]["h_px"] == round(550 / 25.4 * 72)
+    assert sizes["png"]["w_px"] == round(1050 / 25.4 * 72)
+    assert sizes["png"]["h_px"] == round(550 / 25.4 * 72)
     assert sizes["jpeg"]["w_px"] == round(1000 / 25.4 * 150)
     assert er.raster_sizes(1000, 500, o, ["pdf"]) == {}
 
@@ -349,7 +353,8 @@ def test_cdr_with_text_as_curves_is_written_last():
 
 def test_resolve_raster_caps_and_modes():
     r = er.resolve_raster(3048, 1219.2, {"mode": "max_px", "max_px": 4000, "dpi": 96})
-    assert (r["w_px"], r["h_px"]) == (4000, 1600) and r["megapixels"] == 6.4
+    assert (r["w_px"], r["h_px"]) == (4000, 1600)
+    assert r["megapixels"] == 6.4
     d = er.resolve_raster(3048, 1219.2, {"mode": "dpi", "dpi": 150, "max_px": 0})
     assert d["w_px"] == 18000
     with pytest.raises(er.ExportOptionError, match="too large"):
@@ -361,7 +366,8 @@ def test_resolve_raster_caps_and_modes():
 def test_plan_steps_follow_formats_and_measured_durations():
     plan = er.plan_steps(["png", "cdr"], 3)
     assert [s["key"] for s in plan] == ["launch", "open", "replay", "verify", "cdr", "png"]
-    assert plan[-1]["endPct"] == 100 and all(a["endPct"] < b["endPct"] for a, b in zip(plan, plan[1:]))
+    assert plan[-1]["endPct"] == 100
+    assert all(a["endPct"] < b["endPct"] for a, b in zip(plan, plan[1:]))
     assert [s["key"] for s in er.plan_steps(["pdf"], 0)] == ["launch", "open", "pdf"]     # no edits: no replay/verify
     slow_pdf = er.plan_steps(["pdf", "png"], 0, {"pdf": 60.0})
     fast_pdf = er.plan_steps(["pdf", "png"], 0, {"pdf": 1.0})
@@ -396,7 +402,8 @@ def test_move_resize_order_visibility():
     ]
     _, r, expected, v = run(ops, doc, scene)
     assert v["ok"], v["mismatches"]
-    assert doc.ActivePage._layers[2].Visible is False and r.warnings == []
+    assert doc.ActivePage._layers[2].Visible is False
+    assert r.warnings == []
 
 
 def test_group_ungroup_and_delete():
@@ -470,7 +477,8 @@ def test_text_edit_applies_content_font_size_and_warns_when_the_font_is_missing(
     t = ids_of(scene)[2]["id"]
     _, r, _, v = run([{"op": "text", "id": t, "content": "NEW NAME", "font": "Nirmala UI", "size_pt": 55}], doc, scene)
     story = doc.ActivePage._layers[1]._kids[0].Text.Story
-    assert (story.Text, story.Font, story.Size) == ("NEW NAME", "Nirmala UI", 55.0) and r.warnings == []
+    assert (story.Text, story.Font, story.Size) == ("NEW NAME", "Nirmala UI", 55.0)
+    assert r.warnings == []
     doc, scene = fresh()
     t = ids_of(scene)[2]["id"]
     _, r, _, _ = run([{"op": "text", "id": t, "font": "Noto Sans Tamil"}], doc, scene)
@@ -492,15 +500,17 @@ def test_text_whose_size_changed_with_its_content_still_verifies_by_anchor():
 
 def test_unreplayable_ops_are_reported_with_their_index():
     doc, scene = fresh()
+    ops = [{"op": "move", "ids": [ids_of(scene)[0]["id"]], "dx": 1, "dy": 1}, {"op": "move", "ids": ["nope"], "dx": 1, "dy": 1}]
     with pytest.raises(er.ReplayError, match=r"operation #2 \(move\)"):
-        run([{"op": "move", "ids": [ids_of(scene)[0]["id"]], "dx": 1, "dy": 1}, {"op": "move", "ids": ["nope"], "dx": 1, "dy": 1}], doc, scene)
+        run(ops, doc, scene)
 
 
 def test_verification_detects_a_document_that_does_not_match():
     doc, scene = fresh()
     expected = scene_ops.apply_ops(scene, [{"op": "move", "ids": [ids_of(scene)[0]["id"]], "dx": 50, "dy": 0}])
     v = er.verify(doc.ActivePage, expected)                # nothing was replayed
-    assert not v["ok"] and any("x is" in m for m in v["mismatches"])
+    assert not v["ok"]
+    assert any("x is" in m for m in v["mismatches"])
     doc.ActivePage._layers[1]._kids.pop(0)
     assert any("objects in CorelDRAW" in m for m in er.verify(doc.ActivePage, expected)["mismatches"])
 
@@ -520,8 +530,12 @@ def test_export_pdf_sets_every_option_before_publishing():
 
     warnings = []
     applied = er.export_pdf(Doc(), er.Path("x.pdf"), {"color_mode": "cmyk", "text": "curves", "bitmap_dpi": 300}, warnings)
-    assert applied["ColorMode"] == 1 and applied["TextAsCurves"] is True and applied["EmbedFonts"] is False
-    assert applied["ColorResolution"] == 300 and Doc.published[0].endswith("x.pdf") and warnings == []
+    assert applied["ColorMode"] == 1
+    assert applied["TextAsCurves"] is True
+    assert applied["EmbedFonts"] is False
+    assert applied["ColorResolution"] == 300
+    assert Doc.published[0].endswith("x.pdf")
+    assert warnings == []
 
 
 def test_export_pdf_sets_crop_marks_and_bleed_and_warns_when_corel_ignores_one():
@@ -540,8 +554,10 @@ def test_export_pdf_sets_crop_marks_and_bleed_and_warns_when_corel_ignores_one()
     warnings = []
     applied = er.export_pdf(Doc(), er.Path("x.pdf"), {"color_mode": "cmyk", "text": "embed", "bitmap_dpi": 300,
                                                      "crop_marks": True, "bleed": True}, warnings)
-    assert applied["CropMarks"] is True and applied["Bleed"] == 1250
-    assert any("IncludeBleed" in w for w in warnings) and not any("CropMarks" in w for w in warnings)
+    assert applied["CropMarks"] is True
+    assert applied["Bleed"] == 1250
+    assert any("IncludeBleed" in w for w in warnings)
+    assert not any("CropMarks" in w for w in warnings)
 
 
 def test_export_raster_cmyk_jpeg_and_png_padding():
@@ -571,7 +587,8 @@ def test_export_raster_cmyk_jpeg_and_png_padding():
     er.export_raster(Doc(), er.Path("a.jpg"), "jpeg", size, {"png_background": "white", "antialias": True, "color": "cmyk"})
     er.export_raster(Doc(), er.Path("a.png"), "png", size, {"png_background": "white", "antialias": True, "color": "cmyk",
                                                             "padding_mm": 10.0})
-    assert calls[0][3] == 5 and calls[1][3] == 4          # cdrCMYKColorImage for the JPEG only; PNG stays RGB
+    assert calls[0][3] == 5
+    assert calls[1][3] == 4  # cdrCMYKColorImage for the JPEG only; PNG stays RGB
     assert rects == [(0.0, 0.0, 100.0, 50.0), (-10.0, -10.0, 120.0, 70.0)]
 
 
@@ -611,7 +628,9 @@ def test_text_to_curves_converts_nested_text_and_reads_the_result_back():
     top, nested, stuck = Shape(1, 6), Shape(3, 6), Shape(4, 6, stuck=True)
     page = Page(Layer([top, Shape(2, 7, [nested, Shape(5, 3)]), stuck]))
     assert er.text_to_curves(page) == (2, 1)
-    assert top.Type == 3 and nested.Type == 3 and stuck.Type == 6
+    assert top.Type == 3
+    assert nested.Type == 3
+    assert stuck.Type == 6
 
 
 def test_export_raster_transparency_and_antialiasing():
@@ -633,7 +652,8 @@ def test_export_raster_transparency_and_antialiasing():
     png, png_white_noaa, jpg = calls
     assert (png[1], png[2], png[4], png[5], png[6], png[8], png[10]) == (802, 1, 10, 5, 96.0, 1, True)   # explicit px size
     assert (png_white_noaa[8], png_white_noaa[10]) == (0, False)
-    assert jpg[1] == 774 and jpg[10] is False           # JPEG is never transparent
+    assert jpg[1] == 774
+    assert jpg[10] is False  # JPEG is never transparent
 
 
 
@@ -764,7 +784,8 @@ def test_verify_catches_a_powerclip_child_that_did_not_end_up_where_the_edit_say
     _, _, expected, _ = run([{"op": "move", "ids": [f"s{inner.StaticID}"], "dx": 10, "dy": 0}], doc, scene)
     inner._x -= 40.0                                             # CorelDRAW put it somewhere else
     result = er.verify(doc.ActivePage, expected)
-    assert not result["ok"] and any("x is" in m for m in result["mismatches"])
+    assert not result["ok"]
+    assert any("x is" in m for m in result["mismatches"])
 
 
 def test_powerclip_child_still_rejects_reorder_and_delete():
@@ -1019,7 +1040,8 @@ def test_update_product_slot_delegates_an_image_kind_to_swap_image(tmp_path):
     node_id = f"s{bmp.StaticID}"
     asset_file = _asset_file(tmp_path)
     op = pe.update_slot_op(scene, f"product_image:{node_id}", asset={"name": "new.png", "w": 100, "h": 100, "path": asset_file.name})
-    assert op["op"] == "update_product_slot" and op["kind"] == "product_image"
+    assert op["op"] == "update_product_slot"
+    assert op["kind"] == "product_image"
 
     r = er.Replayer(doc, scene, [op], assets_dir=tmp_path)
     r.run()
@@ -1055,31 +1077,35 @@ def test_update_product_slot_on_a_text_kind_can_change_font_and_size_together():
 def test_swap_image_fails_clearly_when_the_asset_was_never_uploaded():
     doc, scene, bmp, container = _doc_with_bitmap()
     op = {"op": "swap_image", "id": f"s{bmp.StaticID}", "asset": {"name": "new.png", "w": 40, "h": 20}}   # no "path"
+    replayer = er.Replayer(doc, scene, [op])
     with pytest.raises(er.ReplayError, match="has no uploaded file to import"):
-        er.Replayer(doc, scene, [op]).run()
+        replayer.run()
 
 
 def test_swap_image_fails_clearly_when_the_asset_file_is_missing(tmp_path):
     doc, scene, bmp, container = _doc_with_bitmap()
     op = pe.swap_image_op(scene, f"s{bmp.StaticID}", {"name": "gone.png", "w": 40, "h": 20, "path": "gone.png"})
+    replayer = er.Replayer(doc, scene, [op], assets_dir=tmp_path)
     with pytest.raises(er.ReplayError, match="replacement image not found"):
-        er.Replayer(doc, scene, [op], assets_dir=tmp_path).run()
+        replayer.run()
 
 
 def test_swap_image_fails_clearly_when_no_assets_dir_was_given(tmp_path):
     doc, scene, bmp, container = _doc_with_bitmap()
     asset_file = _asset_file(tmp_path)
     op = pe.swap_image_op(scene, f"s{bmp.StaticID}", {"name": "new.png", "w": 40, "h": 20, "path": asset_file.name})
+    replayer = er.Replayer(doc, scene, [op])
     with pytest.raises(er.ReplayError, match="no product-asset directory is available"):
-        er.Replayer(doc, scene, [op]).run()          # assets_dir omitted
+        replayer.run()          # assets_dir omitted
 
 
 def test_swap_image_rejects_an_invalid_shape_id(tmp_path):
     doc, scene, bmp, container = _doc_with_bitmap()
     asset_file = _asset_file(tmp_path)
     op = {"op": "swap_image", "id": "s999999", "asset": {"name": "new.png", "w": 40, "h": 20, "path": asset_file.name}}
+    replayer = er.Replayer(doc, scene, [op], assets_dir=tmp_path)
     with pytest.raises(er.ReplayError, match=r"operation #1 \(swap_image\) is not valid on this document"):
-        er.Replayer(doc, scene, [op], assets_dir=tmp_path).run()
+        replayer.run()
 
 
 def test_swap_image_does_not_escape_the_assets_directory(tmp_path):
@@ -1089,5 +1115,6 @@ def test_swap_image_does_not_escape_the_assets_directory(tmp_path):
     assets_dir.mkdir()
     doc, scene, bmp, container = _doc_with_bitmap()
     op = pe.swap_image_op(scene, f"s{bmp.StaticID}", {"name": "x.png", "w": 40, "h": 20, "path": "../outside_secret.png"})
+    replayer = er.Replayer(doc, scene, [op], assets_dir=assets_dir)
     with pytest.raises(er.ReplayError, match="replacement image not found"):
-        er.Replayer(doc, scene, [op], assets_dir=assets_dir).run()
+        replayer.run()

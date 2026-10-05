@@ -21,9 +21,14 @@ def test_portrait_master_uploaded_after_the_shop_was_added_is_used_when_convert_
         assert _wait_done(client, shop["id"])["status"] == "done"
 
     used = _report(shop["id"])["master_used"]
-    assert used["job_id"] == port["id"] and used["orientation"] == "portrait" and used["fallback"] is False
+    assert used["job_id"] == port["id"]
+    assert used["orientation"] == "portrait"
+    assert used["fallback"] is False
     line = next(m for m in caplog.messages if "Selected master file path" in m)
-    assert shop["id"] in line and "portrait" in line and port["id"] in line and land["id"] not in line.split("->")[1]
+    assert shop["id"] in line
+    assert "portrait" in line
+    assert port["id"] in line
+    assert land["id"] not in line.split("->")[1]
 
 
 def test_convert_without_a_body_keeps_the_stored_master_ids(client):

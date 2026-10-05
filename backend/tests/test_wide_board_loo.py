@@ -24,7 +24,8 @@ def test_loo_rows_cover_every_sampled_aspect_exactly_once():
 def test_only_11_216_is_flagged_sequence_4():
     rows = loo_rows(load_groups()["tamil_card"])
     seq4 = [r for r in rows if r["sequence"] == "seq4"]
-    assert len(seq4) == 1 and seq4[0]["label"] == "11-216 (216x48)"
+    assert len(seq4) == 1
+    assert seq4[0]["label"] == "11-216 (216x48)"
 
 
 def test_held_out_prediction_uses_only_the_other_three_rows():

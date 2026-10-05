@@ -81,7 +81,9 @@ def test_oversampled_bitmap_is_capped_and_keeps_its_box():
     stats = corel_util.cap_bitmap_resolution(FakeDoc([FakeLayer([s])]), 300)
     assert s.Bitmap.calls == [(375, 834, True)]  # 1.25 in x 300, 2.78 in x 300
     assert box(s) == before  # Resample shrank and moved it; the function put it back
-    assert stats["resampled"] == 1 and stats["pixels_before"] == 3117 * 6960 and stats["pixels_after"] == 375 * 834
+    assert stats["resampled"] == 1
+    assert stats["pixels_before"] == 3117 * 6960
+    assert stats["pixels_after"] == 375 * 834
 
 
 def test_bitmaps_at_or_under_the_cap_are_never_touched_or_upsampled():
@@ -99,7 +101,9 @@ def test_bitmaps_inside_groups_and_powerclips_are_found():
     group = FakeShape(7, children=[in_group])
     clipper = FakeShape(3, powerclip=[in_clip])  # a curve holding a PowerClip
     stats = corel_util.cap_bitmap_resolution(FakeDoc([FakeLayer([group, clipper])]), 300)
-    assert stats["resampled"] == 2 and in_group.Bitmap.calls and in_clip.Bitmap.calls
+    assert stats["resampled"] == 2
+    assert in_group.Bitmap.calls
+    assert in_clip.Bitmap.calls
 
 
 def test_rotated_bitmaps_and_failures_are_skipped_and_left_alone():
@@ -108,8 +112,10 @@ def test_rotated_bitmaps_and_failures_are_skipped_and_left_alone():
     ok = bitmap(4000, 2000, 1.0, 0.5)
     before = box(broken)
     stats = corel_util.cap_bitmap_resolution(FakeDoc([FakeLayer([rotated, broken, ok])]), 300)
-    assert rotated.Bitmap.calls == [] and box(broken) == before
-    assert stats["skipped"] == 2 and stats["resampled"] == 1
+    assert rotated.Bitmap.calls == []
+    assert box(broken) == before
+    assert stats["skipped"] == 2
+    assert stats["resampled"] == 1
 
 
 def test_special_layers_are_ignored_and_a_zero_cap_disables_everything():
@@ -117,7 +123,8 @@ def test_special_layers_are_ignored_and_a_zero_cap_disables_everything():
     doc = FakeDoc([FakeLayer([guides], special=True)])
     assert corel_util.cap_bitmap_resolution(doc, 300)["checked"] == 0
     s = bitmap(4000, 2000, 1.0, 0.5)
-    assert corel_util.cap_bitmap_resolution(FakeDoc([FakeLayer([s])]), 0)["checked"] == 0 and s.Bitmap.calls == []
+    assert corel_util.cap_bitmap_resolution(FakeDoc([FakeLayer([s])]), 0)["checked"] == 0
+    assert s.Bitmap.calls == []
 
 
 @pytest.mark.parametrize("env, expected", [(None, 300), ("150", 150), ("0", 0), ("junk", 300), ("-5", 0)])

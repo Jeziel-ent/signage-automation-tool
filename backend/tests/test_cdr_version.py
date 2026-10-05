@@ -48,15 +48,19 @@ def test_default_target_is_corel_2019_and_is_passed_to_saveas(monkeypatch):
     doc = FakeDoc(FakeApp(major=27))
     assert corel_util.save_cdr(doc, "out.cdr") == 21
     path, opts = doc.saved
-    assert path == "out.cdr" and opts.Version == 21 and opts.Overwrite is True       # an options object, never None
+    assert path == "out.cdr"
+    assert opts.Version == 21
+    assert opts.Overwrite is True  # an options object, never None
 
 
 def test_env_override_and_zero_means_current_version(monkeypatch):
     monkeypatch.setenv("SIGNAGE_CDR_VERSION", "18")
     doc = FakeDoc(FakeApp())
-    assert corel_util.save_cdr(doc, "a.cdr") == 18 and doc.saved[1].Version == 18
+    assert corel_util.save_cdr(doc, "a.cdr") == 18
+    assert doc.saved[1].Version == 18
     monkeypatch.setenv("SIGNAGE_CDR_VERSION", "0")
-    assert corel_util.save_cdr(doc, "b.cdr") == 0 and doc.saved[1].Version == 0
+    assert corel_util.save_cdr(doc, "b.cdr") == 0
+    assert doc.saved[1].Version == 0
     monkeypatch.setenv("SIGNAGE_CDR_VERSION", "garbage")
     assert corel_util.cdr_target_version() == corel_util.DEFAULT_CDR_VERSION
 
@@ -64,7 +68,8 @@ def test_env_override_and_zero_means_current_version(monkeypatch):
 def test_a_corel_older_than_the_target_saves_as_itself(monkeypatch):
     monkeypatch.delenv("SIGNAGE_CDR_VERSION", raising=False)
     doc = FakeDoc(FakeApp(major=19))                     # X9 cannot write the v21 format
-    assert corel_util.save_cdr(doc, "x.cdr") == 0 and doc.saved[1].Version == 0
+    assert corel_util.save_cdr(doc, "x.cdr") == 0
+    assert doc.saved[1].Version == 0
     doc = FakeDoc(FakeApp(major=21))                     # 2019 itself: v21 is its own format
     assert corel_util.save_cdr(doc, "y.cdr") == 21
 
@@ -100,9 +105,12 @@ def test_check_warns_when_the_file_is_not_the_requested_format(tmp_path, monkeyp
     monkeypatch.delenv("SIGNAGE_CDR_VERSION", raising=False)
     w: list[str] = []
     ok = corel_util.check_cdr_format(_cdr(tmp_path / "ok.cdr"), w)
-    assert w == [] and ok == {"form": "CDRM", "version": 2100, "requested": 21}
+    assert w == []
+    assert ok == {"form": "CDRM", "version": 2100, "requested": 21}
     corel_util.check_cdr_format(_cdr(tmp_path / "new.cdr", form=b"CDRU", version=2700), w)
-    assert len(w) == 1 and "2700" in w[0] and "2019" in w[0]
+    assert len(w) == 1
+    assert "2700" in w[0]
+    assert "2019" in w[0]
     w.clear()
     (tmp_path / "junk.cdr").write_bytes(b"x")
     corel_util.check_cdr_format(tmp_path / "junk.cdr", w)
@@ -117,13 +125,17 @@ def test_a_per_save_version_overrides_the_configured_default(tmp_path, monkeypat
     """The export dialog's CDR version choice: v27 native (0) and X7 (17) for one save, without touching the env default."""
     monkeypatch.delenv("SIGNAGE_CDR_VERSION", raising=False)
     doc = FakeDoc(FakeApp(major=27))
-    assert corel_util.save_cdr(doc, "x7.cdr", 17) == 17 and doc.saved[1].Version == 17
-    assert corel_util.save_cdr(doc, "native.cdr", 0) == 0 and doc.saved[1].Version == 0
+    assert corel_util.save_cdr(doc, "x7.cdr", 17) == 17
+    assert doc.saved[1].Version == 17
+    assert corel_util.save_cdr(doc, "native.cdr", 0) == 0
+    assert doc.saved[1].Version == 0
     assert corel_util.save_cdr(doc, "default.cdr", None) == 21
     w: list[str] = []
-    assert corel_util.check_cdr_format(_cdr(tmp_path / "x7.cdr", version=1700), w, 17)["requested"] == 17 and w == []
+    assert corel_util.check_cdr_format(_cdr(tmp_path / "x7.cdr", version=1700), w, 17)["requested"] == 17
+    assert w == []
     corel_util.check_cdr_format(_cdr(tmp_path / "bad.cdr", version=2100), w, 17)
-    assert len(w) == 1 and "X7" in w[0]
+    assert len(w) == 1
+    assert "X7" in w[0]
     w.clear()
     corel_util.check_cdr_format(_cdr(tmp_path / "cur.cdr", form=b"CDRU", version=2700), w, 0)
     assert w == []

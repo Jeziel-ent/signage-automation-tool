@@ -61,7 +61,8 @@ def test_build_examples_records_relative_transforms():
     b_ents = master_entities(board_objs, 2000, 400, SHOPNAME_HINTS)
     examples = build_examples(m_ents, *PAGE, [(2000.0, 400.0, b_ents)])
     logo = examples["boards"][0]["entities"]["logo_cluster_0"]
-    assert logo["present"] and logo["repeat_count"] == 1
+    assert logo["present"]
+    assert logo["repeat_count"] == 1
     assert logo["copies"][0]["cx_frac"] == pytest.approx((200 + 400 / 2) / 2000)
     assert logo["copies"][0]["h_frac"] == pytest.approx(200 / 400)
 

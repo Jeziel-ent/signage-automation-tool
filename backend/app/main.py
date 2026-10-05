@@ -33,6 +33,19 @@ from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_file
 from .engines import get_engine
 from .layout import to_mm
 
+# repeated literals (messages, media types, file names) - one definition each
+_SHOP_NOT_FOUND = "shop not found"
+_JOB_NOT_FOUND = "job not found"
+_MEDIA_ZIP = "application/zip"
+_MEDIA_JPEG = "image/jpeg"
+_HEARTBEAT_SUFFIX = ".heartbeat"
+_DONE_SUFFIX = ".done"
+_JPEG_SUFFIX = ".jpeg"
+_WEBP_SUFFIX = ".webp"
+_SCENE_JSON = "scene.json"
+_META_JSON = "meta.json"
+_MASTER_CDR = "master.cdr"
+
 DATA = Path(os.environ.get("SIGNAGE_DATA", Path(__file__).resolve().parents[1] / "data"))
 JOBS = DATA / "jobs"
 BRANDS_FILE = DATA / "brands.json"
@@ -100,7 +113,7 @@ def list_brands():
     return _brands()
 
 
-@app.post("/api/brands")
+@app.post("/api/brands", responses={400: {"description": "Invalid request"}})
 def add_brand(payload: dict):
     name = (payload.get("name") or "").strip()
     if not name:
@@ -141,14 +154,14 @@ def _run(job_id: str):
         res["status"] = "running"
         try:
             shop = {**shop, "brand": job["brand"]}  # lets the engine load app/brand_rules/<brand>.json
-            out = engine.process(jdir / "master.cdr", shop, jdir / "out" / f"{i+1:02d}")
+            out = engine.process(jdir / _MASTER_CDR, shop, jdir / "out" / f"{i+1:02d}")
             res.update(status="done", files=out["files"], report=out["report"], note=out.get("note"))
         except Exception as e:  # keep going with the other shops
             res.update(status="error", error=str(e))
     job["status"] = "done" if all(r["status"] == "done" for r in job["results"]) else "error"
 
 
-@app.post("/api/jobs")
+@app.post("/api/jobs", responses={400: {"description": "Invalid request"}})
 async def create_job(
     master: UploadFile = File(...),
     brand: str = Form(...),
@@ -175,7 +188,7 @@ async def create_job(
     jdir = JOBS / job_id
     jdir.mkdir(parents=True)
     def _save_master() -> None:
-        with open(jdir / "master.cdr", "wb") as f:
+        with open(jdir / _MASTER_CDR, "wb") as f:
             shutil.copyfileobj(master.file, f)
 
     await asyncio.to_thread(_save_master)  # a 300 MB copy must not block the event loop
@@ -189,14 +202,14 @@ async def create_job(
     return {"id": job_id}
 
 
-@app.get("/api/jobs/{job_id}")
+@app.get("/api/jobs/{job_id}", responses={404: {"description": "Not found"}})
 def get_job(job_id: str):
     if job_id not in _jobs:
-        raise HTTPException(404, "job not found")
+        raise HTTPException(404, _JOB_NOT_FOUND)
     return _jobs[job_id]
 
 
-@app.get("/api/jobs/{job_id}/files/{idx}/{filename}")
+@app.get("/api/jobs/{job_id}/files/{idx}/{filename}", responses={404: {"description": "Not found"}})
 def get_file(job_id: str, idx: int, filename: str):
     p = (JOBS / job_id / "out" / f"{idx:02d}" / filename).resolve()
     if JOBS.resolve() not in p.parents or not p.is_file():
@@ -204,7 +217,7 @@ def get_file(job_id: str, idx: int, filename: str):
     return FileResponse(p)
 
 
-@app.get("/api/jobs/{job_id}/download.zip")
+@app.get("/api/jobs/{job_id}/download.zip", responses={404: {"description": "Not found"}})
 def download_zip(job_id: str):
     out = JOBS / job_id / "out"
     if not out.exists():
@@ -230,7 +243,7 @@ def v2_list_brands():
     return db.list_brands()
 
 
-@app.post("/api/v2/brands")
+@app.post("/api/v2/brands", responses={400: {"description": "Invalid request"}})
 def v2_add_brand(payload: dict):
     name = (payload.get("name") or "").strip()
     if not name:
@@ -303,7 +316,7 @@ def _save_master_upload(master: UploadFile, brand: str, orientation: str, master
     job_id = uuid.uuid4().hex[:12]
     jdir = JOBS_V2 / job_id
     jdir.mkdir(parents=True)
-    master_path = jdir / "master.cdr"
+    master_path = jdir / _MASTER_CDR
     # UploadFile spools large files to disk itself (SpooledTemporaryFile) -
     # this copy is a plain streamed write, fine up to the 300MB target the
     # UI's upload progress bar is sized for.
@@ -341,7 +354,7 @@ def _master_json(row: dict) -> dict:
     }
 
 
-@app.post("/api/v2/upload")
+@app.post("/api/v2/upload", responses={400: {"description": "Invalid request"}})
 async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form("landscape"),
                     master_shop_name: str = Form(""), master_shop_name_local: str = Form("")):
     """`master_shop_name` / `master_shop_name_local`: the shop name the master itself shows (English / local script),
@@ -359,7 +372,7 @@ async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orie
     }
 
 
-@app.get("/api/masters")
+@app.get("/api/masters", responses={400: {"description": "Invalid request"}})
 def list_masters(brand: str | None = None, orientation: str | None = None):
     """Registered master templates (any number per orientation), oldest first - the first of each orientation is its
     default. Optional `brand` / `orientation` filters. Returns {masters, landscape, portrait}."""
@@ -371,7 +384,7 @@ def list_masters(brand: str | None = None, orientation: str | None = None):
             "portrait": [m for m in masters if m["orientation"] == "portrait"]}
 
 
-@app.post("/api/masters/upload")
+@app.post("/api/masters/upload", responses={400: {"description": "Invalid request"}})
 async def upload_master(master: UploadFile = File(...), brand: str = Form(...), orientation: str = Form(...),
                         name: str = Form(""), dimensions_default: str = Form(""),
                         master_shop_name: str = Form(""), master_shop_name_local: str = Form("")):
@@ -382,7 +395,7 @@ async def upload_master(master: UploadFile = File(...), brand: str = Form(...), 
     return _master_json(db.get_job(job_id))
 
 
-@app.delete("/api/masters/{master_id}")
+@app.delete("/api/masters/{master_id}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def delete_master(master_id: str):
     """Remove a master from the registry. Soft delete: the file stays, because the boards already made from it live in
     its folder (Recently generated, the editor). Refused while a shop that uses it is queued or converting."""
@@ -395,12 +408,12 @@ def delete_master(master_id: str):
     return {"deleted": master_id}
 
 
-@app.patch("/api/v2/jobs/{job_id}/master-shop-name")
+@app.patch("/api/v2/jobs/{job_id}/master-shop-name", responses={404: {"description": "Not found"}})
 def v2_set_master_shop_name(job_id: str, payload: dict):
     """Set / correct the shop name a master shows ({master_shop_name, master_shop_name_local}; blank clears)."""
     job = db.get_job(job_id)
     if not job:
-        raise HTTPException(404, "job not found")
+        raise HTTPException(404, _JOB_NOT_FOUND)
     val = lambda k: (str(payload.get(k) or "")).strip() or None  # noqa: E731
     db.set_job_master_shop_names(job_id, val("master_shop_name") if "master_shop_name" in payload else job.get("master_shop_name"),
                                  val("master_shop_name_local") if "master_shop_name_local" in payload
@@ -408,11 +421,11 @@ def v2_set_master_shop_name(job_id: str, payload: dict):
     return db.get_job(job_id)
 
 
-@app.get("/api/v2/jobs/{job_id}")
+@app.get("/api/v2/jobs/{job_id}", responses={404: {"description": "Not found"}})
 def v2_get_job(job_id: str):
     job = db.get_job(job_id)
     if not job:
-        raise HTTPException(404, "job not found")
+        raise HTTPException(404, _JOB_NOT_FOUND)
     job["preview_url"] = f"/api/v2/jobs/{job_id}/preview" if job.get("preview_path") else None
     # without each shop's report_json (every placed object's geometry): 1000 shops made this 9 MB. Reports stay
     # available per shop from /api/v2/shops/{id}/status.
@@ -420,7 +433,7 @@ def v2_get_job(job_id: str):
     return job
 
 
-@app.get("/api/v2/jobs/{job_id}/preview")
+@app.get("/api/v2/jobs/{job_id}/preview", responses={404: {"description": "Not found"}})
 def v2_job_preview(job_id: str):
     job = db.get_job(job_id)
     if not job or not job.get("preview_path"):
@@ -522,11 +535,11 @@ def _insert_shop(job_id: str, fields: dict, master_ids: dict) -> dict:
     return db.get_shop(shop_id)
 
 
-@app.post("/api/v2/jobs/{job_id}/shops")
+@app.post("/api/v2/jobs/{job_id}/shops", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}})
 def v2_add_shop(job_id: str, payload: dict):
     job = db.get_job(job_id)
     if not job:
-        raise HTTPException(404, "job not found")
+        raise HTTPException(404, _JOB_NOT_FOUND)
     try:
         fields = _parse_shop_payload(payload)
     except ValueError:
@@ -557,24 +570,24 @@ def _apply_shop_edits(shop_row: dict, payload: dict) -> None:
     db.update_shop_fields(shop_row["id"], fields)
 
 
-@app.patch("/api/v2/shops/{shop_id}")
+@app.patch("/api/v2/shops/{shop_id}", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def v2_edit_shop(shop_id: str, payload: dict):
     """Inline edit from the Shops table (name, width/height + units, phone, GST, address). Refused while the shop
     is queued/converting - its output would no longer match the row."""
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     if row["status"] in ("queued", "converting"):
         raise HTTPException(409, "shop is converting")
     _apply_shop_edits(row, payload)
     return db.get_shop(shop_id)
 
 
-@app.delete("/api/v2/shops/{shop_id}")
+@app.delete("/api/v2/shops/{shop_id}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def v2_delete_shop(shop_id: str):
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     if row["status"] in ("queued", "converting"):
         raise HTTPException(409, "shop is converting")
     db.delete_shop(shop_id)
@@ -584,7 +597,7 @@ def v2_delete_shop(shop_id: str):
 BATCH_MAX_SHOPS = 500
 
 
-@app.post("/api/v2/jobs/{job_id}/shops/batch")
+@app.post("/api/v2/jobs/{job_id}/shops/batch", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 413: {"description": "Too large"}})
 def v2_add_shops_batch(job_id: str, payload: dict):
     """Add many shops at once (the Excel/CSV import). Body: `{shops: [<shop body>, ...], landscape_master_id?,
     portrait_master_id?}` - each row is a normal add-shop body (row-level master ids override the batch-level ones).
@@ -593,7 +606,7 @@ def v2_add_shops_batch(job_id: str, payload: dict):
     0-based position in the request). A bad batch-level master id fails the whole request (4xx) - nothing is added."""
     job = db.get_job(job_id)
     if not job:
-        raise HTTPException(404, "job not found")
+        raise HTTPException(404, _JOB_NOT_FOUND)
     rows = payload.get("shops")
     if not isinstance(rows, list) or not rows:
         raise HTTPException(400, "shops must be a non-empty array")
@@ -651,10 +664,10 @@ def v2_step_estimates():
     return db.get_step_timing_estimates()
 
 
-@app.get("/api/v2/jobs/{job_id}/shops")
+@app.get("/api/v2/jobs/{job_id}/shops", responses={404: {"description": "Not found"}})
 def v2_list_shops(job_id: str):
     if not db.get_job(job_id):
-        raise HTTPException(404, "job not found")
+        raise HTTPException(404, _JOB_NOT_FOUND)
     return db.list_shops(job_id)
 
 
@@ -907,7 +920,7 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
     if not prepared:
         return
     results_path = CONVERT_RUNS / f"{prepared[0][0]}.json"
-    heartbeat = results_path.with_suffix(".heartbeat")
+    heartbeat = results_path.with_suffix(_HEARTBEAT_SUFFIX)
     for i, (sid, _, _) in enumerate(prepared):
         _batch_slots[sid] = (heartbeat, i)
     db.set_shop_status(prepared[0][0], "converting", step="starting")
@@ -928,7 +941,7 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
     finally:
         for sid, _, _ in prepared:
             _batch_slots.pop(sid, None)
-        for p in (results_path, heartbeat, results_path.with_suffix(".done")):
+        for p in (results_path, heartbeat, results_path.with_suffix(_DONE_SUFFIX)):
             p.unlink(missing_ok=True)
 
     for i, ((sid, job, master_used), entry) in enumerate(zip(prepared, results)):
@@ -943,14 +956,14 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         logger.warning("shop %s failed in a batch (%s); retrying it on its own", sid, entry.get("error"))
         db.set_shop_status(sid, "converting", step="starting")
         single = CONVERT_RUNS / f"{sid}.json"
-        _batch_slots[sid] = (single.with_suffix(".heartbeat"), 0)
+        _batch_slots[sid] = (single.with_suffix(_HEARTBEAT_SUFFIX), 0)
         try:
             retry = corel_supervisor.run_batch([job], single, **_convert_limits())[0]
         except Exception as e:
             retry = {"status": "error", "error": str(e)}
         finally:
             _batch_slots.pop(sid, None)
-            for p in (single, single.with_suffix(".heartbeat"), single.with_suffix(".done")):
+            for p in (single, single.with_suffix(_HEARTBEAT_SUFFIX), single.with_suffix(_DONE_SUFFIX)):
                 p.unlink(missing_ok=True)
         _store_convert_result(sid, retry, master_used)
 
@@ -973,7 +986,7 @@ def _apply_sno(shop_id: str, payload: dict | None) -> None:
     db.set_shop_sno_label(shop_id, label)
 
 
-@app.post("/api/v2/shops/{shop_id}/convert")
+@app.post("/api/v2/shops/{shop_id}/convert", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
     """Queue a conversion. An optional `master_id` in the body sets the master picked for this shop (see
     _select_shop_master). An optional body `{landscape_master_id, portrait_master_id}` (re)sets the shop's dual
@@ -982,7 +995,7 @@ def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
     master would win by fallback). A body that names neither id leaves the stored ids alone."""
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     if row["status"] in ("queued", "converting"):
         raise HTTPException(409, "already converting")
     # The current on-screen values: any editable field in the body is saved first, so what the user sees in the
@@ -1004,11 +1017,11 @@ def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
     return {"status": "queued"}
 
 
-@app.get("/api/v2/shops/{shop_id}/status")
+@app.get("/api/v2/shops/{shop_id}/status", responses={404: {"description": "Not found"}})
 def v2_shop_status(shop_id: str):
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
 
     if row["status"] == "done":
         row["progress_pct"] = 100
@@ -1049,7 +1062,7 @@ def v2_shop_status(shop_id: str):
     return row
 
 
-@app.get("/api/v2/shop-statuses")
+@app.get("/api/v2/shop-statuses", responses={404: {"description": "Not found"}})
 def v2_shop_statuses(ids: str = ""):
     """Status of several shops in one request ({id: status row}; unknown ids are left out). The Automation page polls every
     converting/queued shop with this one call instead of one request per shop every 800 ms - a 50-shop Convert All used to
@@ -1065,11 +1078,11 @@ def v2_shop_statuses(ids: str = ""):
     return out
 
 
-@app.get("/api/v2/shops/{shop_id}/files/{filename}")
+@app.get("/api/v2/shops/{shop_id}/files/{filename}", responses={404: {"description": "Not found"}})
 def v2_shop_file(shop_id: str, filename: str):
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     out_dir = (JOBS_V2 / row["job_id"] / "out" / shop_id).resolve()
     p = (out_dir / filename).resolve()
     if out_dir not in p.parents or not p.is_file():
@@ -1089,14 +1102,14 @@ def _single_sources(row: dict, fmt: str) -> dict:
                                  db.get_editor_ops(row["id"]), fmt)
 
 
-@app.get("/api/v2/shops/{shop_id}/downloads")
+@app.get("/api/v2/shops/{shop_id}/downloads", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def v2_shop_downloads(shop_id: str):
     """What the row's quick Download popup can offer: {cdr|jpg|png|pdf: {available, source, note, reason}}."""
     from . import asset_zip
 
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     if row["status"] != "done":
         raise HTTPException(409, "this shop has not been converted yet")
     out = {}
@@ -1106,7 +1119,7 @@ def v2_shop_downloads(shop_id: str):
     return out
 
 
-@app.get("/api/v2/shops/{shop_id}/download/{fmt}")
+@app.get("/api/v2/shops/{shop_id}/download/{fmt}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 def v2_shop_download(shop_id: str, fmt: str, no: str | None = None):
     """One file of one converted shop, named "<S.no> - <W> X <H> <Unit> - <Type> - <SHOP>.<ext>" (`no` = the row's S.no in
     the queue, default its seq_no). CDR/PDF/PNG are served as they are; a JPG is an editor export's JPEG, else the best PNG
@@ -1118,7 +1131,7 @@ def v2_shop_download(shop_id: str, fmt: str, no: str | None = None):
         raise HTTPException(422, "format must be one of cdr, jpg, png, pdf")
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     if row["status"] != "done":
         raise HTTPException(409, "this shop has not been converted yet")
     src = _single_sources(row, fmt)
@@ -1137,7 +1150,7 @@ def v2_shop_download(shop_id: str, fmt: str, no: str | None = None):
         flat = Image.new("RGB", rgba.size, (255, 255, 255))
         flat.paste(rgba, mask=rgba.split()[-1])
         flat.save(tmp.name, "JPEG", quality=95, subsampling=0, dpi=im.info.get("dpi", (72, 72)))
-    return FileResponse(tmp.name, media_type="image/jpeg", filename=name,
+    return FileResponse(tmp.name, media_type=_MEDIA_JPEG, filename=name,
                         background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
 
 
@@ -1147,10 +1160,10 @@ THUMB_MAX_PX = 240  # long side; the Recently generated thumbnail is 56x36 CSS p
 def _thumb_format() -> tuple[str, str]:
     """WebP when this Pillow build has it (a 240 px board is ~5-15 KB), else PNG."""
     from PIL import features
-    return ("WEBP", ".webp") if features.check("webp") else ("PNG", ".png")
+    return ("WEBP", _WEBP_SUFFIX) if features.check("webp") else ("PNG", ".png")
 
 
-@app.get("/api/v2/shops/{shop_id}/thumb")
+@app.get("/api/v2/shops/{shop_id}/thumb", responses={404: {"description": "Not found"}})
 def v2_shop_thumb(shop_id: str):
     """A small copy of a converted shop's preview for list thumbnails. The full preview is CorelDRAW's 1600 px PNG
     (~1-1.3 MB for a real board), which the Recently generated table used to download and decode for every row just to
@@ -1159,7 +1172,7 @@ def v2_shop_thumb(shop_id: str):
     shop's out/ folder, which the ZIP export reads - and rebuilt only when the preview is newer than the thumbnail."""
     row = db.get_shop(shop_id)
     if not row:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     files = json.loads(row["files_json"]) if row.get("files_json") else {}
     name = (files or {}).get("preview")
     out_dir = (JOBS_V2 / row["job_id"] / "out" / shop_id).resolve()
@@ -1169,7 +1182,7 @@ def v2_shop_thumb(shop_id: str):
     fmt, ext = _thumb_format()
     thumb = JOBS_V2 / row["job_id"] / "thumbs" / f"{shop_id}{ext}"
     if not thumb.is_file() or thumb.stat().st_mtime < src.stat().st_mtime:
-        if src.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
+        if src.suffix.lower() not in (".png", ".jpg", _JPEG_SUFFIX, _WEBP_SUFFIX):
             return FileResponse(src)  # e.g. MockEngine's SVG preview: already tiny, and vector
         from PIL import Image
         thumb.parent.mkdir(parents=True, exist_ok=True)
@@ -1223,7 +1236,7 @@ def _shop_thumbnail(row: dict) -> Path | None:
     files = json.loads(row["files_json"]) if row.get("files_json") else {}
     name = files.get("preview") or ""
     p = out_dir / name
-    if name and p.suffix.lower() in (".png", ".jpg", ".jpeg") and p.is_file():
+    if name and p.suffix.lower() in (".png", ".jpg", _JPEG_SUFFIX) and p.is_file():
         return p
     return None
 
@@ -1232,7 +1245,7 @@ def _safe_file_part(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", text).strip("_.")
 
 
-@app.post("/api/print-sheet/generate")
+@app.post("/api/print-sheet/generate", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
 def print_sheet_generate(body: PrintSheetRequest):
     # Imported here, not at module level: print_sheet needs Pillow, and a server started from a Python without it must
     # still start (every other Pillow use in the app is imported lazily too) - this route then says what is missing.
@@ -1318,7 +1331,7 @@ def _zip_path(token: str) -> Path:
     return z.dir / asset_zip.ZIP_NAME
 
 
-@app.post("/api/export-zip")
+@app.post("/api/export-zip", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 def export_zip(body: AssetZipRequest):
     """"Generate ZIP": builds Signage_Assets_Export.zip - `<NN>_<SHOP>.jpg` at the root, `CDR&PDF/cdr/` and `CDR&PDF/pdf/`
     (see asset_zip.py for which file stands for each shop) - and answers {token, download, summary}. The archive stays on
@@ -1368,7 +1381,7 @@ CDR_ZIP_NAME = "All_CDR_Files.zip"
 ALL_ZIP_NAMES = {"cdr": CDR_ZIP_NAME, "pdf": "All_PDF_Files.zip", "jpg": "All_JPG_Files.zip", "png": "All_PNG_Files.zip"}
 
 
-@app.get("/api/v2/download-all")
+@app.get("/api/v2/download-all", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 def v2_download_all(ids: str, format: str = "cdr", nos: str | None = None):
     """"Download All": one ZIP of every listed converted shop's file in ONE format (`format` = cdr | pdf | jpg | png), each at
     the archive root under its standard name ("01 - 125 X 48 Inch - Nonlit - SHOP.pdf"). `ids` = comma-separated shop ids;
@@ -1407,11 +1420,11 @@ def v2_download_all(ids: str, format: str = "cdr", nos: str | None = None):
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
         raise
-    return FileResponse(tmp.name, media_type="application/zip", filename=ALL_ZIP_NAMES[fmt],
+    return FileResponse(tmp.name, media_type=_MEDIA_ZIP, filename=ALL_ZIP_NAMES[fmt],
                         background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
 
 
-@app.get("/api/v2/download-cdrs")
+@app.get("/api/v2/download-cdrs", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 def v2_download_cdrs(ids: str, nos: str | None = None):
     """"Download All CDRs": one ZIP of the CDR (vector source) of every listed converted shop, each under its standard
     name ("01 - 125 X 48 Inch - Nonlit - SHOP.cdr"). `ids` = comma-separated shop ids; `nos` = their S.no in the queue,
@@ -1448,16 +1461,16 @@ def v2_download_cdrs(ids: str, nos: str | None = None):
     except Exception:
         Path(tmp.name).unlink(missing_ok=True)
         raise
-    return FileResponse(tmp.name, media_type="application/zip", filename=CDR_ZIP_NAME,
+    return FileResponse(tmp.name, media_type=_MEDIA_ZIP, filename=CDR_ZIP_NAME,
                         background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
 
 
-@app.get("/api/export-zip/{token}")
+@app.get("/api/export-zip/{token}", responses={404: {"description": "Not found"}})
 def export_zip_download(token: str):
     """The archive built by POST /api/export-zip (any number of downloads until it is deleted or expires)."""
     from . import asset_zip
 
-    return FileResponse(_zip_path(token), media_type="application/zip", filename=asset_zip.ZIP_NAME)
+    return FileResponse(_zip_path(token), media_type=_MEDIA_ZIP, filename=asset_zip.ZIP_NAME)
 
 
 @app.delete("/api/export-zip/{token}")
@@ -1531,7 +1544,7 @@ def _sweep_shared_zips() -> None:
         return
     for d in SHARED_ZIPS.iterdir():
         try:
-            meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+            meta = json.loads((d / _META_JSON).read_text(encoding="utf-8"))
             if now > meta["expires_at"]:
                 shutil.rmtree(d, ignore_errors=True)
         except (OSError, ValueError, KeyError):
@@ -1551,7 +1564,7 @@ def _share_zip(path: Path) -> dict:
     d.mkdir(parents=True)
     shutil.copyfile(path, d / asset_zip.ZIP_NAME)
     expires_at = time.time() + _share_days() * 86400
-    (d / "meta.json").write_text(json.dumps({"expires_at": expires_at, "created_at": time.time()}), encoding="utf-8")
+    (d / _META_JSON).write_text(json.dumps({"expires_at": expires_at, "created_at": time.time()}), encoding="utf-8")
     return {"id": share_id, "expires_at": expires_at}
 
 
@@ -1660,7 +1673,7 @@ def _wt_worker(job_id: str, token: str, share: dict, skip_reason: str | None = N
             _drop_zip_dir(z.dir)
 
 
-@app.post("/api/export-wetransfer")
+@app.post("/api/export-wetransfer", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 def export_wetransfer(body: WeTransferRequest, request: Request):
     """Get a share link for a ZIP; answers {job_id}. Poll GET /api/export-wetransfer/{job_id} for {status:
     queued|running|success|failed, step, progress, wetransfer_url, fallback_used, message, local_only, expires_at, error}.
@@ -1700,7 +1713,7 @@ def export_wetransfer(body: WeTransferRequest, request: Request):
     return {"job_id": job_id, "token": token}
 
 
-@app.post("/api/export-wetransfer/verify-otp")
+@app.post("/api/export-wetransfer/verify-otp", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 def export_wetransfer_verify_otp(body: VerifyOtpRequest):
     """The code WeTransfer e-mailed to the sender, typed by the person: handed to the upload waiting for it (status
     requires_otp). The result arrives through the usual status polling - success, another requires_otp with `otp_error`
@@ -1720,7 +1733,7 @@ def export_wetransfer_verify_otp(body: VerifyOtpRequest):
     return {"status": "verifying", "session_id": body.session_id}
 
 
-@app.get("/api/export-wetransfer/{job_id}")
+@app.get("/api/export-wetransfer/{job_id}", responses={404: {"description": "Not found"}})
 def export_wetransfer_status(job_id: str):
     with _wt_lock:
         job = _wt_jobs.get(job_id)
@@ -1729,7 +1742,7 @@ def export_wetransfer_status(job_id: str):
         return dict(job)
 
 
-@app.get("/api/shared/{share_id}/{filename}")
+@app.get("/api/shared/{share_id}/{filename}", responses={404: {"description": "Not found"}, 410: {"description": "No longer available"}})
 def shared_zip(share_id: str, filename: str):
     """A fallback share link (see _share_zip). Unknown, malformed or expired ids are 404 / 410."""
     from . import asset_zip
@@ -1738,7 +1751,7 @@ def shared_zip(share_id: str, filename: str):
         raise HTTPException(404, "not found")
     d = SHARED_ZIPS / share_id
     try:
-        meta = json.loads((d / "meta.json").read_text(encoding="utf-8"))
+        meta = json.loads((d / _META_JSON).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise HTTPException(404, "this link does not exist")
     if time.time() > meta.get("expires_at", 0):
@@ -1746,7 +1759,7 @@ def shared_zip(share_id: str, filename: str):
         raise HTTPException(410, "this link has expired")
     if not (d / filename).is_file():
         raise HTTPException(404, "this link does not exist")
-    return FileResponse(d / filename, media_type="application/zip", filename=filename)
+    return FileResponse(d / filename, media_type=_MEDIA_ZIP, filename=filename)
 
 
 # ------------------------------------------------------ editor (Phase C)
@@ -1768,7 +1781,7 @@ _scene_lock = threading.Lock()
 def _editor_shop(job_id: str, shop_id: str) -> dict:
     row = db.get_shop(shop_id)
     if not row or row["job_id"] != job_id:
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     if row["status"] != "done":
         raise HTTPException(409, f"shop is not converted yet (status: {row['status']})")
     return row
@@ -1787,7 +1800,7 @@ def _scene_build_worker(job_id: str, shop_id: str) -> None:
     results_path = CONVERT_RUNS / f"scene_{shop_id}.json"
     try:
         scene_dir.mkdir(parents=True, exist_ok=True)
-        (scene_dir / "scene.json").unlink(missing_ok=True)
+        (scene_dir / _SCENE_JSON).unlink(missing_ok=True)
         if engine.name == "corel":
             cdr = out_dir / files["cdr"]
             if not cdr.is_file():
@@ -1810,7 +1823,7 @@ def _scene_build_worker(job_id: str, shop_id: str) -> None:
         with _scene_lock:
             _scene_builds[shop_id] = {"status": "error", "error": str(e), "low_memory": False}
     finally:
-        for p in (results_path, results_path.with_suffix(".heartbeat"), results_path.with_suffix(".done"),
+        for p in (results_path, results_path.with_suffix(_HEARTBEAT_SUFFIX), results_path.with_suffix(_DONE_SUFFIX),
                   results_path.with_suffix(".jobs.json"), results_path.with_suffix(".json.tmp"),
                   results_path.with_suffix(".heartbeat.tmp")):
             p.unlink(missing_ok=True)
@@ -1853,10 +1866,10 @@ def _scene_cut_short(scene: dict) -> bool:
     return any(scene_export.server_gone(f) for f in (scene.get("stats") or {}).get("image_failures") or [])
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/scene")
+@app.get("/api/editor/{job_id}/{shop_id}/scene", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 500: {"description": "Server error"}, 503: {"description": "Service unavailable"}})
 def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool = False):
     _editor_shop(job_id, shop_id)
-    scene_path = _scene_dir(job_id, shop_id) / "scene.json"
+    scene_path = _scene_dir(job_id, shop_id) / _SCENE_JSON
     with _scene_lock:
         state = _scene_builds.get(shop_id)
         if state is not None and state["status"] == "building":
@@ -1882,7 +1895,7 @@ def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool =
 _ASSET_TYPES = {".svg": "image/svg+xml", ".png": "image/png"}
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/asset/v/{version}/{filename}")
+@app.get("/api/editor/{job_id}/{shop_id}/asset/v/{version}/{filename}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_asset_versioned(job_id: str, shop_id: str, version: str, filename: str):
     """Same file as below under a build-versioned URL (see the scene endpoint's asset_base) - safe to cache forever."""
     r = editor_asset(job_id, shop_id, filename)
@@ -1890,7 +1903,7 @@ def editor_asset_versioned(job_id: str, shop_id: str, version: str, filename: st
     return r
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/asset/{filename}")
+@app.get("/api/editor/{job_id}/{shop_id}/asset/{filename}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_asset(job_id: str, shop_id: str, filename: str):
     _editor_shop(job_id, shop_id)
     scene_dir = _scene_dir(job_id, shop_id).resolve()
@@ -1909,15 +1922,15 @@ def editor_asset(job_id: str, shop_id: str, filename: str):
 # `asset.path` this endpoint hands back is exactly the filename Replayer._resolve_asset_path expects,
 # resolved against `_product_assets_dir` on both ends.
 
-_PRODUCT_ASSET_TYPES = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
-                        ".webp": "image/webp", ".gif": "image/gif", ".bmp": "image/bmp"}
+_PRODUCT_ASSET_TYPES = {".png": "image/png", ".jpg": _MEDIA_JPEG, _JPEG_SUFFIX: _MEDIA_JPEG,
+                        _WEBP_SUFFIX: "image/webp", ".gif": "image/gif", ".bmp": "image/bmp"}
 
 
 def _product_assets_dir(job_id: str, shop_id: str) -> Path:
     return JOBS_V2 / job_id / "out" / shop_id / "product_assets"
 
 
-@app.post("/api/editor/{job_id}/{shop_id}/product-assets")
+@app.post("/api/editor/{job_id}/{shop_id}/product-assets", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 async def upload_product_asset(job_id: str, shop_id: str, file: UploadFile = File(...)):
     """Saves an uploaded replacement image and reports its natural pixel size - the caller builds a
     `swap_image`/`update_product_slot` op from the result via product_engine.js's swapImageOp/
@@ -1942,7 +1955,7 @@ async def upload_product_asset(job_id: str, shop_id: str, file: UploadFile = Fil
     return {"name": file.filename or stored_name, "w": w, "h": h, "path": stored_name}
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/product-asset/{filename}")
+@app.get("/api/editor/{job_id}/{shop_id}/product-asset/{filename}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_product_asset(job_id: str, shop_id: str, filename: str):
     _editor_shop(job_id, shop_id)
     assets_dir = _product_assets_dir(job_id, shop_id).resolve()
@@ -1960,17 +1973,17 @@ MAX_EDITOR_OPS = 5000
 
 
 def _load_scene(job_id: str, shop_id: str) -> dict | None:
-    p = _scene_dir(job_id, shop_id) / "scene.json"
+    p = _scene_dir(job_id, shop_id) / _SCENE_JSON
     return json.loads(p.read_text(encoding="utf-8")) if p.is_file() else None
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/ops")
+@app.get("/api/editor/{job_id}/{shop_id}/ops", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_get_ops(job_id: str, shop_id: str):
     _editor_shop(job_id, shop_id)
     return {"ops": db.get_editor_ops(shop_id)}
 
 
-@app.put("/api/editor/{job_id}/{shop_id}/ops")
+@app.put("/api/editor/{job_id}/{shop_id}/ops", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 413: {"description": "Too large"}, 422: {"description": "Validation error"}})
 def editor_put_ops(job_id: str, shop_id: str, body: EditorOps):
     _editor_shop(job_id, shop_id)
     if len(body.ops) > MAX_EDITOR_OPS:
@@ -1986,7 +1999,7 @@ def editor_put_ops(job_id: str, shop_id: str, body: EditorOps):
     return {"saved": len(body.ops)}
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/replayed")
+@app.get("/api/editor/{job_id}/{shop_id}/replayed", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
 def editor_replayed(job_id: str, shop_id: str):
     """The saved operation list applied to the pristine scene, server side (what Phase D replays)."""
     _editor_shop(job_id, shop_id)
@@ -2006,7 +2019,7 @@ class ConvertOrientationRequest(BaseModel):
     same_orientation_fit: bool = False   # scene is a master of the target's orientation: uniform fit + padding
 
 
-@app.post("/api/scene/convert-orientation")
+@app.post("/api/scene/convert-orientation", responses={422: {"description": "Validation error"}})
 def convert_orientation(body: ConvertOrientationRequest, response: Response):
     """Re-lays a scene out for a different target page size (mm) - see orientation_adapter.py.
 
@@ -2083,22 +2096,22 @@ def _installed_font_name(name: str) -> str | None:
     return by_lower.get(name.strip().lower())
 
 
-@app.get("/api/fonts/substitutions")
+@app.get("/api/fonts/substitutions", responses={404: {"description": "Not found"}})
 def font_substitutions(shop_id: str):
     """The permanent substitutions saved for a shop: {original font: substitute font}."""
     if not db.get_shop(shop_id):
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     return {"shop_id": shop_id, "substitutions": db.get_font_substitutions(shop_id)}
 
 
-@app.post("/api/fonts/substitute")
+@app.post("/api/fonts/substitute", responses={404: {"description": "Not found"}, 422: {"description": "Validation error"}})
 def font_substitute(body: FontSubstituteRequest):
     """Save (is_permanent) a replacement for a font missing on this server: every export of this shop's board sets text
     in `original_font` to `substitute_font` in CorelDRAW (export_replay.apply_font_substitutions). A temporary choice
     lives only in the editor tab and is not stored - this answers {saved: false} for it. The substitute must be installed
     on the server, because CorelDRAW writes the files and silently ignores a font it does not have."""
     if not db.get_shop(body.shop_id):
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     original, wanted = body.original_font.strip(), body.substitute_font.strip()
     if not original or not wanted:
         raise HTTPException(422, "name both the missing font and its replacement")
@@ -2113,11 +2126,11 @@ def font_substitute(body: FontSubstituteRequest):
             "substitutions": db.get_font_substitutions(body.shop_id)}
 
 
-@app.delete("/api/fonts/substitute")
+@app.delete("/api/fonts/substitute", responses={404: {"description": "Not found"}})
 def font_substitute_delete(shop_id: str, original_font: str):
     """Forget a permanent substitution: exports go back to CorelDRAW's own handling of the missing font."""
     if not db.get_shop(shop_id):
-        raise HTTPException(404, "shop not found")
+        raise HTTPException(404, _SHOP_NOT_FOUND)
     return {"deleted": db.delete_font_substitution(shop_id, original_font.strip()),
             "substitutions": db.get_font_substitutions(shop_id)}
 
@@ -2140,7 +2153,7 @@ def api_fonts(refresh: bool = False):
 _FONT_MEDIA = {".ttf": "font/ttf", ".otf": "font/otf", ".ttc": "font/collection"}
 
 
-@app.get("/api/fonts/file")
+@app.get("/api/fonts/file", responses={404: {"description": "Not found"}})
 def api_font_file(family: str):
     """The installed font file for `family`, so the editor's live text renders in the board's real font on any browser."""
     path = fonts.font_file(family)
@@ -2229,7 +2242,7 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
         if engine.name == "corel":
             spec = {
                 "cdr": str(JOBS_V2 / job_id / "out" / shop_id / files["cdr"]),
-                "scene": str(_scene_dir(job_id, shop_id) / "scene.json"),
+                "scene": str(_scene_dir(job_id, shop_id) / _SCENE_JSON),
                 "ops": ops, "formats": formats, "options": options,
                 "out_dir": str(out_dir), "base_name": file_naming.shop_basename(shop_row),
                 "assets_dir": str(_product_assets_dir(job_id, shop_id)),
@@ -2242,7 +2255,7 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
         else:
             scene = _load_scene(job_id, shop_id)
             report = _mock_export(scene_ops.apply_ops(scene, ops), formats, options, out_dir,
-                                  export_replay.safe_name(shop_row["name"]), results_path.with_suffix(".heartbeat"))
+                                  export_replay.safe_name(shop_row["name"]), results_path.with_suffix(_HEARTBEAT_SUFFIX))
             subs = db.get_font_substitutions(shop_id)
             if subs:   # recorded only - the mock engine renders no text
                 report["font_substitutions"] = {k: {"to": v, "changed": None, "mock": True} for k, v in subs.items()}
@@ -2252,7 +2265,7 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
     except Exception as e:
         db.set_export_status(export_id, "failed", str(e))
     finally:
-        for p in (results_path, results_path.with_suffix(".heartbeat"), results_path.with_suffix(".done"),
+        for p in (results_path, results_path.with_suffix(_HEARTBEAT_SUFFIX), results_path.with_suffix(_DONE_SUFFIX),
                   results_path.with_suffix(".jobs.json"), results_path.with_suffix(".json.tmp"),
                   results_path.with_suffix(".heartbeat.tmp")):
             p.unlink(missing_ok=True)
@@ -2263,7 +2276,7 @@ def editor_export_estimates():
     return db.get_export_step_estimates()
 
 
-@app.post("/api/editor/{job_id}/{shop_id}/export")
+@app.post("/api/editor/{job_id}/{shop_id}/export", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
 def editor_export(job_id: str, shop_id: str, body: ExportRequest):
     _editor_shop(job_id, shop_id)
     scene = _load_scene(job_id, shop_id)
@@ -2305,7 +2318,7 @@ def _export_row(job_id: str, shop_id: str, export_id: str) -> dict:
     return row
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/export/{export_id}")
+@app.get("/api/editor/{job_id}/{shop_id}/export/{export_id}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_export_status(job_id: str, shop_id: str, export_id: str):
     row = _export_row(job_id, shop_id, export_id)
     plan = json.loads(row["plan_json"])
@@ -2341,7 +2354,7 @@ def editor_export_status(job_id: str, shop_id: str, export_id: str):
     }
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/exports")
+@app.get("/api/editor/{job_id}/{shop_id}/exports", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_export_list(job_id: str, shop_id: str):
     _editor_shop(job_id, shop_id)
     return [{"export_id": r["id"], "status": r["status"], "formats": json.loads(r["formats_json"]),
@@ -2352,7 +2365,7 @@ def editor_export_list(job_id: str, shop_id: str):
 
 def _std_ext(p: Path) -> str:
     """The extension a downloaded file gets: `.jpeg` is spelt `.jpg` like the designers' files."""
-    return ".jpg" if p.suffix.lower() in (".jpeg", ".jpg") else p.suffix.lower()
+    return ".jpg" if p.suffix.lower() in (_JPEG_SUFFIX, ".jpg") else p.suffix.lower()
 
 
 def _zip_name(shop: dict) -> str:
@@ -2360,7 +2373,7 @@ def _zip_name(shop: dict) -> str:
     return f"{file_naming.shop_basename(shop)}.zip"
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/zip")
+@app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/zip", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_export_zip(job_id: str, shop_id: str, export_id: str):
     """Every generated file of one export (cdr/pdf/png/jpeg) in a single `<S.no> - <size> - <type> - <SHOP>.zip`. Built on
     the server rather than in the browser: a CDR is often 100-300 MB and would have to sit in browser memory to be
@@ -2380,11 +2393,11 @@ def editor_export_zip(job_id: str, shop_id: str, export_id: str):
         stem = file_naming.shop_basename(shop)
         for m in members:
             z.write(m, arcname=f"{stem}{_std_ext(m)}")
-    return FileResponse(tmp.name, media_type="application/zip", filename=_zip_name(shop),
+    return FileResponse(tmp.name, media_type=_MEDIA_ZIP, filename=_zip_name(shop),
                         background=BackgroundTask(lambda: Path(tmp.name).unlink(missing_ok=True)))
 
 
-@app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/files/{filename}")
+@app.get("/api/editor/{job_id}/{shop_id}/exports/{export_id}/files/{filename}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_export_file(job_id: str, shop_id: str, export_id: str, filename: str):
     shop = _editor_shop(job_id, shop_id)
     _export_row(job_id, shop_id, export_id)

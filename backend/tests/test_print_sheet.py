@@ -27,10 +27,12 @@ def test_totals_match_the_reference_sheet():
     shops = [ps.SheetShop(5, "A", 214, "in", 36, "in"), ps.SheetShop(6, "B", 180, "in", 36, "in"),
              ps.SheetShop(7, "C", 233.5, "in", 53.5, "in")]
     qty, sqft = ps.totals(shops)
-    assert qty == 3 and sqft == pytest.approx(26676.25 / 144)
+    assert qty == 3
+    assert sqft == pytest.approx(26676.25 / 144)
     assert ps.fmt_sqft(sqft) == "185"
     assert ps.sq_feet(10, "ft", 48, "in") == pytest.approx(40.0)            # mixed units
-    assert ps.fmt_sqft(2.78) == "2.8" and ps.fmt_sqft(0.0) == "0"
+    assert ps.fmt_sqft(2.78) == "2.8"
+    assert ps.fmt_sqft(0.0) == "0"
 
 
 def test_caption_follows_the_reference_format():
@@ -61,7 +63,8 @@ def test_captions_wrap_to_two_lines_with_an_ellipsis():
     f = ps._font("caption", 7.5)
     long = "01 - 10 X 4 Inch - ACP BOARD - C. SIVA ANAND ANAND HARDWARES AND ELECTRICALS (ARUMANAI) BRANCH OFFICE TWO"
     lines = ps._wrap(long, f, 150 * ps._P, 2)
-    assert len(lines) == 2 and lines[1].endswith("...")
+    assert len(lines) == 2
+    assert lines[1].endswith("...")
     assert all(f.getlength(line) <= 150 * ps._P for line in lines)
     assert ps._wrap("CDR & PDF", f, 150 * ps._P, 2) == ["CDR & PDF"]
 
@@ -76,14 +79,16 @@ def test_render_is_a4_portrait_in_the_reference_style_with_the_folder_first(tmp_
     u = lambda x, y: page.getpixel((int(x * ps.K * ps._P), int(y * ps.K * ps._P)))   # noqa: E731 - reference units
     assert u(20, 110) == ps.RED                                           # "PRINT DETAILS" angled block
     assert u(ps.REF_W - 20, 110) == ps.GREY_BAND                          # title band, right end
-    assert u(600, 110) != ps.RED and u(600, 20) == ps.RED                 # the angle: red at the top only
+    assert u(600, 110) != ps.RED
+    assert u(600, 20) == ps.RED  # the angle: red at the top only
     assert u(20, 520) == ps.RED                                           # board-type bar
     assert u(ps.REF_W - 10, 430) == ps.DARK                               # full-width rule
     g = ps.plan_grid(4)
     px = lambda x, y: page.getpixel((int(x * ps._P), int(y * ps._P)))     # noqa: E731 - points
     # card 1 is the folder (yellow), card 2 the first shop's preview (green), bottom-aligned in its box
     folder = px(g["x0"] + g["card_w"] / 2, g["top"] + g["box_h"] - 12)
-    assert folder[0] > 230 and folder[2] < 150
+    assert folder[0] > 230
+    assert folder[2] < 150
     x2 = g["x0"] + g["card_w"] + ps.GAP_PT + g["card_w"] / 2
     assert px(x2, g["top"] + g["box_h"] - 3) == (20, 160, 120)
     assert px(x2, g["top"] + 3) == ps.WHITE                               # a wide preview leaves the box top empty
@@ -104,16 +109,20 @@ def test_many_shops_continue_on_further_pages():
 
 def test_write_pdf_jpeg_and_multi_page_jpeg_zip(tmp_path):
     p, media = ps.write_sheet(META, _shops(2), "pdf", tmp_path / "a")
-    assert media == "application/pdf" and p.read_bytes()[:5] == b"%PDF-"
+    assert media == "application/pdf"
+    assert p.read_bytes()[:5] == b"%PDF-"
     p, media = ps.write_sheet(META, _shops(2), "jpeg", tmp_path / "b")
     assert media == "image/jpeg"
     with Image.open(p) as im:
-        assert im.size == (ps.PAGE_W, ps.PAGE_H) and round(im.info["dpi"][0]) == ps.DPI
+        assert im.size == (ps.PAGE_W, ps.PAGE_H)
+        assert round(im.info["dpi"][0]) == ps.DPI
     n = ps.plan_grid(500)["per_page"] + 1
     p, media = ps.write_sheet(META, _shops(n), "jpeg", tmp_path / "c")
-    assert media == "application/zip" and len(zipfile.ZipFile(p).namelist()) == 2
+    assert media == "application/zip"
+    assert len(zipfile.ZipFile(p).namelist()) == 2
+    one_shop = _shops(1)
     with pytest.raises(ValueError):
-        ps.write_sheet(META, _shops(1), "gif", tmp_path / "d")
+        ps.write_sheet(META, one_shop, "gif", tmp_path / "d")
 
 
 # ------------------------------------------------------------------ API
@@ -132,12 +141,14 @@ def test_generate_returns_a_download_for_the_selected_done_shops(client):
             "board_type": "ACP BOARD", "shop_ids": [a["id"], b["id"], a["id"]], "numbers": {a["id"]: 5, b["id"]: 6},
             "format": "jpeg"}
     r = client.post("/api/print-sheet/generate", json=body)
-    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
     assert 'filename="Print_Details_22071195_26.09.2026.jpg"' in r.headers["content-disposition"]
     with Image.open(io.BytesIO(r.content)) as im:
         assert im.size == (ps.PAGE_W, ps.PAGE_H)
     r = client.post("/api/print-sheet/generate", json={**body, "format": "pdf"})
-    assert r.status_code == 200 and r.content[:5] == b"%PDF-"
+    assert r.status_code == 200
+    assert r.content[:5] == b"%PDF-"
 
 
 def test_generate_validates_the_request(client):
@@ -149,7 +160,8 @@ def test_generate_validates_the_request(client):
     assert post(format="gif").status_code == 422
     assert post(shop_ids=["nope"]).status_code == 404
     r = post(shop_ids=[done["id"], pending["id"]])
-    assert r.status_code == 409 and "not been converted" in r.json()["detail"]
+    assert r.status_code == 409
+    assert "not been converted" in r.json()["detail"]
 
 
 def test_thumbnail_prefers_the_latest_editor_export(client, tmp_path, monkeypatch):
@@ -177,4 +189,6 @@ def test_without_pillow_the_server_still_starts_and_the_route_says_why(client, m
     monkeypatch.setitem(sys.modules, "app.print_sheet", None)     # `import app.print_sheet` raises ImportError...
     monkeypatch.delattr(app_pkg, "print_sheet", raising=False)    # ...and `from . import` cannot fall back to the attribute
     r = client.post("/api/print-sheet/generate", json={"shop_ids": ["x"]})
-    assert r.status_code == 503 and "Pillow" in r.json()["detail"] and "pip install" in r.json()["detail"]
+    assert r.status_code == 503
+    assert "Pillow" in r.json()["detail"]
+    assert "pip install" in r.json()["detail"]

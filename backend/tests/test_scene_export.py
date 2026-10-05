@@ -150,7 +150,8 @@ def _sample_doc(**kw):
 def test_plan_png_size_clamps_long_side():
     assert max(scene_export.plan_png_size(3000, 1200)) == scene_export.IMG_MAX_LONG_PX
     tiny = scene_export.plan_png_size(1, 0.5)
-    assert max(tiny) == scene_export.IMG_MIN_LONG_PX and tiny[0] == 2 * tiny[1]
+    assert max(tiny) == scene_export.IMG_MIN_LONG_PX
+    assert tiny[0] == 2 * tiny[1]
     mid = scene_export.plan_png_size(100, 50)
     assert mid == (400, 200)
 
@@ -158,7 +159,8 @@ def test_plan_png_size_clamps_long_side():
 def test_walk_page_reverses_corel_order_and_skips_special_layers():
     doc, s = _sample_doc()
     layers, leaves = scene_export.walk_page(doc.ActivePage)
-    assert len(layers) == 1 and layers[0]["name"] == "Layer 1"
+    assert len(layers) == 1
+    assert layers[0]["name"] == "Layer 1"
     ids = [n["id"] for n in layers[0]["children"]]
     # bottom -> top: bg first (was last in Corel's list), text last
     assert ids == [f"s{s[k].StaticID}" for k in ("bg", "hidden", "clip", "group", "top_text")]
@@ -169,10 +171,12 @@ def test_walk_page_structure_kinds_and_leaves():
     layers, leaves = scene_export.walk_page(doc.ActivePage)
     by_id = {n["id"]: n for n in layers[0]["children"]}
     group = by_id[f"s{s['group'].StaticID}"]
-    assert group["kind"] == "group" and group["image"] is None
+    assert group["kind"] == "group"
+    assert group["image"] is None
     assert [c["id"] for c in group["children"]] == [f"s{s['child_a'].StaticID}", f"s{s['child_b'].StaticID}"]  # reversed too
     clip = by_id[f"s{s['clip'].StaticID}"]
-    assert clip["kind"] == "powerclip" and len(clip["children"]) == 1
+    assert clip["kind"] == "powerclip"
+    assert len(clip["children"]) == 1
     text = by_id[f"s{s['top_text'].StaticID}"]
     assert text["text"] == {"kind": "artistic", "content": "SHOP NAME", "font": "Nirmala UI", "size_pt": 120.0}
     leaf_ids = {n["id"] for n, _ in leaves}
@@ -180,7 +184,8 @@ def test_walk_page_structure_kinds_and_leaves():
     # AND each of its children is a leaf with its own image, so the editor can draw them live
     # inside a client-side clip
     assert f"s{s['group'].StaticID}" not in leaf_ids
-    assert f"s{s['clip'].StaticID}" in leaf_ids and f"s{s['clip_child'].StaticID}" in leaf_ids
+    assert f"s{s['clip'].StaticID}" in leaf_ids
+    assert f"s{s['clip_child'].StaticID}" in leaf_ids
     order = [n["id"] for n, _ in leaves]
     assert order.index(f"s{s['clip_child'].StaticID}") < order.index(f"s{s['clip'].StaticID}")  # children first, container last
     assert {f"s{s['child_a'].StaticID}", f"s{s['child_b'].StaticID}"} <= leaf_ids
@@ -200,7 +205,8 @@ def test_export_scene_writes_scene_and_picks_svg_or_png(tmp_path):
     assert fmt[f"s{s['child_a'].StaticID}.svg"] == "svg"
     assert fmt[f"s{s['top_text'].StaticID}.png"] == "png"       # text never SVG (Corel emits <font>)
     assert fmt[f"s{s['clip'].StaticID}.png"] == "png"           # PowerClip container: PNG of the clipped result
-    assert steps[0] == "walk" and steps[-2] == f"images {scene['stats']['leaves']}/{scene['stats']['leaves']}"
+    assert steps[0] == "walk"
+    assert steps[-2] == f"images {scene['stats']['leaves']}/{scene['stats']['leaves']}"
     assert steps[-1] == "page_image"
     # every leaf got an image reference and it exists on disk
     def leaves(nodes):
@@ -218,10 +224,12 @@ def test_png_exports_are_selection_only_and_transparent(tmp_path):
     doc, s = _sample_doc()
     scene_export.export_scene(doc, tmp_path)
     text_call = next(c for c in doc.calls if c["name"] == f"s{s['top_text'].StaticID}.png")
-    assert text_call["transparent"] is True and text_call["range_"] == scene_export.CDR_SELECTION
+    assert text_call["transparent"] is True
+    assert text_call["range_"] == scene_export.CDR_SELECTION
     assert text_call["size"] == scene_export.plan_png_size(200, 40)
     page_call = next(c for c in doc.calls if c["name"] == "page.png")
-    assert page_call["range_"] == scene_export.CDR_CURRENT_PAGE and page_call["transparent"] is False
+    assert page_call["range_"] == scene_export.CDR_CURRENT_PAGE
+    assert page_call["transparent"] is False
 
 
 def test_svg_containing_a_font_falls_back_to_png(tmp_path):
@@ -269,7 +277,8 @@ def test_exported_scene_is_replayable(tmp_path):
     gid = f"s{s['group'].StaticID}"
     out = apply_ops(scene, [{"op": "move", "ids": [gid], "dx": 10, "dy": 0}])
     grp = next(n for n in out["layers"][0]["children"] if n["id"] == gid)
-    assert grp["x"] == 110 and all(c["x"] >= 110 for c in grp["children"])
+    assert grp["x"] == 110
+    assert all(c["x"] >= 110 for c in grp["children"])
 
 
 def test_mock_scene_is_valid_and_replayable(tmp_path):
@@ -415,4 +424,5 @@ def test_a_frame_export_failure_only_leaves_the_frame_image_out(tmp_path):
     clip.Duplicate = lambda: (_ for _ in ()).throw(RuntimeError("no duplicate"))
     scene = scene_export.export_scene(doc, tmp_path)
     node = next(n for n in scene_ops.iter_nodes(scene) if n["kind"] == "powerclip")
-    assert "frame_image" not in node and node["image"]                     # the flat render is still there
+    assert "frame_image" not in node
+    assert node["image"]  # the flat render is still there

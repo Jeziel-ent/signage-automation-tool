@@ -107,6 +107,7 @@ def test_font_file_endpoint(monkeypatch, tmp_path):
     monkeypatch.setattr(main.fonts, "font_file", lambda family: f if family == "Good" else None)
     c = TestClient(main.app)
     r = c.get("/api/fonts/file", params={"family": "Good"})
-    assert r.status_code == 200 and r.content == b"\x00\x01\x00\x00fontdata"
+    assert r.status_code == 200
+    assert r.content == b"\x00\x01\x00\x00fontdata"
     assert r.headers["content-type"] == "font/ttf"
     assert c.get("/api/fonts/file", params={"family": "Missing"}).status_code == 404

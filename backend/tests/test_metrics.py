@@ -52,7 +52,8 @@ def test_dhash_distinguishes_very_different_images():
     inv = Image.eval(checker, lambda v: 255 - v)
     ha, hb = metrics._dhash(checker), metrics._dhash(inv)
     assert metrics._hamming(ha, hb) > 0
-    assert metrics._dhash(black) is not None and metrics._dhash(white) is not None
+    assert metrics._dhash(black) is not None
+    assert metrics._dhash(white) is not None
 
 
 def test_edge_similarity_identical_images_is_high(tmp_path):
@@ -84,7 +85,8 @@ def test_cluster_compare_matches_identical_layouts():
     ]
     result = metrics.cluster_compare(shapes, shapes, 1000, 1000, CONFIG)
     assert result["ours_clusters"] == result["real_clusters"] == result["matched"]
-    assert result["unmatched_ours"] == 0 and result["unmatched_real"] == 0
+    assert result["unmatched_ours"] == 0
+    assert result["unmatched_real"] == 0
     assert result["max_diff_pct"] == pytest.approx(0.0)
 
 
@@ -111,7 +113,9 @@ def test_cluster_compare_excludes_bg_and_frame_from_clustering():
 def test_geometric_accuracy_identical_layout_is_zero_error_full_area_matched():
     shapes = [_shape("logo_a", "logo", 0, 0, 100, 60), _shape("shopname", "shopname", 0, 200, 300, 50)]
     r = metrics.geometric_accuracy(shapes, shapes, CONFIG)
-    assert r["matched"] == 2 and r["unmatched_ours"] == 0 and r["unmatched_real"] == 0
+    assert r["matched"] == 2
+    assert r["unmatched_ours"] == 0
+    assert r["unmatched_real"] == 0
     assert r["position_error_mm"] == {"max": pytest.approx(0.0), "mean": pytest.approx(0.0)}
     assert r["size_error_mm"] == {"max": pytest.approx(0.0), "mean": pytest.approx(0.0)}
     for row in r["area_matched_pct"]:
@@ -149,7 +153,8 @@ def test_geometric_accuracy_unmatched_clusters_are_excluded_but_still_reduce_are
     ours = [_shape("logo_a", "logo", 0, 0, 100, 100)]
     real = [_shape("logo_a", "logo", 0, 0, 100, 100), _shape("logo_b", "logo", 500, 500, 100, 100)]
     r = metrics.geometric_accuracy(ours, real, CONFIG)
-    assert r["matched"] == 1 and r["unmatched_real"] == 1
+    assert r["matched"] == 1
+    assert r["unmatched_real"] == 1
     # only half the real content's area was even matched, let alone within tolerance
     for row in r["area_matched_pct"]:
         assert row["pct"] == pytest.approx(50.0, abs=0.1)
@@ -161,8 +166,10 @@ def test_geometric_accuracy_per_cluster_rows_carry_role_and_signed_mm_diffs():
     r = metrics.geometric_accuracy(ours, real, CONFIG)
     row = r["per_cluster"][0]
     assert row["role"] == "logo"
-    assert row["dx_mm"] == pytest.approx(10.0) and row["dy_mm"] == pytest.approx(5.0)
-    assert row["dw_mm"] == pytest.approx(10.0) and row["dh_mm"] == pytest.approx(20.0)
+    assert row["dx_mm"] == pytest.approx(10.0)
+    assert row["dy_mm"] == pytest.approx(5.0)
+    assert row["dw_mm"] == pytest.approx(10.0)
+    assert row["dh_mm"] == pytest.approx(20.0)
     # position error is centre-to-centre, not corner-to-corner: ours' centre is (60, 55),
     # real's is (45, 40) - the sizes differ too, so this is NOT hypot(dx_mm, dy_mm).
     assert row["position_error_mm"] == pytest.approx(math.hypot(60 - 45, 55 - 40))

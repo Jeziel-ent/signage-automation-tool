@@ -54,7 +54,8 @@ def test_quit_corel_never_blocks_for_the_timeout_even_for_a_temporary_argument()
     cu.quit_corel(FakeCorel(101), True, 101)
     assert time.time() - t < 0.5            # not the 15 s timeout
     cu.wait_for_pending_quits(2)
-    assert 101 not in RUNNING and not KILLED
+    assert 101 not in RUNNING
+    assert not KILLED
     assert 101 not in cu._load_tracked_pids()
 
 
@@ -68,7 +69,8 @@ def test_caller_holding_a_reference_is_not_blocked_and_the_reaper_finishes_once_
     del app
     gc.collect()
     cu.wait_for_pending_quits(2)
-    assert 102 not in RUNNING and not KILLED
+    assert 102 not in RUNNING
+    assert not KILLED
     assert 102 not in cu._load_tracked_pids()
 
 
@@ -87,8 +89,11 @@ def test_quit_pooled_drops_the_pools_reference_first_so_corel_exits_at_once():
     t = time.time()
     cu._quit_pooled()
     assert time.time() - t < 0.3            # exited as soon as the pool let go - no grace wait, no reaper
-    assert cu._Pool.app is None and cu._Pool.pid is None
-    assert 104 not in RUNNING and not KILLED and not cu._reapers
+    assert cu._Pool.app is None
+    assert cu._Pool.pid is None
+    assert 104 not in RUNNING
+    assert not KILLED
+    assert not cu._reapers
 
 
 def test_recycling_the_pool_quits_the_old_instance_without_waiting(monkeypatch):
@@ -98,14 +103,17 @@ def test_recycling_the_pool_quits_the_old_instance_without_waiting(monkeypatch):
     t = time.time()
     app, launched, pid = cu.acquire_instance()
     assert time.time() - t < 0.3
-    assert pid == 106 and 105 not in RUNNING and not KILLED
+    assert pid == 106
+    assert 105 not in RUNNING
+    assert not KILLED
     del app
 
 
 def test_not_launched_by_us_is_never_quit():
     app = FakeCorel(107)
     cu.quit_corel(app, False, 107)
-    assert not app.quit_called and 107 in RUNNING
+    assert not app.quit_called
+    assert 107 in RUNNING
 
 
 def test_orphan_cleanup_spares_the_pooled_instance_in_use_and_drops_dead_pids():
@@ -116,7 +124,8 @@ def test_orphan_cleanup_spares_the_pooled_instance_in_use_and_drops_dead_pids():
     other = FakeCorel(299)                  # a designer's own CorelDRAW: never tracked
     cu.cleanup_orphaned_instances()
     assert KILLED == [201]                  # only the tracked, running, NOT-in-use one
-    assert 202 in RUNNING and 299 in RUNNING
+    assert 202 in RUNNING
+    assert 299 in RUNNING
     assert cu._load_tracked_pids() == {202}  # the dead pid 203 is dropped (pid numbers get reused), the orphan too
     del live_orphan, other
 
@@ -124,7 +133,8 @@ def test_orphan_cleanup_spares_the_pooled_instance_in_use_and_drops_dead_pids():
 def test_orphan_cleanup_with_nothing_running_still_prunes_stale_pids():
     cu._track_launched(301)
     cu.cleanup_orphaned_instances()
-    assert cu._load_tracked_pids() == set() and not KILLED
+    assert cu._load_tracked_pids() == set()
+    assert not KILLED
 
 
 def test_release_quits_an_instance_that_has_done_its_last_job_and_keeps_one_that_has_not(monkeypatch):
@@ -133,9 +143,11 @@ def test_release_quits_an_instance_that_has_done_its_last_job_and_keeps_one_that
     app, _, pid = cu.acquire_instance()
     del app
     cu.release_instance(pid, True)
-    assert cu._Pool.pid == 401 and 401 in RUNNING          # 1 of 2 jobs: kept for reuse
+    assert cu._Pool.pid == 401
+    assert 401 in RUNNING  # 1 of 2 jobs: kept for reuse
     app, _, pid = cu.acquire_instance()
     assert pid == 401                                      # reused
     del app
     cu.release_instance(pid, True)
-    assert cu._Pool.app is None and 401 not in RUNNING      # 2 of 2: quit at once, not left idle
+    assert cu._Pool.app is None
+    assert 401 not in RUNNING  # 2 of 2: quit at once, not left idle

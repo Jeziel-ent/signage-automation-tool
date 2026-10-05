@@ -48,8 +48,9 @@ def test_export_stops_and_writes_nothing_when_corel_dies(tmp_path, monkeypatch):
             raise Exception(*RPC_GONE)
 
     monkeypatch.setattr(scene_export, "_export_leaf", export_leaf)
+    doc = _Doc()
     with pytest.raises(scene_export.CorelGone, match="object 3 of 5"):
-        scene_export.export_scene(_Doc(), tmp_path)
+        scene_export.export_scene(doc, tmp_path)
     assert calls == ["s0", "s1", "s2"]                      # stopped at the crash, did not grind through the rest
     assert not (tmp_path / "scene.json").exists()
 
@@ -71,7 +72,8 @@ def test_one_bad_shape_is_still_tolerated(tmp_path, monkeypatch):
 
     monkeypatch.setattr(scene_export, "_export_leaf", export_leaf)
     scene = scene_export.export_scene(OkDoc(), tmp_path)
-    assert scene["stats"]["leaf_images"] == 2 and len(scene["stats"]["image_failures"]) == 1
+    assert scene["stats"]["leaf_images"] == 2
+    assert len(scene["stats"]["image_failures"]) == 1
     assert (tmp_path / "scene.json").exists()
 
 

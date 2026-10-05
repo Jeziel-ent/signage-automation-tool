@@ -83,7 +83,8 @@ def test_describe_master_lists_art_not_text_or_background():
 
 def test_board_record_matches_by_signature(lib):
     b = lib["boards"][0]
-    assert set(b["els"]) == {"e0", "e1", "e2"} and not any(e["loose"] for e in b["els"].values())
+    assert set(b["els"]) == {"e0", "e1", "e2"}
+    assert not any(e["loose"] for e in b["els"].values())
     assert b["clip"]["composite"]["cx"] == pytest.approx(0.2, abs=1e-3)
     assert set(b["texts"]) == {"name_en", "name_ta"}
 
@@ -97,10 +98,12 @@ def test_board_with_too_few_matching_pictures_is_not_built_from_the_master():
 def test_plan_exact_size_copies_the_designer_boxes(lib):
     d = master_dump()
     pl = X.plan("t", objs_of(d), 3000, 1000, 3000, 1000, name_ids={"1", "2"})
-    assert pl["template"]["exact"] and pl["template"]["file"] == "b3000.cdr"
+    assert pl["template"]["exact"]
+    assert pl["template"]["file"] == "b3000.cdr"
     by_key = {v[4]: v for v in pl["boxes"].values()}
     x, y, w, h, _ = by_key["e0"]
-    assert (x + w / 2, y + h / 2) == pytest.approx((300, 800), abs=1) and (w, h) == pytest.approx((600, 300), abs=1)
+    assert (x + w / 2, y + h / 2) == pytest.approx((300, 800), abs=1)
+    assert (w, h) == pytest.approx((600, 300), abs=1)
     assert pl["clip"]["composite"][0] + pl["clip"]["composite"][2] / 2 == pytest.approx(600, abs=1)
 
 
@@ -129,7 +132,8 @@ def test_plan_is_none_without_a_library_or_a_matching_master(lib):
 
 def test_text_spec_anchors(lib):
     spec = X.plan("t", objs_of(master_dump()), 3000, 1000, 3000, 1000, name_ids={"1", "2"})["texts"]
-    assert spec["name_en"]["anchor"] == "left" and spec["name_ta"]["anchor"] == "right"
+    assert spec["name_en"]["anchor"] == "left"
+    assert spec["name_ta"]["anchor"] == "right"
     assert spec["name_en"]["h"] == pytest.approx(100, abs=1)
 
 
@@ -193,14 +197,17 @@ def test_repeated_copies_are_recorded_and_planned_as_duplicates(tmp_path, monkey
                 clip=[("bitmap", -100, -50, 6200, 1100), ("group", -50, -300, 6100, 500), ("group", 100, 150, 1200, 700)])
     rec = X.board_record(master, wide, "NEW SHOP", "wide.cdr")
     rec["master"] = "m0"
-    assert rec["extra"] == 0 and list(rec["copies"]) == ["e1"] and len(rec["copies"]["e1"]) == 1
+    assert rec["extra"] == 0
+    assert list(rec["copies"]) == ["e1"]
+    assert len(rec["copies"]["e1"]) == 1
     (tmp_path / "t").mkdir()
     (tmp_path / "t" / "library.json").write_text(json.dumps({"brand": "t", "masters": [master], "boards": [rec]}), encoding="utf-8")
     monkeypatch.setattr(X, "DATA", tmp_path)
     objs = objs_of(m)
     pl = X.plan("t", objs, 3000, 1000, 6000, 1000, name_ids={"1", "2"})
     tiles = {k: v for k, v in pl["boxes"].items() if "_tile" in k}
-    assert list(tiles) == ["4_tile1"] and tiles["4_tile1"][4] == "e1"
+    assert list(tiles) == ["4_tile1"]
+    assert tiles["4_tile1"][4] == "e1"
     x, y, w, h, _ = tiles["4_tile1"]
     assert (x + w / 2, y + h / 2) == pytest.approx((5050, 600), abs=1)               # the copy's own box on the designer's board
     from app.layout import compute_layout
@@ -221,8 +228,11 @@ def test_a_repeated_logo_with_one_more_nested_shape_is_still_a_copy(tmp_path, mo
                 texts=[("NEW SHOP", 100, 50, 1000, 100), ("நியூ", 3000, 50, 800, 90)],
                 clip=[("bitmap", -100, -50, 6200, 1100), ("group", -50, -300, 6100, 500), ("group", 100, 150, 1200, 700)])
     rec = X.board_record(master, wide, "NEW SHOP", "wide.cdr")
-    assert rec["extra"] == 0 and len(rec["copies"]["e1"]) == 1
-    assert X._same_nested(12, 13) and X._same_nested(6, 7) and not X._same_nested(4, 9)
+    assert rec["extra"] == 0
+    assert len(rec["copies"]["e1"]) == 1
+    assert X._same_nested(12, 13)
+    assert X._same_nested(6, 7)
+    assert not X._same_nested(4, 9)
 
 
 def test_a_retyped_english_name_is_still_found_next_to_the_tamil_name():
@@ -232,4 +242,5 @@ def test_a_retyped_english_name_is_still_found_next_to_the_tamil_name():
              texts=[("POOJA STORE", 100, 50, 1000, 100), ("நியூ", 1500, 50, 800, 90), ("ADINN", 2500, 900, 200, 40)],
              clip=[("bitmap", -100, -50, 3200, 1100), ("group", -50, -300, 3100, 500), ("group", 100, 150, 1200, 700)])
     rec = X.board_record(master, d, "NATTU MARUNDHU KADAI", "b.cdr")              # the file's name is not what the board shows
-    assert set(rec["texts"]) == {"name_ta", "name_en"} and rec["texts"]["name_en"]["w"] == pytest.approx(1000 / 3000, abs=1e-3)
+    assert set(rec["texts"]) == {"name_ta", "name_en"}
+    assert rec["texts"]["name_en"]["w"] == pytest.approx(1000 / 3000, abs=1e-3)

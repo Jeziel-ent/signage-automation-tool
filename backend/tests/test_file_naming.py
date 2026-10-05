@@ -51,7 +51,8 @@ def _wait(client, sid):
 def _converted(client, job, name, sno, board_type="Backlit"):
     shop = client.post(f"/api/v2/jobs/{job}/shops", json={"name": name, "width": 10, "height": 4, "unit": "ft",
                                                           "board_type": board_type, "shop_name_local": "தமிழ்"}).json()
-    assert shop["board_type"] == board_type and shop["shop_name_local"] == "தமிழ்"
+    assert shop["board_type"] == board_type
+    assert shop["shop_name_local"] == "தமிழ்"
     assert client.post(f"/api/v2/shops/{shop['id']}/convert", json={"sno": sno}).status_code == 200
     return _wait(client, shop["id"])
 
@@ -62,10 +63,12 @@ def test_conversion_outputs_and_downloads_use_the_standard_name(client):
     assert st["status"] == "done"
     assert st["files"]["cdr"] == "7 - 10 X 4 Feet - Backlit - Sri Kumar.cdr"
     r = client.get(f"/api/v2/shops/{st['id']}/files/{st['files']['cdr']}")
-    assert r.status_code == 200 and _download_name(r) == "7 - 10 X 4 Feet - Backlit - Sri Kumar.cdr"
+    assert r.status_code == 200
+    assert _download_name(r) == "7 - 10 X 4 Feet - Backlit - Sri Kumar.cdr"
     # the board type is editable afterwards like any other field
     r = client.patch(f"/api/v2/shops/{st['id']}", json={"board_type": "Frontlit"})
-    assert r.status_code == 200 and r.json()["board_type"] == "Frontlit"
+    assert r.status_code == 200
+    assert r.json()["board_type"] == "Frontlit"
 
 
 def test_download_all_cdrs_bundles_every_converted_cdr(client):
@@ -74,7 +77,8 @@ def test_download_all_cdrs_bundles_every_converted_cdr(client):
     b = _converted(client, job, "Beta", 2, "Nonlit")
     new = client.post(f"/api/v2/jobs/{job}/shops", json={"name": "Pending", "width": 1, "height": 1}).json()
     r = client.get(f"/api/v2/download-cdrs?ids={a['id']},{b['id']},{new['id']}&nos=4,5,6")
-    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
     z = zipfile.ZipFile(io.BytesIO(r.content))
     assert sorted(z.namelist()) == ["4 - 10 X 4 Feet - Backlit - Alpha.cdr", "5 - 10 X 4 Feet - Nonlit - Beta.cdr"]
     assert client.get(f"/api/v2/download-cdrs?ids={new['id']}").status_code == 409
@@ -97,7 +101,8 @@ def test_download_all_in_one_chosen_format(client):
     b = _converted(client, job, "Beta", 2, "Nonlit")
     ids = f"{a['id']},{b['id']}"
     r = client.get(f"/api/v2/download-all?format=CDR&ids={ids}&nos=SL-1,76")
-    assert r.status_code == 200 and _download_name(r) == "All_CDR_Files.zip"
+    assert r.status_code == 200
+    assert _download_name(r) == "All_CDR_Files.zip"
     names = sorted(zipfile.ZipFile(io.BytesIO(r.content)).namelist())
     assert names == ["76 - 10 X 4 Feet - Nonlit - Beta.cdr", "SL-1 - 10 X 4 Feet - Backlit - Alpha.cdr"]
     # MockEngine makes no PDF and only an SVG preview: nothing to bundle -> 409, never a faked file
@@ -118,10 +123,12 @@ def test_format_zip_reencodes_png_as_jpg_and_lists_missing(tmp_path):
     out = tmp_path / "all.zip"
     s = write_format_zip([("1 - A", {"path": png, "to_jpeg": True}), ("1 - A", {"path": png, "to_jpeg": True}),
                           ("2 - B", {"path": None, "reason": "no raster image of this board exists"})], "jpg", out)
-    assert s["files"] == 2 and len(s["missing"]) == 1
+    assert s["files"] == 2
+    assert len(s["missing"]) == 1
     z = zipfile.ZipFile(out)
     assert sorted(z.namelist()) == ["1 - A (2).jpg", "1 - A.jpg", MISSING_NOTE]
     assert all(i.compress_type == zipfile.ZIP_STORED for i in z.infolist())
     with Image.open(io.BytesIO(z.read("1 - A.jpg"))) as im:
-        assert im.format == "JPEG" and im.getpixel((5, 5)) == (255, 255, 255)
+        assert im.format == "JPEG"
+        assert im.getpixel((5, 5)) == (255, 255, 255)
     assert "2 - B.jpg - no raster image" in z.read(MISSING_NOTE).decode()

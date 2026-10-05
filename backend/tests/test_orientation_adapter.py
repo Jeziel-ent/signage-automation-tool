@@ -36,7 +36,8 @@ def assert_covers_page_without_distortion(box: dict, orig_w: float, orig_h: floa
     """The background's "cover" fit (see convert_orientation): box fully covers [0,target_w] x
     [0,target_h] (may overflow, never falls short), and its own aspect ratio is unchanged from the
     original - i.e. the content itself isn't stretched, only cropped."""
-    assert box["x"] <= tol and box["y"] <= tol
+    assert box["x"] <= tol
+    assert box["y"] <= tol
     assert box["x"] + box["w"] >= target_w - tol
     assert box["y"] + box["h"] >= target_h - tol
     assert box["w"] / box["h"] == pytest.approx(orig_w / orig_h, rel=1e-6)
@@ -122,8 +123,10 @@ def _assert_disjoint_and_in_bounds(frames: dict, target_w: float, target_h: floa
         for j in range(i + 1, len(names)):
             assert rect_overlap_area(frames[names[i]], frames[names[j]]) < TOL, (names[i], names[j])
     for f in frames.values():
-        assert f["w"] > 0 and f["h"] > 0
-        assert f["x"] >= -TOL and f["y"] >= -TOL
+        assert f["w"] > 0
+        assert f["h"] > 0
+        assert f["x"] >= -TOL
+        assert f["y"] >= -TOL
         assert f["x"] + f["w"] <= target_w + TOL
         assert f["y"] + f["h"] <= target_h + TOL
 
@@ -211,7 +214,8 @@ def test_calculate_zone_rects_rejects_non_positive_targets(w, h):
 def test_calculate_zone_rects_never_degenerates_across_a_wide_range_of_aspect_ratios(w, h):
     frames = oa.calculate_zone_rects(w, h)
     for f in frames.values():
-        assert f["w"] > 0 and f["h"] > 0
+        assert f["w"] > 0
+        assert f["h"] > 0
     _assert_disjoint_and_in_bounds(frames, w, h)
 
 
@@ -278,7 +282,8 @@ def test_split_left_right_by_x_splits_around_the_groups_own_mean():
 def test_split_left_right_by_x_falls_back_to_index_midpoint_when_everything_ties():
     idx = {"a": {"node": {"x": 0, "w": 10}}, "b": {"node": {"x": 0, "w": 10}}}
     left, right = oa._split_left_right_by_x(idx, ["a", "b"])
-    assert left and right   # neither side is empty despite identical x
+    assert left
+    assert right  # neither side is empty despite identical x
 
 
 def test_split_left_right_by_x_single_id_goes_entirely_left():
@@ -312,7 +317,8 @@ def test_place_top_region_two_ids_reserves_separate_left_and_right_bounds():
     logo2_box = by_id[("logo2",)]
     assert brand_box["x"] < logo2_box["x"]                     # brand (left) stays left of logo2 (right)
     assert brand_box["x"] + brand_box["w"] <= logo2_box["x"] + 1e-6   # no overlap between the two halves
-    assert brand_box["w"] <= frame["w"] / 2 + 1e-6 and logo2_box["w"] <= frame["w"] / 2 + 1e-6
+    assert brand_box["w"] <= frame["w"] / 2 + 1e-6
+    assert logo2_box["w"] <= frame["w"] / 2 + 1e-6
 
 
 def test_place_main_and_subobjects_single_id_is_unchanged_from_before():
@@ -611,7 +617,8 @@ def test_convert_orientation_scales_text_size_with_the_zone_resize(converted):
     orig_title = scene_ops.find_node(scene, "title")["text"]["size_pt"]
     new_brand = scene_ops.find_node(out, "brand")["text"]["size_pt"]
     new_title = scene_ops.find_node(out, "title")["text"]["size_pt"]
-    assert new_brand > 0 and new_title > 0
+    assert new_brand > 0
+    assert new_title > 0
     assert new_brand != orig_brand
     assert new_title != orig_title
 
@@ -622,7 +629,8 @@ def test_convert_orientation_keeps_the_powerclip_child_moving_with_its_container
     photo = box_of(out, "photo")
     # the child was fully inside the container before conversion and stays fully inside it after,
     # since scaling/translating the container carries its children with it
-    assert photo["x"] >= pc["x"] - TOL and photo["y"] >= pc["y"] - TOL
+    assert photo["x"] >= pc["x"] - TOL
+    assert photo["y"] >= pc["y"] - TOL
     assert photo["x"] + photo["w"] <= pc["x"] + pc["w"] + TOL
     assert photo["y"] + photo["h"] <= pc["y"] + pc["h"] + TOL
 
@@ -676,7 +684,8 @@ def test_convert_orientation_scales_a_product_plus_table_assembly_group_uniforml
     assert new["w"] / new["h"] == pytest.approx(orig["w"] / orig["h"], rel=1e-6)
     # never truncated/overflowing its own zone frame
     frame = oa.calculate_zone_rects(900.0, 300.0, portrait_source=True)[oa.ZONE_PRODUCT]   # portrait master -> wide
-    assert new["x"] >= frame["x"] - TOL and new["y"] >= frame["y"] - TOL
+    assert new["x"] >= frame["x"] - TOL
+    assert new["y"] >= frame["y"] - TOL
     assert new["x"] + new["w"] <= frame["x"] + frame["w"] + TOL
     assert new["y"] + new["h"] <= frame["y"] + frame["h"] + TOL
     # each bitmap inside the group keeps its own individual aspect ratio too (children scale with
@@ -865,10 +874,13 @@ def test_landscape_to_portrait_distributes_untagged_content_across_the_normalize
     # every group sits inside ITS band (small margin/gap insets allowed)
     e = 0.035
     for i in ("badgeL", "badgeR"):
-        assert y0(i) >= oa.STACK_BAND_HEADER[0] - 1e-6 and y1(i) <= oa.STACK_BAND_HEADER[1] + 1e-6
-    assert y0("brand") >= oa.STACK_BAND_BRAND[0] - 1e-6 and y1("brand") <= oa.STACK_BAND_BRAND[1] + 1e-6
+        assert y0(i) >= oa.STACK_BAND_HEADER[0] - 1e-6
+        assert y1(i) <= oa.STACK_BAND_HEADER[1] + 1e-6
+    assert y0("brand") >= oa.STACK_BAND_BRAND[0] - 1e-6
+    assert y1("brand") <= oa.STACK_BAND_BRAND[1] + 1e-6
     for i in ("table", "sticks", "box"):
-        assert y0(i) >= oa.STACK_BAND_PRODUCT[0] - 1e-6 and y1(i) <= oa.STACK_BAND_PRODUCT[1] + 1e-6
+        assert y0(i) >= oa.STACK_BAND_PRODUCT[0] - 1e-6
+        assert y1(i) <= oa.STACK_BAND_PRODUCT[1] + 1e-6
         assert y0(i) < oa.STACK_BAND_PRODUCT[0] + e                       # base right above the footer
     assert y1("footer") <= oa.FOOTER_FRAC_PORTRAIT + 1e-6
     # left badge stays left of the right badge (relative source x decides the corner)
@@ -878,8 +890,10 @@ def test_landscape_to_portrait_distributes_untagged_content_across_the_normalize
     assert min(y0(i) for i in ("table", "sticks", "box")) >= y1("footer")
     # no large empty top region: header content reaches the top of the canvas
     # corner badges snap to the canvas: centres at 0.18 / 0.82 of the width, top edge at 0.92 of the height
-    assert y1("badgeL") == pytest.approx(oa.BADGE_TOP_Y, abs=2e-3) and y1("badgeR") == pytest.approx(oa.BADGE_TOP_Y, abs=2e-3)
-    assert cx("badgeL") == pytest.approx(oa.BADGE_LEFT_CX, abs=2e-3) and cx("badgeR") == pytest.approx(oa.BADGE_RIGHT_CX, abs=2e-3)
+    assert y1("badgeL") == pytest.approx(oa.BADGE_TOP_Y, abs=2e-3)
+    assert y1("badgeR") == pytest.approx(oa.BADGE_TOP_Y, abs=2e-3)
+    assert cx("badgeL") == pytest.approx(oa.BADGE_LEFT_CX, abs=2e-3)
+    assert cx("badgeR") == pytest.approx(oa.BADGE_RIGHT_CX, abs=2e-3)
     # no overlap between any two shapes
     ids = list(b)
     for i in range(len(ids)):
@@ -921,7 +935,8 @@ def test_upper_right_badge_below_the_header_boundary_is_promoted_into_the_top_ri
     assert (bs["x"] + bs["w"] / 2) / W > 0.5 > (oval["x"] + oval["w"] / 2) / W     # right corner vs. left corner
     assert rect_overlap_area(bs, oval) < 1e-2
     # the central brand logo (centre-x exactly 0.5, straddling the centre line) is NOT promoted
-    assert brand["y"] / H >= oa.STACK_BAND_BRAND[0] - 1e-6 and (brand["y"] + brand["h"]) / H <= oa.STACK_BAND_BRAND[1] + 1e-6
+    assert brand["y"] / H >= oa.STACK_BAND_BRAND[0] - 1e-6
+    assert (brand["y"] + brand["h"]) / H <= oa.STACK_BAND_BRAND[1] + 1e-6
 
 
 def test_promotion_ignores_a_central_shape_slightly_right_of_centre_and_a_tall_composite():
@@ -955,8 +970,11 @@ def test_portrait_product_zone_boosts_the_main_object_without_overlap_or_distort
     src = {i: box_of(scene, i) for i in ("table", "sticks", "box")}
     for i, bx in (("table", t), ("sticks", s), ("box", b)):                   # bitmaps: uniform scale only
         assert bx["w"] / bx["h"] == pytest.approx(src[i]["w"] / src[i]["h"], rel=1e-6)
-        assert bx["y"] / H >= oa.STACK_BAND_PRODUCT[0] - 1e-6 and (bx["y"] + bx["h"]) / H <= oa.STACK_BAND_PRODUCT[1] + 1e-6
-    assert rect_overlap_area(t, s) < 1e-2 and rect_overlap_area(t, b) < 1e-2 and rect_overlap_area(s, b) < 1e-2
+        assert bx["y"] / H >= oa.STACK_BAND_PRODUCT[0] - 1e-6
+        assert (bx["y"] + bx["h"]) / H <= oa.STACK_BAND_PRODUCT[1] + 1e-6
+    assert rect_overlap_area(t, s) < 1e-2
+    assert rect_overlap_area(t, b) < 1e-2
+    assert rect_overlap_area(s, b) < 1e-2
 
 
 def test_boost_is_portrait_only():
@@ -1017,14 +1035,16 @@ def test_page_covering_powerclip_children_are_routed_into_their_zones():
     assert sorted(zones[oa.ZONE_FOOTER]) == ["phone", "shop"]                    # Y < 0.20, and contact regex
     assert zones[oa.ZONE_OTHER] == []
     everything = [i for z in oa.ZONES for i in zones[z]]
-    assert "backdrop" not in everything and "spill" not in everything            # backdrop + clipped art ride along
+    assert "backdrop" not in everything
+    assert "spill" not in everything  # backdrop + clipped art ride along
     assert len(everything) == len(set(everything))
 
 
 def test_a_slot_tag_on_a_clip_child_beats_the_position_band():
     kids = [_kid("addr", 0.5, 0.9, 500, 40, type_="text", name="address", text="12 Main St")]   # tag says footer
     zones, _ = oa.classify_zones(_clip_scene(kids))
-    assert zones[oa.ZONE_FOOTER] == ["addr"] and zones[oa.ZONE_HEADER] == []
+    assert zones[oa.ZONE_FOOTER] == ["addr"]
+    assert zones[oa.ZONE_HEADER] == []
 
 
 @pytest.mark.parametrize("kind", ["group", "shape"])
@@ -1122,9 +1142,11 @@ def test_zone_fit_boost_is_bounded_by_the_unpadded_frame_and_never_shrinks(w, h)
     frm = {"x": 0, "y": 0, "w": w, "h": h}
     plain = oa._zone_fit(idx, ["a"], frm, frame, anchor_bottom=True)                 # anchored, no boost
     boosted = oa._zone_fit(idx, ["a"], frm, frame, anchor_bottom=True, boost=oa.PORTRAIT_FILL_BOOST)
-    assert boosted["w"] >= plain["w"] - 1e-9 and boosted["h"] >= plain["h"] - 1e-9
+    assert boosted["w"] >= plain["w"] - 1e-9
+    assert boosted["h"] >= plain["h"] - 1e-9
     assert boosted["w"] / boosted["h"] == pytest.approx(w / h, rel=1e-6)             # uniform: aspect kept
-    assert boosted["w"] <= frame["w"] + 1e-6 and boosted["y"] + boosted["h"] <= frame["y"] + frame["h"] + 1e-6
+    assert boosted["w"] <= frame["w"] + 1e-6
+    assert boosted["y"] + boosted["h"] <= frame["y"] + frame["h"] + 1e-6
     assert boosted["w"] / plain["w"] <= oa.PORTRAIT_FILL_BOOST + 1e-9                # never more than asked
     assert boosted["y"] == pytest.approx(frame["y"], abs=1e-6)
 
@@ -1172,7 +1194,10 @@ def test_real_boards_product_objects_stand_on_the_baseline(board, W, H):
         assert b["y"] + b["h"] <= f["y"] + f["h"] + 1e-3
     # the whole-board container still covers the page
     pc = box_of(out, "s44")
-    assert pc["x"] <= 1e-3 and pc["y"] <= 1e-3 and pc["x"] + pc["w"] >= W - 1e-3 and pc["y"] + pc["h"] >= H - 1e-3
+    assert pc["x"] <= 1e-3
+    assert pc["y"] <= 1e-3
+    assert pc["x"] + pc["w"] >= W - 1e-3
+    assert pc["y"] + pc["h"] >= H - 1e-3
 
 
 # --------------------------------------------------------------------- Portrait -> Landscape (wide stage)
@@ -1229,7 +1254,8 @@ def test_wide_stage_bands_are_the_same_normalized_fractions_for_every_wide_ratio
 def test_wide_stage_bands_never_degenerate(w, h):
     f = oa.calculate_zone_rects(w, h, portrait_source=True)
     for z in f.values():
-        assert z["w"] > 0 and z["h"] > 0
+        assert z["w"] > 0
+        assert z["h"] > 0
     _assert_disjoint_and_in_bounds(f, w, h)
 
 
@@ -1253,7 +1279,8 @@ def test_portrait_master_unfolds_into_a_wide_lineup_on_one_baseline(w_in, h_in):
     for i in ("prodA", "prodB", "prodC"):
         assert b[i]["y"] == pytest.approx(prod["y"], abs=1e-6), i
         assert b[i]["y"] + b[i]["h"] <= prod["y"] + prod["h"] + 1e-6
-        assert prod["x"] - 1e-6 <= b[i]["x"] and b[i]["x"] + b[i]["w"] <= prod["x"] + prod["w"] + 1e-6
+        assert prod["x"] - 1e-6 <= b[i]["x"]
+        assert b[i]["x"] + b[i]["w"] <= prod["x"] + prod["w"] + 1e-6
     # minimum clearance between neighbours, and proportions kept (bitmaps scale uniformly, all by one factor)
     clear = oa.UNSTACK_MIN_CLEARANCE_FRAC * prod["w"]
     for l, r in (("prodA", "prodB"), ("prodB", "prodC")):
@@ -1277,10 +1304,12 @@ def test_portrait_master_unfolds_into_a_wide_lineup_on_one_baseline(w_in, h_in):
     # branding roof: centred, in its own row above the stage
     bf = fr[oa.ZONE_MAIN_TEXT]
     assert b["brand"]["x"] + b["brand"]["w"] / 2 == pytest.approx(W / 2, abs=1e-3)      # coordinates are rounded
-    assert bf["y"] - 1e-6 <= b["brand"]["y"] and b["brand"]["y"] + b["brand"]["h"] <= bf["y"] + bf["h"] + 1e-6
+    assert bf["y"] - 1e-6 <= b["brand"]["y"]
+    assert b["brand"]["y"] + b["brand"]["h"] <= bf["y"] + bf["h"] + 1e-6
     # slim footer bar
     ff = fr[oa.ZONE_FOOTER]
-    assert ff["y"] - 1e-6 <= b["footer"]["y"] and b["footer"]["y"] + b["footer"]["h"] <= ff["y"] + ff["h"] + 1e-6
+    assert ff["y"] - 1e-6 <= b["footer"]["y"]
+    assert b["footer"]["y"] + b["footer"]["h"] <= ff["y"] + ff["h"] + 1e-6
     # nothing overlaps anything else
     for i in range(len(ids)):
         for j in range(i + 1, len(ids)):
@@ -1318,7 +1347,8 @@ def test_a_middle_header_shape_joins_the_branding_roof_instead_of_a_corner():
     out = scene_ops.apply_ops(scene, oa.convert_orientation(scene, W, H))
     bf = oa.calculate_zone_rects(W, H, portrait_source=True)[oa.ZONE_MAIN_TEXT]
     t = box_of(out, "title")
-    assert t["y"] >= bf["y"] - 1e-6 and t["y"] + t["h"] <= bf["y"] + bf["h"] + 1e-6
+    assert t["y"] >= bf["y"] - 1e-6
+    assert t["y"] + t["h"] <= bf["y"] + bf["h"] + 1e-6
     assert t["x"] + t["w"] / 2 == pytest.approx(W / 2, abs=1e-3)              # centred, like the brand it joined
 
 
@@ -1340,7 +1370,8 @@ def test_unstack_lineup_keeps_exactly_the_minimum_clearance_when_the_row_is_tigh
     boxes = [op["to"] for op in ops]
     for l, r in zip(boxes, boxes[1:]):
         assert r["x"] - (l["x"] + l["w"]) == pytest.approx(clear, abs=1e-6)
-    assert boxes[0]["x"] >= frame["x"] - 1e-6 and boxes[-1]["x"] + boxes[-1]["w"] <= frame["x"] + frame["w"] + 1e-6
+    assert boxes[0]["x"] >= frame["x"] - 1e-6
+    assert boxes[-1]["x"] + boxes[-1]["w"] <= frame["x"] + frame["w"] + 1e-6
     assert all(bx["y"] == pytest.approx(frame["y"]) for bx in boxes)
 
 
@@ -1523,7 +1554,8 @@ def test_group_fragments_binds_each_visual_cluster_into_one_group():
     assert all(op["op"] == "group" for op in ops)
     sets = sorted(sorted(op["ids"]) for op in ops)
     big = sorted(["card", "shadow"] + [f"piece{k}" for k in range(8)])
-    assert big in sets and sorted(["badge_a", "badge_b"]) in sets
+    assert big in sets
+    assert sorted(["badge_a", "badge_b"]) in sets
     assert len(ops) == 2                                    # bg, rule and the text line are NOT grouped
     grouped = {i for op in ops for i in op["ids"]}
     assert not grouped & {"bg", "rule", "line"}
@@ -1594,8 +1626,10 @@ def test_real_dalmia_board_is_clustered_into_its_three_logos_and_no_card_is_spli
         g = box_of(out, gid)
         for i in op["ids"]:
             b = box_of(out, i)
-            assert g["x"] - 1e-2 <= b["x"] and b["x"] + b["w"] <= g["x"] + g["w"] + 1e-2
-            assert g["y"] - 1e-2 <= b["y"] and b["y"] + b["h"] <= g["y"] + g["h"] + 1e-2
+            assert g["x"] - 1e-2 <= b["x"]
+            assert b["x"] + b["w"] <= g["x"] + g["w"] + 1e-2
+            assert g["y"] - 1e-2 <= b["y"]
+            assert b["y"] + b["h"] <= g["y"] + g["h"] + 1e-2
 
 
 # --------------------------------------------------------------------- footer sizing, wide table width
@@ -1608,7 +1642,8 @@ def test_footer_text_occupies_about_65_percent_of_the_footer_band_height(W, H):
     b = box_of(out, "footer")
     assert 0.55 <= b["h"] / f["h"] <= 0.70, b["h"] / f["h"]                       # 60-70% (fill padding shaves a little)
     assert b["y"] + b["h"] / 2 == pytest.approx(f["y"] + f["h"] / 2, abs=1e-2)     # centred in the band
-    assert b["y"] >= f["y"] and b["y"] + b["h"] <= f["y"] + f["h"] + 1e-6           # inside the band, never over its edge
+    assert b["y"] >= f["y"]
+    assert b["y"] + b["h"] <= f["y"] + f["h"] + 1e-6  # inside the band, never over its edge
 
 
 def test_stacked_english_and_tamil_footer_lines_together_occupy_the_same_share():
@@ -1825,7 +1860,8 @@ def test_boost_brand_roof_returns_none_when_there_is_no_room_and_never_shrinks()
     walls = [{"x": 0.0, "y": fr["y"] + fr["h"] + 1.0, "w": W, "h": 50.0}, {"x": 0.0, "y": fr["y"] - 51.0, "w": W, "h": 50.0}]
     assert oa._boost_brand_roof(idx, ["brand"], fr, (W, H), walls) is None
     big = oa._boost_brand_roof(idx, ["brand"], fr, (W, H), [])
-    assert big is not None and big["w"] <= oa.BRAND_MAX_WIDTH_FRAC * fr["w"] + 1e-6
+    assert big is not None
+    assert big["w"] <= oa.BRAND_MAX_WIDTH_FRAC * fr["w"] + 1e-6
     std = oa._zone_fit(idx, ["brand"], box_of(scene, "brand"), fr)
     assert big["w"] >= std["w"]
 
@@ -1843,7 +1879,8 @@ def test_real_landscape_darshan_table_spans_the_lower_stage_and_the_roof_fills_i
     table, bottle, roof = box_of(out, "s46"), box_of(out, "s4"), box_of(out, "s5")
     badges = [box_of(out, "s38"), box_of(out, "s23")]
     fr = oa.calculate_zone_rects(W, H)[oa.ZONE_PRODUCT]
-    assert 0.79 <= table["w"] / W <= 0.88 and table["y"] == pytest.approx(fr["y"], abs=1e-3)
+    assert 0.79 <= table["w"] / W <= 0.88
+    assert table["y"] == pytest.approx(fr["y"], abs=1e-3)
     assert (table["y"] + table["h"]) / H <= 0.55 + 1e-6
     assert rect_overlap_area(table, bottle) < 1e-2
     assert roof["w"] / W > 0.32                                          # grew from ~0.29W
@@ -1851,4 +1888,5 @@ def test_real_landscape_darshan_table_spans_the_lower_stage_and_the_roof_fills_i
     for o in badges + [table, bottle]:
         assert rect_overlap_area(roof, o) < 1e-2
     for b, cx in zip(badges, (oa.BADGE_LEFT_CX, oa.BADGE_RIGHT_CX)):
-        assert (b["x"] + b["w"] / 2) / W == pytest.approx(cx, abs=2e-3) and (b["y"] + b["h"]) / H == pytest.approx(oa.BADGE_TOP_Y, abs=2e-3)
+        assert (b["x"] + b["w"] / 2) / W == pytest.approx(cx, abs=2e-3)
+        assert (b["y"] + b["h"]) / H == pytest.approx(oa.BADGE_TOP_Y, abs=2e-3)

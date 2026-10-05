@@ -63,13 +63,16 @@ def test_scene_builds_then_is_served_from_cache(client):
     assert first.status_code in (200, 202)
     if first.status_code == 202:
         body = first.json()
-        assert body["status"] == "building" and 0 <= body["progress_pct"] <= 100
+        assert body["status"] == "building"
+        assert 0 <= body["progress_pct"] <= 100
     scene = _scene(client, job, shop)
     assert scene["page"] == {"width": 3048.0, "height": 1219.2}  # 120in x 4ft, mixed units, in mm
-    assert scene["ops"] == [] and re.fullmatch(rf"/api/editor/{job}/{shop}/asset/v/\d+/", scene["asset_base"])
+    assert scene["ops"] == []
+    assert re.fullmatch(rf"/api/editor/{job}/{shop}/asset/v/\d+/", scene["asset_base"])
     assert scene["layers"][0]["children"]
     again = client.get(f"/api/editor/{job}/{shop}/scene")
-    assert again.status_code == 200 and again.json()["layers"] == scene["layers"]
+    assert again.status_code == 200
+    assert again.json()["layers"] == scene["layers"]
 
 
 def test_assets_are_served_and_guarded(client):
@@ -77,13 +80,16 @@ def test_assets_are_served_and_guarded(client):
     scene = _scene(client, job, shop)
     leaf = next(n for n in scene["layers"][0]["children"] if n["kind"] == "shape")
     r = client.get(f"/api/editor/{job}/{shop}/asset/{leaf['image']['file']}")
-    assert r.status_code == 200 and r.headers["content-type"] == "image/svg+xml"
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/svg+xml"
     assert client.get(f"/api/editor/{job}/{shop}/asset/nope.svg").status_code == 404
     assert client.get(f"/api/editor/{job}/{shop}/asset/..%2Fscene.json").status_code == 404
     assert client.get(f"/api/editor/{job}/{shop}/asset/..%2F..%2F..%2Fmaster.cdr").status_code == 404
     # the build-versioned URL the editor actually uses: same file, cacheable forever, same guard
     v = client.get(scene["asset_base"] + leaf["image"]["file"])
-    assert v.status_code == 200 and v.content == r.content and "immutable" in v.headers["cache-control"]
+    assert v.status_code == 200
+    assert v.content == r.content
+    assert "immutable" in v.headers["cache-control"]
     assert client.get(scene["asset_base"] + "..%2Fscene.json").status_code == 404
 
 
@@ -96,13 +102,15 @@ def test_ops_save_load_and_server_side_replay(client):
         {"op": "order", "id": "s3", "mode": "front"},
     ]
     r = client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": ops})
-    assert r.status_code == 200 and r.json() == {"saved": 3}
+    assert r.status_code == 200
+    assert r.json() == {"saved": 3}
     assert client.get(f"/api/editor/{job}/{shop}/ops").json()["ops"] == ops
     assert _scene(client, job, shop)["ops"] == ops  # survives a reload of the scene
 
     replayed = client.get(f"/api/editor/{job}/{shop}/replayed").json()
     top = [n["id"] for n in replayed["layers"][1]["children"]]   # mock scene: L1 = bg+card, L2 = logo group+name
-    assert "s5" not in top and top[-1] == "s3"
+    assert "s5" not in top
+    assert top[-1] == "s3"
     moved = next(n for n in replayed["layers"][0]["children"] if n["id"] == "s2")
     orig = next(n for n in scene["layers"][0]["children"] if n["id"] == "s2")
     assert moved["x"] == pytest.approx(orig["x"] + 100)
@@ -113,7 +121,8 @@ def test_unreplayable_ops_are_rejected_and_not_saved(client):
     _scene(client, job, shop)
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": ["s2"], "dx": 1, "dy": 1}]})
     r = client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": ["ghost"], "dx": 1, "dy": 1}]})
-    assert r.status_code == 422 and "unknown id" in r.json()["detail"]
+    assert r.status_code == 422
+    assert "unknown id" in r.json()["detail"]
     assert len(client.get(f"/api/editor/{job}/{shop}/ops").json()["ops"]) == 1  # previous list untouched
 
 
@@ -162,7 +171,8 @@ def test_low_memory_refusal_is_a_503_with_the_reason_and_retryable(client, monke
         if r.status_code == 503:
             break
         time.sleep(0.05)
-    assert r.status_code == 503 and "1.21 GB free RAM" in r.json()["detail"]
+    assert r.status_code == 503
+    assert "1.21 GB free RAM" in r.json()["detail"]
     assert client.get(f"/api/editor/{job}/{shop}/scene").status_code == 503  # stays refused until retried
 
     # memory recovers -> ?retry=1 starts a new build (mock engine here) and it completes
@@ -192,7 +202,8 @@ def _wait_export(client, job, shop, export_id, timeout=15):
 def test_export_requires_a_built_scene(client):
     job, shop = _converted_shop(client)
     r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"]})
-    assert r.status_code == 409 and "open the editor" in r.json()["detail"]
+    assert r.status_code == 409
+    assert "open the editor" in r.json()["detail"]
 
 
 def test_export_runs_replays_saved_ops_and_serves_the_files(client):
@@ -201,16 +212,21 @@ def test_export_runs_replays_saved_ops_and_serves_the_files(client):
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": ["s2"], "dx": 50, "dy": 0}]})
     started = _export(client, job, shop, ["png", "cdr", "pdf", "jpeg"], {"raster": {"mode": "max_px", "max_px": 800, "png_background": "white"}})
     assert [s["key"] for s in started["plan"]] == ["launch", "open", "replay", "verify", "cdr", "pdf", "png", "jpeg"]
-    assert started["ops"] == 1 and started["raster"]["w_px"] == 800
+    assert started["ops"] == 1
+    assert started["raster"]["w_px"] == 800
     final = _wait_export(client, job, shop, started["export_id"])
-    assert final["status"] == "done" and final["progress_pct"] == 100
+    assert final["status"] == "done"
+    assert final["progress_pct"] == 100
     assert set(final["files"]) == {"cdr", "pdf", "png", "jpeg"}
-    assert final["report"]["verification"]["ok"] is True and final["report"]["mock"] is True
+    assert final["report"]["verification"]["ok"] is True
+    assert final["report"]["mock"] is True
     png = client.get(f"/api/editor/{job}/{shop}/exports/{started['export_id']}/files/{final['files']['png']}")
-    assert png.status_code == 200 and png.content[:4] == b"\x89PNG"
+    assert png.status_code == 200
+    assert png.content[:4] == b"\x89PNG"
     assert client.get(f"/api/editor/{job}/{shop}/exports/{started['export_id']}/files/..%2F..%2Fscene%2Fscene.json").status_code == 404
     listed = client.get(f"/api/editor/{job}/{shop}/exports").json()
-    assert listed[0]["export_id"] == started["export_id"] and listed[0]["status"] == "done"
+    assert listed[0]["export_id"] == started["export_id"]
+    assert listed[0]["status"] == "done"
     assert client.get("/api/editor/export-estimates").json() != {} or True   # mock reports carry rough timings
 
 
@@ -236,7 +252,8 @@ def test_export_rejects_bad_options_and_oversized_rasters(client):
     assert _export(client, job, shop, [], expect=422)
     assert "unknown format" in client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["gif"]}).json()["detail"]
     r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"], "options": {"raster": {"mode": "dpi", "dpi": 300}}})
-    assert r.status_code == 422 and "too large" in r.json()["detail"]                 # 3048 mm at 300 dpi = 36000 px
+    assert r.status_code == 422
+    assert "too large" in r.json()["detail"]  # 3048 mm at 300 dpi = 36000 px
     r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["pdf"], "options": {"pdf": {"bitmap_dpi": 123}}})
     assert r.status_code == 422
 
@@ -246,7 +263,8 @@ def test_export_uses_the_replayed_page_size_for_the_raster_limit(client):
     _scene(client, job, shop)
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "page", "width": 30000, "height": 1000}]})
     r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"], "options": {"raster": {"mode": "dpi", "dpi": 200}}})
-    assert r.status_code == 422 and "too large" in r.json()["detail"]
+    assert r.status_code == 422
+    assert "too large" in r.json()["detail"]
     r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["cdr"]})
     assert r.status_code == 200                                                        # no raster: no limit applies
 
@@ -263,7 +281,8 @@ def test_export_low_memory_is_a_503_before_anything_is_queued(client, monkeypatc
     monkeypatch.setattr(main, "get_engine", lambda kind: FakeCorel())
     monkeypatch.setattr(main.corel_util, "check_memory", lambda *a, **k: 1.6)
     r = client.post(f"/api/editor/{job}/{shop}/export", json={"formats": ["png"], "options": {"raster": {"mode": "max_px", "max_px": 12000}}})
-    assert r.status_code == 503 and "free RAM" in r.json()["detail"]
+    assert r.status_code == 503
+    assert "free RAM" in r.json()["detail"]
     assert client.get(f"/api/editor/{job}/{shop}/exports").json() == []
 
 
@@ -274,7 +293,8 @@ def test_failed_export_reports_the_reason(client, monkeypatch):
     monkeypatch.setattr(main, "_mock_export", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("disk full")))
     started = _export(client, job, shop, ["png"])
     final = _wait_export(client, job, shop, started["export_id"])
-    assert final["status"] == "failed" and "disk full" in final["error"]
+    assert final["status"] == "failed"
+    assert "disk full" in final["error"]
 
 
 # ------------------------------------------------------ product-slot replacement assets
@@ -294,11 +314,14 @@ def test_product_asset_upload_reports_the_real_pixel_size_and_a_resolvable_path(
                     files={"file": ("logo.png", _tiny_png_bytes(), "image/png")})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["name"] == "logo.png" and body["w"] == 37 and body["h"] == 21
+    assert body["name"] == "logo.png"
+    assert body["w"] == 37
+    assert body["h"] == 21
     assert body["path"].endswith(".png")
 
     served = client.get(f"/api/editor/{job}/{shop}/product-asset/{body['path']}")
-    assert served.status_code == 200 and served.headers["content-type"] == "image/png"
+    assert served.status_code == 200
+    assert served.headers["content-type"] == "image/png"
     assert served.content == _tiny_png_bytes()
 
 
@@ -306,14 +329,16 @@ def test_product_asset_upload_rejects_an_unsupported_extension(client):
     job, shop = _converted_shop(client)
     r = client.post(f"/api/editor/{job}/{shop}/product-assets",
                     files={"file": ("master.cdr", b"not an image", "application/octet-stream")})
-    assert r.status_code == 422 and "unsupported image type" in r.json()["detail"]
+    assert r.status_code == 422
+    assert "unsupported image type" in r.json()["detail"]
 
 
 def test_product_asset_upload_rejects_a_file_that_is_not_actually_an_image(client):
     job, shop = _converted_shop(client)
     r = client.post(f"/api/editor/{job}/{shop}/product-assets",
                     files={"file": ("fake.png", b"not a real png", "image/png")})
-    assert r.status_code == 422 and "could not read" in r.json()["detail"]
+    assert r.status_code == 422
+    assert "could not read" in r.json()["detail"]
 
 
 def test_product_asset_serving_is_guarded_against_path_traversal_and_unknown_files(client):
@@ -338,7 +363,8 @@ def test_export_zip_bundles_every_file_under_the_shop_name(client):
     started = _export(client, job, shop, ["png", "cdr", "pdf", "jpeg"], {"raster": {"mode": "max_px", "max_px": 800}})
     final = _wait_export(client, job, shop, started["export_id"])
     r = client.get(f"/api/editor/{job}/{shop}/exports/{started['export_id']}/zip")
-    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
     from tests.test_file_naming import _download_name
     cd = _download_name(r)
     assert " X " in cd and " - Nonlit - " in cd and cd.endswith(".zip"), cd

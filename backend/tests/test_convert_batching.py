@@ -72,7 +72,8 @@ def test_queued_shops_are_converted_in_one_batch_and_the_later_pool_tasks_are_no
         m._v2_convert_worker(sid, job)
     assert calls == [["S0", "S1", "S2"]]     # ONE worker session for all three
     assert [_status(client, s) for s in ids] == ["done"] * 3
-    assert not m._convert_queue and not m._batch_slots
+    assert not m._convert_queue
+    assert not m._batch_slots
 
 
 def test_batches_are_capped(client, fake_corel, monkeypatch):
@@ -104,7 +105,8 @@ def test_refused_to_start_fails_every_shop_in_the_batch_with_the_reason(client, 
     # the retry of S1 runs as call 1 (not planned -> done): a RAM refusal for the batch is not the reused instance's fault,
     # but retrying alone is harmless and gives it its own chance once memory frees up
     st = client.get(f"/api/v2/shops/{ids[0]}/status").json()
-    assert st["status"] == "failed" and "free RAM" in st["error"]
+    assert st["status"] == "failed"
+    assert "free RAM" in st["error"]
 
 
 def test_status_reads_only_this_shops_beat_from_the_shared_batch_heartbeat(client, fake_corel, tmp_path):
@@ -118,9 +120,11 @@ def test_status_reads_only_this_shops_beat_from_the_shared_batch_heartbeat(clien
     hb.write_text(json.dumps({"job_index": 1, "step": "pdf"}), encoding="utf-8")
     try:
         a, b = (client.get(f"/api/v2/shops/{s}/status").json() for s in ids)
-        assert b["step"] == "pdf" and b["progress_pct"] == m._STEP_PERCENT["pdf"]
+        assert b["step"] == "pdf"
+        assert b["progress_pct"] == m._STEP_PERCENT["pdf"]
         # the worker is past shop 0 (its result is being stored): nearly done - it used to fall back to "starting", 5 %
-        assert a["step"] == "saving" and a["progress_pct"] == 99
+        assert a["step"] == "saving"
+        assert a["progress_pct"] == 99
     finally:
         m._batch_slots.clear()
         m._progress_peak.clear()
@@ -155,7 +159,8 @@ def test_mock_engine_still_converts_one_shop_per_task(client):  # noqa: F811
     m._convert_queue.clear()
     job, ids = _setup(client, 2)
     m._v2_convert_worker(ids[0], job)
-    assert _status(client, ids[0]) == "done" and _status(client, ids[1]) == "queued"
+    assert _status(client, ids[0]) == "done"
+    assert _status(client, ids[1]) == "queued"
     m._v2_convert_worker(ids[1], job)
     assert _status(client, ids[1]) == "done"
 
@@ -166,7 +171,8 @@ def test_shop_statuses_returns_many_shops_in_one_call_and_skips_unknown_ids(clie
     r = client.get("/api/v2/shop-statuses", params={"ids": ",".join(ids + ["nope"])})
     assert r.status_code == 200
     body = r.json()
-    assert set(body) == set(ids) and all(body[s]["status"] == "queued" for s in ids)
+    assert set(body) == set(ids)
+    assert all(body[s]["status"] == "queued" for s in ids)
     assert client.get("/api/v2/shop-statuses").json() == {}
 
 
@@ -178,7 +184,8 @@ def test_conversions_run_with_the_per_shop_time_limit(client, fake_corel, monkey
     monkeypatch.delenv("SIGNAGE_SHOP_TIMEOUT_S", raising=False)
     job, ids = _setup(client, 1)
     m._v2_convert_worker(ids[0], job)
-    assert seen[0]["job_timeout_s"] == 45 and seen[0]["overall_timeout_s"] == 120
+    assert seen[0]["job_timeout_s"] == 45
+    assert seen[0]["overall_timeout_s"] == 120
     monkeypatch.setenv("SIGNAGE_SHOP_TIMEOUT_S", "0")              # 0 turns the limit off: the supervisor's defaults apply
     assert m._convert_limits() == {}
 
@@ -216,9 +223,12 @@ def test_status_payloads_stay_light(client, fake_corel):
     job, ids = _setup(client, 1)
     m._v2_convert_worker(ids[0], job)
     one = client.get(f"/api/v2/shops/{ids[0]}/status").json()
-    assert one["report"] is not None and "report_json" not in one
+    assert one["report"] is not None
+    assert "report_json" not in one
     many = client.get(f"/api/v2/shop-statuses?ids={ids[0]}").json()[ids[0]]
-    assert many["status"] == "done" and "report" not in many and "report_json" not in many
+    assert many["status"] == "done"
+    assert "report" not in many
+    assert "report_json" not in many
     assert all("report_json" not in s for s in client.get(f"/api/v2/jobs/{job}").json()["shops"])
 
 

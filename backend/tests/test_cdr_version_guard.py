@@ -29,8 +29,9 @@ def test_unreadable_files_have_no_version(tmp_path):
 
 
 def test_newer_file_is_refused_with_both_versions(tmp_path):
+    newer = make_cdr(tmp_path / "n.cdr", 2510)
     with pytest.raises(RuntimeError, match=r"version 25\.1.*version 21"):
-        corel_util.check_file_not_newer(make_cdr(tmp_path / "n.cdr", 2510), App(21))
+        corel_util.check_file_not_newer(newer, App(21))
 
 
 def test_same_or_older_file_passes(tmp_path):

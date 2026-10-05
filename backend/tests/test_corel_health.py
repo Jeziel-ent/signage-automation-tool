@@ -24,29 +24,38 @@ def _patch(monkeypatch, installs, free=4.0, engine="corel", platform="win32"):
 def test_ready_when_an_install_is_found(client, monkeypatch):  # noqa: F811
     _patch(monkeypatch, [INSTALL])
     body = client.get("/api/corel/health").json()
-    assert body["ok"] and body["engine"] == "corel" and body["selected"] == INSTALL
-    assert body["message"] == "CorelDRAW 27.0.0.121 ready" and not body["low_memory"]
+    assert body["ok"]
+    assert body["engine"] == "corel"
+    assert body["selected"] == INSTALL
+    assert body["message"] == "CorelDRAW 27.0.0.121 ready"
+    assert not body["low_memory"]
 
 
 def test_low_memory_is_reported_but_does_not_fail_the_check(client, monkeypatch):  # noqa: F811
     _patch(monkeypatch, [INSTALL], free=1.2)
     body = client.get("/api/corel/health").json()
-    assert body["ok"] and body["low_memory"] and "low memory" in body["message"]
+    assert body["ok"]
+    assert body["low_memory"]
+    assert "low memory" in body["message"]
 
 
 def test_not_ok_without_an_install(client, monkeypatch):  # noqa: F811
     _patch(monkeypatch, [])
     body = client.get("/api/corel/health").json()
-    assert not body["ok"] and not body["corel_available"] and "No CorelDRAW installation" in body["message"]
+    assert not body["ok"]
+    assert not body["corel_available"]
+    assert "No CorelDRAW installation" in body["message"]
 
 
 def test_mock_engine_is_ok_without_corel(client, monkeypatch):  # noqa: F811
     _patch(monkeypatch, [], engine="mock")
     body = client.get("/api/corel/health").json()
-    assert body["ok"] and body["engine"] == "mock"
+    assert body["ok"]
+    assert body["engine"] == "mock"
 
 
 def test_auto_engine_off_windows_is_mock(client, monkeypatch):  # noqa: F811
     _patch(monkeypatch, [], engine="auto", platform="linux")
     body = client.get("/api/corel/health").json()
-    assert body["ok"] and body["engine"] == "mock"
+    assert body["ok"]
+    assert body["engine"] == "mock"

@@ -273,8 +273,10 @@ function Skyline({ glass, glassLit, logo, halo }) {
         if (r < 0.18) {
           // a tapered spire on a small drum
           const sh = 5 + rnd() * 5;
-          metal.push(new THREE.CylinderGeometry(tw * 0.18, tw * 0.2, 1.2, 16).translate(x, top + 0.95, z));
-          metal.push(new THREE.CylinderGeometry(0.04, tw * 0.12, sh, 12).translate(x, top + 1.55 + sh / 2, z));
+          metal.push(
+            new THREE.CylinderGeometry(tw * 0.18, tw * 0.2, 1.2, 16).translate(x, top + 0.95, z),
+            new THREE.CylinderGeometry(0.04, tw * 0.12, sh, 12).translate(x, top + 1.55 + sh / 2, z),
+          );
         } else if (r < 0.4) {
           masts.push([x, top + 0.35, z, 3 + rnd() * 5]);
         }

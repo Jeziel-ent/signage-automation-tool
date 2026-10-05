@@ -140,7 +140,9 @@ def _gone(shape):
 # ------------------------------------------------------------ 1. English Only
 def test_english_only(client, tmp_path, fake_corel):
     en, ta, report = _convert(client, tmp_path, fake_corel, "en")
-    assert en is not None and en.Visible and en.Text.Story.Text == EN_NEW
+    assert en is not None
+    assert en.Visible
+    assert en.Text.Story.Text == EN_NEW
     assert _gone(ta)
     # 4. the English line moves to the middle of the space the two lines shared - no gap where Tamil was
     assert _cy(en) == pytest.approx(BLOCK_CY)
@@ -150,7 +152,9 @@ def test_english_only(client, tmp_path, fake_corel):
 # ------------------------------------------------------------ 2. Tamil Only
 def test_tamil_only(client, tmp_path, fake_corel):
     en, ta, report = _convert(client, tmp_path, fake_corel, "ta")
-    assert ta is not None and ta.Visible and ta.Text.Story.Text == TA_NEW
+    assert ta is not None
+    assert ta.Visible
+    assert ta.Text.Story.Text == TA_NEW
     assert _gone(en)
     assert _cy(ta) == pytest.approx(BLOCK_CY)
     assert not report["warnings"]
@@ -159,8 +163,10 @@ def test_tamil_only(client, tmp_path, fake_corel):
 # ------------------------------------------------------------ 3. Both
 def test_both(client, tmp_path, fake_corel):
     en, ta, report = _convert(client, tmp_path, fake_corel, "both")
-    assert en.Visible and en.Text.Story.Text == EN_NEW
-    assert ta.Visible and ta.Text.Story.Text == TA_NEW
+    assert en.Visible
+    assert en.Text.Story.Text == EN_NEW
+    assert ta.Visible
+    assert ta.Text.Story.Text == TA_NEW
     # both stay where the master had them
     assert (en.BottomY, ta.BottomY) == pytest.approx((EN_BOX[1], TA_BOX[1]))
 
@@ -169,5 +175,6 @@ def test_both(client, tmp_path, fake_corel):
 def test_tamil_only_without_a_tamil_name_keeps_english(client, tmp_path, fake_corel):
     # removing the English line would leave the MASTER's own Tamil name as the only one - English is kept instead
     en, ta, report = _convert(client, tmp_path, fake_corel, "ta", local=None)
-    assert en.Text.Story.Text == EN_NEW and _gone(ta)
+    assert en.Text.Story.Text == EN_NEW
+    assert _gone(ta)
     assert any("no Tamil name" in w for w in report["warnings"])

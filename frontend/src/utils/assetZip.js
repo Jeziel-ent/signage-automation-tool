@@ -11,7 +11,7 @@ export function zipRequest(printable) {
 
 /** One line for the queue notice: what was packed, what is missing, which shops' edits are not in their files. */
 export function zipSummaryText(summary) {
-  const head = `Signage_Assets_Export.zip: ${summary.shops} shop${summary.shops === 1 ? "" : "s"}, ${summary.files} file${summary.files === 1 ? "" : "s"}${summary.bytes ? ` (${fmtBytes(summary.bytes)})` : ""}.`;
+  const head = `Signage_Assets_Export.zip: ${summary.shops} shop${summary.shops === 1 ? "" : "s"}, ${summary.files} file${summary.files === 1 ? "" : "s"}${summary.bytes ? " (" + fmtBytes(summary.bytes) + ")" : ""}.`;
   const issues = zipIssuesText(summary);
   return issues ? `${head} ${issues}` : head;
 }
@@ -22,9 +22,9 @@ export function zipIssuesText(summary) {
   const missing = summary.missing || [];
   if (missing.length) {
     const shown = missing.slice(0, 4).join(", ");
-    parts.push(`Not available: ${shown}${missing.length > 4 ? ` and ${missing.length - 4} more` : ""}.`);
+    parts.push(`Not available: ${shown}${missing.length > 4 ? " and " + (missing.length - 4) + " more" : ""}.`);
   }
   const notes = summary.notes || [];
-  if (notes.length) parts.push(`${notes[0]}${notes.length > 1 ? ` (+${notes.length - 1} more shop${notes.length > 2 ? "s" : ""})` : ""}.`);
+  if (notes.length) parts.push(`${notes[0]}${notes.length > 1 ? " (+" + (notes.length - 1) + " more shop" + (notes.length > 2 ? "s" : "") + ")" : ""}.`);
   return parts.join(" ");
 }

@@ -19,7 +19,8 @@ def test_permanent_substitution_is_saved_listed_and_removed(client, installed):
     job, shop = _converted_shop(client)
     post = lambda **kw: client.post("/api/fonts/substitute", json={"shop_id": shop, **kw})  # noqa: E731
     r = post(original_font="Copperplate Gothic Bold", substitute_font="arial", is_permanent=True, project_id="22071195")
-    assert r.status_code == 200 and r.json()["saved"] is True
+    assert r.status_code == 200
+    assert r.json()["saved"] is True
     assert r.json()["substitute_font"] == "Arial"                              # the installed family's own spelling
     assert client.get(f"/api/fonts/substitutions?shop_id={shop}").json()["substitutions"] == {"Copperplate Gothic Bold": "Arial"}
     post(original_font="Copperplate Gothic Bold", substitute_font="Times New Roman", is_permanent=True)
@@ -32,7 +33,9 @@ def test_temporary_is_not_stored_and_bad_requests_are_refused(client, installed)
     job, shop = _converted_shop(client)
     post = lambda **kw: client.post("/api/fonts/substitute", json={"shop_id": shop, **kw})  # noqa: E731
     r = post(original_font="AvantGarde-Demi", substitute_font="Arial", is_permanent=False)
-    assert r.status_code == 200 and r.json()["saved"] is False and main.db.get_font_substitutions(shop) == {}
+    assert r.status_code == 200
+    assert r.json()["saved"] is False
+    assert main.db.get_font_substitutions(shop) == {}
     assert post(original_font="AvantGarde-Demi", substitute_font="Copperplate Gothic Bold").status_code == 422   # not installed
     assert post(original_font="Arial", substitute_font="arial").status_code == 422                                  # same font
     assert post(original_font=" ", substitute_font="Arial").status_code == 422
@@ -108,9 +111,13 @@ def test_apply_font_substitutions_swaps_matching_text_and_reads_it_back():
                   _Shape(5, 6, other), _Shape(6, 6, stuck), _Shape(7, 6, mixed)])
     warnings = []
     out = er.apply_font_substitutions(page, {"Copperplate Gothic Bold": "Arial", "AvantGarde-Demi": "Nirmala UI"}, warnings)
-    assert top.Font == "Arial" and nested.Font == "Arial" and other.Font == "Arial"
+    assert top.Font == "Arial"
+    assert nested.Font == "Arial"
+    assert other.Font == "Arial"
     assert out["Copperplate Gothic Bold"] == {"to": "Arial", "changed": 2, "not_applied": 0}
     assert out["AvantGarde-Demi"] == {"to": "Nirmala UI", "changed": 0, "not_applied": 1}
     assert out["_mixed_font_texts_skipped"] == 1
-    assert len(warnings) == 1 and "AvantGarde-Demi" in warnings[0] and "installed" in warnings[0]
+    assert len(warnings) == 1
+    assert "AvantGarde-Demi" in warnings[0]
+    assert "installed" in warnings[0]
     assert er.apply_font_substitutions(page, {}, warnings) == {}

@@ -94,10 +94,13 @@ def test_v2_add_shop_and_list(client):
     })
     assert r.status_code == 200
     shop = r.json()
-    assert shop["name"] == "NR Traders" and shop["seq_no"] == 1 and shop["status"] == "new"
+    assert shop["name"] == "NR Traders"
+    assert shop["seq_no"] == 1
+    assert shop["status"] == "new"
 
     shops = client.get(f"/api/v2/jobs/{job_id}/shops").json()
-    assert len(shops) == 1 and shops[0]["id"] == shop["id"]
+    assert len(shops) == 1
+    assert shops[0]["id"] == shop["id"]
 
 
 def test_v2_add_shop_rejects_invalid_unit(client):
@@ -231,11 +234,14 @@ def test_v2_recent_lists_shops_across_jobs_newest_first_with_files(client):
 
     recent = client.get("/api/v2/recent").json()
     assert [r["name"] for r in recent] == ["Second Shop", "First Shop"]  # newest first
-    assert recent[0]["brand"] == "agarpathi" and recent[0]["status"] == "done"
+    assert recent[0]["brand"] == "agarpathi"
+    assert recent[0]["status"] == "done"
     assert recent[0]["files"]["report"].endswith("_report.json")
-    assert recent[1]["status"] == "new" and recent[1]["files"] is None
+    assert recent[1]["status"] == "new"
+    assert recent[1]["files"] is None
     assert "report_json" not in recent[0]  # list view stays light
-    assert recent[0]["shop_id"] == second["id"] and recent[0]["job_id"] == second["job_id"]
+    assert recent[0]["shop_id"] == second["id"]
+    assert recent[0]["job_id"] == second["job_id"]
     assert first["id"] == recent[1]["shop_id"]
 
 
@@ -258,7 +264,8 @@ def test_v2_add_shop_accepts_optional_contact_fields(client):
 
     # persisted, not just echoed back - a fresh list call sees the same values
     listed = client.get(f"/api/v2/jobs/{job_id}/shops").json()[0]
-    assert listed["phone"] == "82208 20580" and listed["gst"] == "33DFLPR6498E1ZV"
+    assert listed["phone"] == "82208 20580"
+    assert listed["gst"] == "33DFLPR6498E1ZV"
 
 
 def test_v2_add_shop_contact_fields_default_to_none_when_omitted(client):
@@ -271,7 +278,9 @@ def test_v2_add_shop_contact_fields_default_to_none_when_omitted(client):
     shop = client.post(f"/api/v2/jobs/{job_id}/shops", json={
         "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
     }).json()
-    assert shop["phone"] is None and shop["gst"] is None and shop["address"] is None
+    assert shop["phone"] is None
+    assert shop["gst"] is None
+    assert shop["address"] is None
 
 
 def test_v2_add_shop_blank_contact_fields_are_normalized_to_none(client):
@@ -281,7 +290,9 @@ def test_v2_add_shop_blank_contact_fields_are_normalized_to_none(client):
         "name": "X", "width": 1, "width_unit": "ft", "height": 1, "height_unit": "ft",
         "phone": "  ", "gst": "", "address": "   ",
     }).json()
-    assert shop["phone"] is None and shop["gst"] is None and shop["address"] is None
+    assert shop["phone"] is None
+    assert shop["gst"] is None
+    assert shop["address"] is None
 
 
 def test_v2_convert_worker_passes_phone_gst_and_split_address_lines_to_the_engine(client, monkeypatch):
@@ -343,7 +354,9 @@ def test_v2_convert_worker_omits_contact_keys_when_not_set(client, monkeypatch):
     while time.time() < deadline and "name" not in captured:
         time.sleep(0.05)
 
-    assert "phone" not in captured and "gst" not in captured and "address_lines" not in captured
+    assert "phone" not in captured
+    assert "gst" not in captured
+    assert "address_lines" not in captured
 
 
 # ---------------------------------------------------------------- list thumbnails (/api/v2/shops/{id}/thumb)
@@ -373,7 +386,8 @@ def test_v2_thumb_is_small_capped_and_cached_outside_the_shop_folder(client):
     r = client.get(f"/api/v2/shops/{shop_id}/thumb")
     assert r.status_code == 200
     im = Image.open(_io.BytesIO(r.content))
-    assert max(im.size) == main.THUMB_MAX_PX and im.size[0] / im.size[1] == 2.5  # aspect kept
+    assert max(im.size) == main.THUMB_MAX_PX
+    assert im.size[0] / im.size[1] == 2.5  # aspect kept
     assert len(r.content) < 20_000  # vs the 1600 px source
     # cached under the job's thumbs/, never in out/ (the ZIP export reads out/)
     assert list((main.JOBS_V2 / job_id / "thumbs").iterdir())
@@ -391,7 +405,8 @@ def test_v2_thumb_is_rebuilt_when_the_preview_changes(client):
     later = _os.path.getmtime(out / "board.png") + 5
     _os.utime(out / "board.png", (later, later))
     second = Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb").content)).size
-    assert first[0] > first[1] and second[1] > second[0]
+    assert first[0] > first[1]
+    assert second[1] > second[0]
 
 
 def test_v2_thumb_404s_without_a_preview(client):

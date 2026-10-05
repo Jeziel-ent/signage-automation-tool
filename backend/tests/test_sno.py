@@ -21,28 +21,32 @@ def _add(client, job, **extra):
 
 def test_numeric_sno_becomes_seq_no_and_names_the_files(client):
     shop = _add(client, _job(client), sno="76")
-    assert shop["seq_no"] == 76 and shop["sno_label"] is None
+    assert shop["seq_no"] == 76
+    assert shop["sno_label"] is None
     assert file_naming.shop_basename(shop) == "76 - 6 X 6 Feet - Nonlit - Kalkee"
 
 
 def test_text_sno_is_kept_as_written(client):
     job = _job(client)
     shop = _add(client, job, sno="SL-01")
-    assert shop["sno_label"] == "SL-01" and shop["seq_no"] == 1           # seq_no still orders the job's shops
+    assert shop["sno_label"] == "SL-01"
+    assert shop["seq_no"] == 1  # seq_no still orders the job's shops
     assert file_naming.shop_basename(shop) == "SL-01 - 6 X 6 Feet - Nonlit - Kalkee"
     # converting with a numeric S.No later replaces the label
     r = client.post(f"/api/v2/shops/{shop['id']}/convert", json={"sno": 7})
     assert r.status_code == 200, r.text
     import app.db as db
     row = db.get_shop(shop["id"])
-    assert row["seq_no"] == 7 and row["sno_label"] is None
+    assert row["seq_no"] == 7
+    assert row["sno_label"] is None
 
 
 def test_no_sno_keeps_the_position(client):
     job = _job(client)
     _add(client, job)
     second = _add(client, job)
-    assert second["seq_no"] == 2 and file_naming.shop_basename(second).startswith("2 - ")
+    assert second["seq_no"] == 2
+    assert file_naming.shop_basename(second).startswith("2 - ")
 
 
 def test_overlong_text_sno_is_refused(client):
@@ -53,5 +57,7 @@ def test_overlong_text_sno_is_refused(client):
 
 def test_zip_and_caption_numbers_accept_text():
     assert member_base("SL-01", "Kalkee Pooja") == "SL-01_Kalkee_Pooja"
-    assert member_base(5, "A") == "05_A" and member_base("76", "A") == "76_A"
-    assert file_naming.sno_text("076") == "76" and file_naming.sno_text("7", 2) == "07"
+    assert member_base(5, "A") == "05_A"
+    assert member_base("76", "A") == "76_A"
+    assert file_naming.sno_text("076") == "76"
+    assert file_naming.sno_text("7", 2) == "07"

@@ -94,9 +94,11 @@ def test_per_job_limit_kills_a_job_that_keeps_beating_but_never_finishes(tmp_pat
         overall_timeout_s=60, job_timeout_s=2, worker_module="tests.fake_hanging_worker", skip_memory_check=True)
     assert time.time() - t0 < 20                                   # not the 60 s no-progress limit
     assert results[0]["status"] == "done"
-    assert results[1]["status"] == "error" and "timed out after 2s" in results[1]["error"]
+    assert results[1]["status"] == "error"
+    assert "timed out after 2s" in results[1]["error"]
     assert "beat" in results[1]["error"]                           # names the step it was on
-    assert results[2]["status"] == "error" and "not started" in results[2]["error"]
+    assert results[2]["status"] == "error"
+    assert "not started" in results[2]["error"]
 
 
 def test_per_job_limit_does_not_count_launching_corel(tmp_path):

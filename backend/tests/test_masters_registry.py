@@ -37,8 +37,11 @@ def test_three_landscape_and_three_portrait_masters_are_all_listed_with_their_or
     m = body["portrait"][0]
     assert m["dimensions_default"] == {"width": 3.0, "height": 6.0, "unit": "ft"}
     assert body["landscape"][0]["dimensions_default"] is None
-    assert Path(m["file_path"]).is_file() and m["file_size"] > 0 and m["file_name"] == "m.cdr"
-    assert m["preview_url"] == f"/api/v2/jobs/{m['id']}/preview" and m["created_at"].endswith("+00:00")
+    assert Path(m["file_path"]).is_file()
+    assert m["file_size"] > 0
+    assert m["file_name"] == "m.cdr"
+    assert m["preview_url"] == f"/api/v2/jobs/{m['id']}/preview"
+    assert m["created_at"].endswith("+00:00")
 
 
 def test_filters_by_brand_and_orientation(client):
@@ -47,7 +50,8 @@ def test_filters_by_brand_and_orientation(client):
     other = _register(client, "portrait", brand="adinn")
     assert [m["id"] for m in client.get("/api/masters", params={"brand": "adinn"}).json()["masters"]] == [other["id"]]
     only_port = client.get("/api/masters", params={"brand": "dalmia", "orientation": "portrait"}).json()
-    assert len(only_port["masters"]) == 1 and only_port["landscape"] == []
+    assert len(only_port["masters"]) == 1
+    assert only_port["landscape"] == []
     assert client.get("/api/masters", params={"orientation": "diagonal"}).status_code == 400
 
 
@@ -69,7 +73,8 @@ def test_the_old_upload_route_registers_too(client):
                     files={"master": ("m.cdr", _fake_cdr_bytes(), "application/octet-stream")})
     assert r.status_code == 200
     listed = client.get("/api/masters").json()["portrait"]
-    assert [m["id"] for m in listed] == [r.json()["id"]] and listed[0]["name"] == "Master 1"
+    assert [m["id"] for m in listed] == [r.json()["id"]]
+    assert listed[0]["name"] == "Master 1"
 
 
 def test_delete_hides_the_master_keeps_its_file_and_never_reuses_its_name(client):
@@ -107,8 +112,11 @@ def test_each_shop_converts_from_the_master_it_picked(client):
     for s, (_, _, m) in zip(shops, picks):
         assert _wait_done(client, s["id"])["status"] == "done"
         used = _report(s["id"])["master_used"]
-        assert used["job_id"] == m["id"] and used["selected"] is True and used["fallback"] is False
-        assert used["name"] == m["name"] and used["orientation"] == m["orientation"]
+        assert used["job_id"] == m["id"]
+        assert used["selected"] is True
+        assert used["fallback"] is False
+        assert used["name"] == m["name"]
+        assert used["orientation"] == m["orientation"]
         assert main._convert_job(s["id"])[0]["master_path"] == m["file_path"]
 
 
@@ -129,7 +137,8 @@ def test_a_pick_of_the_wrong_orientation_falls_back_to_the_orientations_default(
     assert client.post(f"/api/v2/shops/{shop['id']}/convert").status_code == 200
     assert _wait_done(client, shop["id"])["status"] == "done"
     used = _report(shop["id"])["master_used"]
-    assert used["job_id"] == port[0]["id"] and not used.get("selected")
+    assert used["job_id"] == port[0]["id"]
+    assert not used.get("selected")
     assert "is a landscape master and this board is portrait" in used["reason"]
 
 
@@ -141,7 +150,8 @@ def test_a_deleted_pick_falls_back_to_the_brands_first_master_of_that_orientatio
     assert client.post(f"/api/v2/shops/{shop['id']}/convert").status_code == 200
     assert _wait_done(client, shop["id"])["status"] == "done"
     used = _report(shop["id"])["master_used"]
-    assert used["job_id"] == port[0]["id"] and "was deleted" in used["reason"]
+    assert used["job_id"] == port[0]["id"]
+    assert "was deleted" in used["reason"]
 
 
 def test_convert_can_clear_the_pick(client):

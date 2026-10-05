@@ -30,10 +30,14 @@ def test_extract_link_and_limits(monkeypatch):
     assert wt.max_bytes() == 500_000_000
     assert wt.upload_timeout_s(50_000_000) == 280.0
     # an e-mailed-code screen is no longer a dead end: the person types the code (CODE_RE), only account/plan walls block
-    assert wt.CODE_RE.search("Please verify your email to continue") and not wt.BLOCKER_RE.search("Please verify your email")
+    assert wt.CODE_RE.search("Please verify your email to continue")
+    assert not wt.BLOCKER_RE.search("Please verify your email")
     assert wt.CODE_RE.search("Enter the 6-digit code we sent to you")
-    assert wt.BLOCKER_RE.search("Upgrade to send more") and wt.EMAIL_NEEDED_RE.search("We ask for your email to keep the community safe.")
-    assert wt.valid_email("a.b@company.co.in") and not wt.valid_email("nope") and not wt.valid_email(None)
+    assert wt.BLOCKER_RE.search("Upgrade to send more")
+    assert wt.EMAIL_NEEDED_RE.search("We ask for your email to keep the community safe.")
+    assert wt.valid_email("a.b@company.co.in")
+    assert not wt.valid_email("nope")
+    assert not wt.valid_email(None)
 
 
 @pytest.fixture
@@ -82,13 +86,15 @@ def test_upload_of_the_modal_zip_returns_the_link(client, fake_uploader):
     shop = _done_shop(client, job)
     built = client.post("/api/export-zip", json={"shop_ids": [shop["id"]]}).json()
     r = client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL})
-    assert r.status_code == 200 and r.json()["token"] == built["token"]
+    assert r.status_code == 200
+    assert r.json()["token"] == built["token"]
     job_id = r.json()["job_id"]
     running = _poll(client, job_id, until=("running",))
     assert running["wetransfer_url"] is None
     fake_uploader.gate.set()
     done = _poll(client, job_id)
-    assert done["status"] == "success" and done["wetransfer_url"] == "https://we.tl/t-FAKE123"
+    assert done["status"] == "success"
+    assert done["wetransfer_url"] == "https://we.tl/t-FAKE123"
     assert fake_uploader.calls[0].endswith("Signage_Assets_Export.zip")
     assert main._asset_zips[built["token"]].busy == 0
 
@@ -104,7 +110,8 @@ def test_closing_the_modal_during_an_upload_deletes_the_zip_afterwards(client, f
     assert d.exists()                                    # still being read by the upload
     fake_uploader.gate.set()
     assert _poll(client, job_id)["status"] == "success"
-    assert not d.exists() and built["token"] not in main._asset_zips
+    assert not d.exists()
+    assert built["token"] not in main._asset_zips
 
 
 def test_shop_ids_alone_build_the_zip_first(client, fake_uploader):
@@ -113,7 +120,8 @@ def test_shop_ids_alone_build_the_zip_first(client, fake_uploader):
     shop = _done_shop(client, job)
     fake_uploader.gate.set()
     r = client.post("/api/export-wetransfer", json={"shop_ids": [shop["id"]], "sender_email": EMAIL})
-    assert r.status_code == 200 and r.json()["token"] in main._asset_zips
+    assert r.status_code == 200
+    assert r.json()["token"] in main._asset_zips
     assert _poll(client, r.json()["job_id"])["wetransfer_url"] == "https://we.tl/t-FAKE123"
 
 
@@ -129,12 +137,17 @@ def test_a_failed_upload_falls_back_to_a_server_link(client, fake_uploader):
     fake_uploader.state["fail"] = "step 'link_mode': could not switch the transfer to 'get a link' mode"
     fake_uploader.gate.set()
     s = _poll(client, client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL}).json()["job_id"])
-    assert s["status"] == "success" and s["fallback_used"] is True and "link_mode" in s["wetransfer_error"]
-    assert "/api/shared/" in s["wetransfer_url"] and s["wetransfer_url"].endswith("/Signage_Assets_Export.zip")
-    assert "WeTransfer automated link creation failed" in s["message"] and s["expires_at"] > time.time()
+    assert s["status"] == "success"
+    assert s["fallback_used"] is True
+    assert "link_mode" in s["wetransfer_error"]
+    assert "/api/shared/" in s["wetransfer_url"]
+    assert s["wetransfer_url"].endswith("/Signage_Assets_Export.zip")
+    assert "WeTransfer automated link creation failed" in s["message"]
+    assert s["expires_at"] > time.time()
     path = s["wetransfer_url"].split("/api/shared/", 1)[1]
     r = client.get(f"/api/shared/{path}")
-    assert r.status_code == 200 and r.content == client.get(built["download"]).content
+    assert r.status_code == 200
+    assert r.content == client.get(built["download"]).content
     # the shared copy outlives the modal's archive
     client.delete(f"/api/export-zip/{built['token']}")
     assert client.get(f"/api/shared/{path}").status_code == 200
@@ -162,7 +175,9 @@ def test_too_big_or_no_playwright_skip_straight_to_the_server_link(client, fake_
     assert client.get("/api/export-wetransfer/nope").status_code == 404
     monkeypatch.setenv("SIGNAGE_WETRANSFER_MAX_GB", "0.0000000001")          # 0.1 byte
     s = _poll(client, client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL}).json()["job_id"])
-    assert s["fallback_used"] and "free-transfer limit" in s["wetransfer_error"] and fake_uploader.calls == []
+    assert s["fallback_used"]
+    assert "free-transfer limit" in s["wetransfer_error"]
+    assert fake_uploader.calls == []
     monkeypatch.delenv("SIGNAGE_WETRANSFER_MAX_GB")
 
     def missing():
@@ -170,7 +185,9 @@ def test_too_big_or_no_playwright_skip_straight_to_the_server_link(client, fake_
 
     monkeypatch.setattr(wt, "check_available", missing)
     s = _poll(client, client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL}).json()["job_id"])
-    assert s["fallback_used"] and "pip install playwright" in s["wetransfer_error"] and sys.executable in s["wetransfer_error"]
+    assert s["fallback_used"]
+    assert "pip install playwright" in s["wetransfer_error"]
+    assert sys.executable in s["wetransfer_error"]
     assert fake_uploader.calls == []
 
 
@@ -193,7 +210,8 @@ def test_the_local_only_fallback_explains_how_to_share_it(client, fake_uploader,
     fake_uploader.state["fail"] = "timeout"
     fake_uploader.gate.set()
     s = _poll(client, client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL}).json()["job_id"])
-    assert s["local_only"] is True and s["wetransfer_url"].startswith("http://127.0.0.1:8000/api/shared/")
+    assert s["local_only"] is True
+    assert s["wetransfer_url"].startswith("http://127.0.0.1:8000/api/shared/")
     assert "--host 0.0.0.0" in s["message"]
 
 
@@ -224,7 +242,8 @@ def test_uploader_mechanics_against_a_local_standin(tmp_path, monkeypatch):
     link = wt.upload_zip_to_wetransfer(str(f), EMAIL, on_step=lambda n, p=None: steps.append((n, p)), debug_dir=tmp_path / "dbg")
     assert link == "https://we.tl/t-LOCALstandin1234"                       # the file really reached the page (its size)
     names = [n for n, _ in steps]
-    assert names[:7] == ["launch", "open", "consent", "add_file", "link_mode", "email", "submit"] and names[-1] == "done"
+    assert names[:7] == ["launch", "open", "consent", "add_file", "link_mode", "email", "submit"]
+    assert names[-1] == "done"
     assert any(n == "uploading" and p and 0 < p < 100 for n, p in steps)   # progress read off the page
 
 
@@ -237,8 +256,10 @@ def test_uploader_stops_at_a_screen_it_cannot_pass_with_a_screenshot(tmp_path, m
     f.write_bytes(b"x")
     with pytest.raises(wt.WeTransferError) as e:
         wt.upload_zip_to_wetransfer(str(f), EMAIL, debug_dir=tmp_path / "dbg")
-    assert "uploading" in str(e.value) and "limit reached" in str(e.value).lower()
-    assert "screenshot:" in str(e.value) and list((tmp_path / "dbg").glob("wetransfer_*_uploading.png"))
+    assert "uploading" in str(e.value)
+    assert "limit reached" in str(e.value).lower()
+    assert "screenshot:" in str(e.value)
+    assert list((tmp_path / "dbg").glob("wetransfer_*_uploading.png"))
 
 
 @needs_edge
@@ -263,11 +284,15 @@ def test_link_mode_failure_saves_the_pages_controls_for_diagnosis(tmp_path, monk
     f.write_bytes(b"x")
     with pytest.raises(wt.WeTransferError) as e:
         wt.upload_zip_to_wetransfer(str(f), EMAIL, debug_dir=tmp_path / "dbg")
-    assert "link_mode" in str(e.value) and "no 'link' choice" in str(e.value)
+    assert "link_mode" in str(e.value)
+    assert "no 'link' choice" in str(e.value)
     dumps = list((tmp_path / "dbg").glob("wetransfer_*_link_mode_controls.json"))
-    assert dumps and list((tmp_path / "dbg").glob("wetransfer_*_link_mode.png"))
+    assert dumps
+    assert list((tmp_path / "dbg").glob("wetransfer_*_link_mode.png"))
     texts = [c["text"] for c in json.loads(dumps[0].read_text(encoding="utf-8"))["controls"]]
-    assert "Transfer" in texts and "Password protect" in texts and "3 days" in texts
+    assert "Transfer" in texts
+    assert "Password protect" in texts
+    assert "3 days" in texts
 
 
 # ---- sender e-mail and the e-mailed code (OTP) ----
@@ -278,10 +303,13 @@ def test_the_email_is_required_validated_and_passed_on(client, fake_uploader):
     assert r.status_code == 422
     fake_uploader.gate.set()
     s = _poll(client, client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL}).json()["job_id"])
-    assert s["status"] == "success" and not s["fallback_used"] and fake_uploader.state["email"] == EMAIL
+    assert s["status"] == "success"
+    assert not s["fallback_used"]
+    assert fake_uploader.state["email"] == EMAIL
     # no address at all: WeTransfer cannot be used, the server link is made straight away
     s = _poll(client, client.post("/api/export-wetransfer", json={"token": built["token"]}).json()["job_id"])
-    assert s["fallback_used"] and "sender e-mail" in s["wetransfer_error"]
+    assert s["fallback_used"]
+    assert "sender e-mail" in s["wetransfer_error"]
 
 
 def test_otp_flow_wrong_code_then_right_code(client, fake_uploader):
@@ -290,18 +318,23 @@ def test_otp_flow_wrong_code_then_right_code(client, fake_uploader):
     fake_uploader.gate.set()
     job_id = client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL}).json()["job_id"]
     s = _poll(client, job_id, until=("requires_otp",))
-    assert s["session_id"] == job_id and s["otp_error"] is None and s["otp_deadline"] > time.time()
+    assert s["session_id"] == job_id
+    assert s["otp_error"] is None
+    assert s["otp_deadline"] > time.time()
     assert client.post("/api/export-wetransfer/verify-otp", json={"session_id": job_id, "otp_code": "12"}).status_code == 422
     assert client.post("/api/export-wetransfer/verify-otp", json={"session_id": job_id, "otp_code": "95#GY"}).status_code == 422
     assert client.post("/api/export-wetransfer/verify-otp", json={"session_id": "nope", "otp_code": "123456"}).status_code == 404
     r = client.post("/api/export-wetransfer/verify-otp", json={"session_id": job_id, "otp_code": "999 999"})
-    assert r.status_code == 200 and r.json()["status"] == "verifying"
+    assert r.status_code == 200
+    assert r.json()["status"] == "verifying"
     s = _poll(client, job_id, until=("requires_otp",))
     assert "did not accept" in s["otp_error"]                               # asked again, with the reason
     r = client.post("/api/export-wetransfer/verify-otp", json={"session_id": job_id, "otp_code": " 953-gyv "})
     assert r.status_code == 200                                             # lower case, spaces, a dash: all fine
     s = _poll(client, job_id)
-    assert s["status"] == "success" and s["wetransfer_url"] == "https://we.tl/t-FAKE123" and not s["fallback_used"]
+    assert s["status"] == "success"
+    assert s["wetransfer_url"] == "https://we.tl/t-FAKE123"
+    assert not s["fallback_used"]
     r = client.post("/api/export-wetransfer/verify-otp", json={"session_id": job_id, "otp_code": "123456"})
     assert r.status_code == 409                                             # no longer waiting
 
@@ -315,11 +348,15 @@ def test_otp_rejected_three_times_or_never_entered_falls_back(client, fake_uploa
         _poll(client, job_id, until=("requires_otp",))
         client.post("/api/export-wetransfer/verify-otp", json={"session_id": job_id, "otp_code": "000000"})
     s = _poll(client, job_id)
-    assert s["status"] == "success" and s["fallback_used"] and "3 tries" in s["wetransfer_error"]
+    assert s["status"] == "success"
+    assert s["fallback_used"]
+    assert "3 tries" in s["wetransfer_error"]
     monkeypatch.setenv("SIGNAGE_WETRANSFER_OTP_WAIT_S", "0.3")
     job_id = client.post("/api/export-wetransfer", json={"token": built["token"], "sender_email": EMAIL}).json()["job_id"]
     s = _poll(client, job_id)
-    assert s["fallback_used"] and "in time" in s["wetransfer_error"] and "/api/shared/" in s["wetransfer_url"]
+    assert s["fallback_used"]
+    assert "in time" in s["wetransfer_error"]
+    assert "/api/shared/" in s["wetransfer_url"]
 
 
 @needs_edge
@@ -337,7 +374,9 @@ def test_uploader_relays_the_code_the_person_types(tmp_path, monkeypatch):
         return next(answers)
 
     assert wt.upload_zip_to_wetransfer(str(f), EMAIL, debug_dir=tmp_path / "dbg", ask_code=ask_code) == "https://we.tl/t-LOCALstandin5"
-    assert asked[0] is None and asked[1] and "did not accept" in asked[1]
+    assert asked[0] is None
+    assert asked[1]
+    assert "did not accept" in asked[1]
 
 
 @needs_edge

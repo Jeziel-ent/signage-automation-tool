@@ -88,7 +88,7 @@ export function fallbackWarning(rows, masters) {
   const o = boardOrientation(hit[0]);
   const used = masterFallback(hit[0], masters);
   const names = hit.slice(0, 4).map((r) => `• ${r.name || "Shop"} (${r.width} × ${r.height} ${r.unit || "in"})`).join("\n");
-  return `No ${o} master is uploaded, so ${hit.length === 1 ? "this board" : `${hit.length} boards`} will be made from the ${used} ` +
+  return `No ${o} master is uploaded, so ${hit.length === 1 ? "this board" : hit.length + " boards"} will be made from the ${used} ` +
     `master and the layout will not fit (stretched background, repeated logos):\n${names}${hit.length > 4 ? "\n…" : ""}\n\n` +
     `Upload a ${o === "portrait" ? "Portrait" : "Landscape"} Master first for a proper layout. Convert anyway?`;
 }

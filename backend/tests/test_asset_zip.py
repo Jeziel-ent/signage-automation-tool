@@ -43,10 +43,13 @@ def test_sources_prefer_an_export_made_from_the_current_edits(tmp_path):
     exports = [{"id": "new", "status": "done", "files": {"cdr": "b.cdr", "jpeg": "b.jpg"}, "ops": ops},
                {"id": "old", "status": "done", "files": {"pdf": "b.pdf", "jpeg": "b.jpg"}, "ops": []}]
     src = az.pick_sources(out, conv, exports, ops)
-    assert src["cdr"] == out / "exports/new/b.cdr" and src["image"] == out / "exports/new/b.jpg"
+    assert src["cdr"] == out / "exports/new/b.cdr"
+    assert src["image"] == out / "exports/new/b.jpg"
     # the PDF only exists in an export of OLDER edits: the conversion is used, and the note says the edits are missing
     assert src["pdf"] == out / "b.pdf"
-    assert src["notes"] and "pdf" in src["notes"][0] and "cdr" not in src["notes"][0]
+    assert src["notes"]
+    assert "pdf" in src["notes"][0]
+    assert "cdr" not in src["notes"][0]
 
 
 def test_sources_without_edits_use_the_conversion_and_never_an_svg(tmp_path):
@@ -68,7 +71,8 @@ def test_zip_layout_png_to_jpeg_and_missing_list(tmp_path):
         "01_FAYAZ_HARDWREAS.jpg", "CDR&PDF/cdr/01_FAYAZ_HARDWREAS.cdr", "CDR&PDF/pdf/01_FAYAZ_HARDWREAS.pdf",
         "02_NU_COLOURS.jpg", "CDR&PDF/cdr/02_NU_COLOURS.cdr"])
     with Image.open(io.BytesIO(z.read("01_FAYAZ_HARDWREAS.jpg"))) as im:
-        assert im.format == "JPEG" and im.getpixel((5, 5)) == (255, 255, 255)   # transparency -> white
+        assert im.format == "JPEG"
+        assert im.getpixel((5, 5)) == (255, 255, 255)  # transparency -> white
     assert z.read("CDR&PDF/cdr/01_FAYAZ_HARDWREAS.cdr") == b"data:a.cdr"
     assert z.getinfo("CDR&PDF/cdr/01_FAYAZ_HARDWREAS.cdr").compress_type == zipfile.ZIP_STORED
     assert z.getinfo("CDR&PDF/pdf/01_FAYAZ_HARDWREAS.pdf").compress_type == zipfile.ZIP_STORED
@@ -85,16 +89,19 @@ def test_endpoint_packs_the_selected_shops(client):
     assert built.status_code == 200
     summary = built.json()["summary"]
     r = client.get(built.json()["download"])
-    assert r.status_code == 200 and r.headers["content-type"] == "application/zip"
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
     assert 'filename="Signage_Assets_Export.zip"' in r.headers["content-disposition"]
     assert len(r.content) == summary["bytes"]
     names = zipfile.ZipFile(io.BytesIO(r.content)).namelist()
     a_ = "1 - 214 X 36 Inch - Nonlit - Sri Kumar"
     b_ = "2 - 180 X 36 Inch - Nonlit - Sri Kumar"
-    assert f"CDR&PDF/cdr/{a_}.cdr" in names and f"CDR&PDF/cdr/{b_}.cdr" in names
+    assert f"CDR&PDF/cdr/{a_}.cdr" in names
+    assert f"CDR&PDF/cdr/{b_}.cdr" in names
     assert summary["shops"] == 2
     # MockEngine: no PDF and an SVG preview - reported, not faked
-    assert f"CDR&PDF/pdf/{a_}.pdf" in summary["missing"] and f"{a_}.jpg" in summary["missing"]
+    assert f"CDR&PDF/pdf/{a_}.pdf" in summary["missing"]
+    assert f"{a_}.jpg" in summary["missing"]
 
 
 def test_endpoint_uses_an_export_of_the_current_edits(client, monkeypatch):
@@ -114,9 +121,11 @@ def test_endpoint_uses_an_export_of_the_current_edits(client, monkeypatch):
     z = zipfile.ZipFile(io.BytesIO(client.get(built["download"]).content))
     from app.file_naming import shop_basename
     base = shop_basename(main.db.get_shop(shop["id"]))
-    assert z.read(f"CDR&PDF/pdf/{base}.pdf") == b"%PDF-edited" and f"{base}.jpg" in z.namelist()
+    assert z.read(f"CDR&PDF/pdf/{base}.pdf") == b"%PDF-edited"
+    assert f"{base}.jpg" in z.namelist()
     notes = built["summary"]["notes"]
-    assert len(notes) == 1 and "cdr" in notes[0]            # the CDR came from the conversion, without the edits
+    assert len(notes) == 1
+    assert "cdr" in notes[0]  # the CDR came from the conversion, without the edits
 
 
 def test_a_built_zip_lives_until_deleted_or_expired(client):
@@ -130,14 +139,16 @@ def test_a_built_zip_lives_until_deleted_or_expired(client):
     assert client.get(built["download"]).status_code == 200
     assert client.get(built["download"]).status_code == 200               # still there for a second download
     assert client.delete(f"/api/export-zip/{token}").json() == {"deleted": True}
-    assert not tmp.exists() and client.get(built["download"]).status_code == 404
+    assert not tmp.exists()
+    assert client.get(built["download"]).status_code == 404
     assert client.delete(f"/api/export-zip/{token}").json() == {"deleted": False}
     assert client.get("/api/export-zip/unknown").status_code == 404
     again = client.post("/api/export-zip", json={"shop_ids": [shop["id"]]}).json()
     z = main._asset_zips[again["token"]]
     z.at = 0.0
     main._sweep_asset_zips()
-    assert again["token"] not in main._asset_zips and not z.dir.exists()
+    assert again["token"] not in main._asset_zips
+    assert not z.dir.exists()
 
 
 def test_endpoint_validates(client):
