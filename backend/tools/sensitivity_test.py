@@ -43,7 +43,7 @@ OUT_DIR = ROOT / "dataset_analysis" / "sensitivity"
 
 
 def _shift(img: Image.Image, frac: float) -> Image.Image:
-    w, h = img.size
+    w, _ = img.size
     dx = round(w * frac)
     shifted = ImageChops.offset(img, dx, 0)
     return shifted

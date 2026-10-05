@@ -1,0 +1,55 @@
+/* Master Templates: a Landscape panel and a Portrait panel. Each = header, one compact row per master, one slim drop strip.
+   Colours follow the workspace dark-glass theme (--ws-* tokens set on .app-shell) with light-theme fallbacks. */
+.mt-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+@media (max-width: 860px) { .mt-grid { grid-template-columns: 1fr; } }
+
+.mt-panel {
+  --mt-tone: #ef4444; --mt-tone-soft: rgba(239, 68, 68, 0.14);
+  display: flex; flex-direction: column; gap: 10px; min-width: 0; padding: 14px;
+  border: 1px solid var(--ws-border, rgba(148, 163, 184, 0.25)); border-radius: 14px;
+  background: var(--ws-field, rgba(148, 163, 184, 0.06));
+}
+.mt-panel.portrait { --mt-tone: #fb7185; --mt-tone-soft: rgba(225, 29, 72, 0.14); }
+
+.mt-head { display: flex; align-items: center; gap: 10px; }
+.mt-icon { width: 34px; height: 34px; border-radius: 10px; flex: none; display: grid; place-items: center;
+  color: var(--mt-tone); background: var(--mt-tone-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--mt-tone) 35%, transparent); }
+.mt-head-text { min-width: 0; flex: 1; }
+.mt-head-text h3 { margin: 0; font-size: 14px; font-weight: 700; line-height: 1.2; }
+.mt-rule { display: block; margin-top: 1px; font-size: 11px; color: var(--ws-faint, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-count { flex: none; min-width: 24px; padding: 2px 8px; border-radius: 999px; text-align: center; font-size: 11px; font-weight: 700; line-height: 16px;
+  color: var(--ws-text, #334155); background: rgba(148, 163, 184, 0.18); font-variant-numeric: tabular-nums; }
+
+.mt-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.mt-row { display: flex; align-items: center; gap: 12px; padding: 8px 10px 8px 8px; border-radius: 12px;
+  border: 1px solid var(--ws-border, rgba(148, 163, 184, 0.25)); background: rgba(2, 6, 23, 0.28);
+  transition: border-color 0.2s, background 0.2s; }
+.mt-row:hover { border-color: var(--ws-border-hover, rgba(148, 163, 184, 0.45)); background: rgba(30, 41, 59, 0.4); }
+.mt-thumb { flex: none; width: 76px; height: 52px; border-radius: 8px; overflow: hidden; display: grid; place-items: center;
+  border: 1px solid var(--ws-border, rgba(148, 163, 184, 0.25));
+  background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 12px 12px; }
+.mt-panel.portrait .mt-thumb { width: 52px; height: 64px; }
+.mt-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.mt-thumb.empty { font-size: 9px; color: var(--ws-faint, #64748b); text-align: center; line-height: 1.1; padding: 2px; }
+a.mt-thumb:hover { border-color: var(--mt-tone); }
+.mt-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.mt-name { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--ws-strong, #0f172a);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-default { flex: none; padding: 1px 7px; border-radius: 999px; font-size: 10px; font-weight: 600; letter-spacing: 0.03em; text-transform: uppercase;
+  color: var(--mt-tone); background: var(--mt-tone-soft); }
+.mt-file { font-size: 11.5px; color: var(--ws-muted, #64748b); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mt-file span { margin-left: 6px; color: var(--ws-faint, #94a3b8); }
+.mt-del { flex: none; opacity: 0.55; }
+.mt-row:hover .mt-del, .mt-del:focus-visible { opacity: 1; }
+
+/* the drop strip: one slim dashed row (a taller, centred one while the panel is still empty) */
+.mt-root { width: 100%; }
+.mt-drop { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 44px; padding: 8px 12px;
+  border: 1.5px dashed var(--ws-border-hover, rgba(148, 163, 184, 0.45)); border-radius: 12px; cursor: pointer; text-align: center;
+  color: var(--ws-muted, #64748b); font-size: 12.5px; transition: border-color 0.2s, background 0.2s, color 0.2s; }
+.mt-drop.empty { flex-direction: column; gap: 4px; min-height: 112px; }
+.mt-drop:hover, .mt-drop.drag { border-color: var(--mt-tone); background: var(--mt-tone-soft); color: var(--ws-strong, #0f172a); }
+.mt-drop-icon { flex: none; color: var(--mt-tone); }
+.mt-drop-text { font-weight: 600; }
+.mt-drop-browse { font-size: 11.5px; color: var(--ws-faint, #94a3b8); text-decoration: underline; text-underline-offset: 2px; }
+.mt-drop .upload-progress { width: 100%; }

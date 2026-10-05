@@ -96,7 +96,7 @@ export default function LiveText({ node, content, font, origLines = 1, pageH, as
     // Re-fit whenever a font finishes loading - the board's fonts are fetched in the background (utils/fontLoader.js), possibly after
     // this text was first drawn in a fallback font, and a different font means different glyph metrics.
     const fonts = document.fonts;
-    if (fonts && fonts.ready) fonts.ready.then(measure);
+    if (fonts && "ready" in fonts) fonts.ready.then(measure);
     if (fonts && fonts.addEventListener) fonts.addEventListener("loadingdone", measure);
     return () => {
       alive = false;

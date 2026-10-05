@@ -155,7 +155,7 @@ a.gz-download:hover { filter: brightness(1.05); }
 .gz-link-line { display: flex; align-items: center; gap: 8px; font-size: 14px; color: #334155; }
 .gz-url-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .gz-url { flex: 1; min-width: 200px; font-family: ui-monospace, Consolas, monospace; font-size: 13px; }
-.gz-link-err .xm-err { margin: 0; word-break: break-word; }
+.gz-link-err .xm-err { margin: 0; overflow-wrap: anywhere; }
 .gz-link-err .xm-btn { align-self: flex-start; }
 .gz-toast { position: absolute; right: 16px; top: 10px; padding: 3px 10px; border-radius: 999px; background: #065f46; color: #fff; font-size: 12px; font-weight: 600; animation: xm-fade 0.15s ease-out; }
 .gz-link.ready:has(.gz-fallback) { border-color: #fde68a; background: #fffbeb; }
@@ -163,7 +163,7 @@ a.gz-download:hover { filter: brightness(1.05); }
 .gz-fallback.local { color: #7c2d12; background: #ffedd5; }
 .gz-fallback details { margin-top: 4px; }
 .gz-fallback summary { cursor: pointer; font-weight: 600; }
-.gz-why { display: block; margin-top: 4px; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; word-break: break-word; color: #57534e; }
+.gz-why { display: block; margin-top: 4px; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; overflow-wrap: anywhere; color: #57534e; }
 .gz-link-form { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; }
 .gz-link-form .xm-err, .gz-link-form .xm-note { margin: 0; }
 .gz-form-row { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }

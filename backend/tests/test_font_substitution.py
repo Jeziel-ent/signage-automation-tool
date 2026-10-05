@@ -10,7 +10,7 @@ from tests.test_editor_api import _converted_shop, _export, _scene, _wait_export
 INSTALLED = {"available": True, "fonts": ["Arial", "Nirmala UI", "Times New Roman"]}
 
 
-@pytest.fixture()
+@pytest.fixture
 def installed(monkeypatch):
     monkeypatch.setattr(main.fonts, "installed_fonts", lambda refresh=False: INSTALLED)
 

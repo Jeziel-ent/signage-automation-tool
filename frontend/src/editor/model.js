@@ -106,7 +106,7 @@ export function resolveTarget(idx, leafId, ctx) {
     const at = chain.findIndex((n) => n.id === ctx);
     if (at > 0) return { targetId: chain[at - 1].id, ctx };
   }
-  return { targetId: chain[chain.length - 1].id, ctx: null };
+  return { targetId: chain.at(-1).id, ctx: null };
 }
 
 export function unionBox(nodes) {

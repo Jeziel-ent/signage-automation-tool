@@ -117,7 +117,7 @@ def cdr_preview(cdr: Path, dest: Path) -> Path | None:
 
 
 def main():
-    brand, cache, dataset, mode = sys.argv[1:5]
+    brand, _, dataset, mode = sys.argv[1:5]
     only = {int(x) for x in sys.argv[sys.argv.index("--only") + 1].split(",")} if "--only" in sys.argv else None
     limit = int(sys.argv[sys.argv.index("--limit") + 1]) if "--limit" in sys.argv else None
     lib = X.library(brand)
@@ -146,7 +146,7 @@ def main():
             sd["language"] = "ta"
         elif names == {"name_en"}:
             sd["language"] = "en"
-        sd["name"] = re.sub(r"\s*\(\d+\)\s*$", "", sd["name"])      # "(1)" / "(2)" mark the double-sided variants
+        sd["name"] = re.sub(r"\(\d+\)$", "", sd["name"].rstrip()).rstrip()      # "(1)" / "(2)" mark the double-sided variants
         if mode == "unseen":
             sd["template_exclude"] = [x["file"] for x in lib["boards"] if X._same_size(x, b["W"], b["H"])]
         ref = cdr_preview(f, run / "refs" / f"{safe[:70]}.png")
@@ -210,7 +210,7 @@ def main():
 
 def clean_name(n: str) -> str:
     """"Sri Sai cafe (1)": the (1) / (2) marks the double-sided variants, it is not part of the shop name."""
-    return re.sub(r"\s*\(\d+\)\s*$", "", n)
+    return re.sub(r"\(\d+\)$", "", n.rstrip()).rstrip()
 
 
 def dump_name(r: dict) -> str:

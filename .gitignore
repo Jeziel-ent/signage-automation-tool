@@ -26,3 +26,17 @@ venv/
 *.egg-info/
 .env
 .DS_Store
+
+# coverage output (regenerable: pytest --cov / node --test --experimental-test-coverage)
+coverage.xml
+.coverage
+coverage-lcov.info
+frontend-lcov.info
+.scannerwork/
+
+# coverage output (regenerable: pytest --cov / node --test --experimental-test-coverage)
+coverage.xml
+.coverage
+coverage-lcov.info
+frontend-lcov.info
+.scannerwork/

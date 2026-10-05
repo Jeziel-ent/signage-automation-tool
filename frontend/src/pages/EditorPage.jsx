@@ -16,7 +16,7 @@ import { Fit, Redo, Undo, ZoomIn, ZoomOut } from "../editor/icons.jsx";
 import { AlphaMaps } from "../editor/alphaMaps.js";
 import { cloneWithNewIds, shiftNode, unionBox } from "../editor/model.js";
 import { applyOps, buildIndex } from "../editor/ops.js";
-import { UNIT_NAMES, fmt, fromUnit, toUnit, UNITS } from "../editor/units.js";
+import { UNIT_NAMES, fmt, fromUnit, toUnit, trimZeros, UNITS } from "../editor/units.js";
 import { fitView, zoomAt } from "../editor/view.js";
 import { ensureFont, fontSourceDetail, isWebOnly, missingFonts, sceneFonts } from "../utils/fontLoader.js";
 // Static, not lazy: it is small (plain SVG, no three.js since the 2D rewrite) and must paint at once - a lazy chunk added a
@@ -801,7 +801,7 @@ function PageSize({ pageW, pageH, unit, onCommit }) {
   const [h, setH] = useState("");
   const show = (mm) => {
     const s = toUnit(mm, unit).toFixed(UNITS[unit].decimals);
-    return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
+    return trimZeros(s);
   };
   useEffect(() => {
     setW(show(pageW));
@@ -809,8 +809,8 @@ function PageSize({ pageW, pageH, unit, onCommit }) {
   }, [pageW, pageH, unit]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const apply = () => {
-    const nw = parseFloat(w);
-    const nh = parseFloat(h);
+    const nw = Number.parseFloat(w);
+    const nh = Number.parseFloat(h);
     if (!(nw > 0) || !(nh > 0)) {
       setW(show(pageW));
       setH(show(pageH));

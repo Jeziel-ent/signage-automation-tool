@@ -30,7 +30,7 @@ test("image urls are collected from leaves, PowerClips, nested groups and the pa
       { kind: "shape" },
     ] }],
   };
-  assert.deepEqual(collectImageUrls(scene, "/api/x/asset/").sort(),
+  assert.deepEqual(collectImageUrls(scene, "/api/x/asset/").sort((a, b) => a.localeCompare(b)),
     ["/api/x/asset/a.svg", "/api/x/asset/b.png", "/api/x/asset/c.png", "/api/x/asset/page.png", "/api/x/asset/pc.png"]);
   assert.deepEqual(collectImageUrls({ layers: [] }, "/x/"), []);
 });

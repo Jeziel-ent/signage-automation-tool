@@ -40,16 +40,38 @@ change keeps the old engine (this bit us repeatedly).
 
 **Testing through the UI the way it was done (visible, reproducible).** Run a second backend on :8001 with a scratch `SIGNAGE_DATA`, vite with
 `SIGNAGE_API=http://localhost:8001 npx vite --port 5174`, open it in the browser pane, and inject files into the real inputs with
-`DataTransfer` (a tiny CORS file server serves the masters / the xlsx): `.master-card input[type=file]` index 0 = landscape, 1 = portrait, the
+`DataTransfer` (a tiny CORS file server serves the masters / the xlsx): `.mt-slot[data-add=landscape] input[type=file]` / `.mt-slot[data-add=portrait] input[type=file]` (one drop strip per orientation, each adds another master), the
 "Add Master" dialog's file input for more, `[data-testid=shop-import-input]` for the sheet. Sheet headers: `S.NO | SHOP NAME (EN) | SHOP NAME (TA) |
 WIDTH | HEIGHT | UNIT | TYPE OF BOARD | LANGUAGE | MASTER | CONVERT` (Hangyo double-sided boards: side 1 = "Tamil Only", side 2 = name + " (2)" and
 "English Only"). **Convert All starts immediately - import only the rows you mean to run** (a stopped script had already pressed it once).
 Pairing outputs with the designer pictures + the deck: `tools/build_hangyo_jpg_deck.py <pairs.json> <out.pptx> [TITLE] [note]` (pairs = designer
 image, app PNG, name, similarity); Agarpathi designer pictures are in `dataset_analysis/example_eval/agarpathi/refs.json` (regenerable).
 
+**Master Templates UI (2026-10-05).** Two orientation panels (`.mt-panel.landscape|portrait`, `components/MasterPanels.css`, `masterPanel` in `pages/Automation.jsx`): header with icon, rule and count, one compact row per master (thumbnail that opens the preview, name + DEFAULT tag, file and size, delete), one slim drop strip (`UploadDropzone strip`). Replaces the tall dashed cards; the old `.master-card` / `.mc-*` CSS is still defined but no longer used by this section.
+
+**Round 4 (2026-10-05) - Hangyo / Agarpathi name fixes, found by comparing 34 boards with the designers' JPEGs** (deck
+`presentations/Agarpathi and Hangyo - Designer vs Automated (latest).pptx`; built by `tools/build_hangyo_jpg_deck.py` with the new multi-brand
+`pairs.json` + optional `changes.json` slides). Backend 964 passed, frontend 269. All generic, switched by library data. `app/name_check.py` flags a name off the page / on another name / under a picture
+  from a COM dump of the output (all 34 comparison boards pass); English lines start at the designer's line count (`pref_lines`), narrow with the panel
+  (`PANEL_FULL_EN_W`) and side-anchored lines keep clear of pictures (`_clear_of_pictures`, also top-level bitmap elements):
+- `example_layout.plan`: a size the master has no board for takes its name block from `select_text_board` (nearest board with a name, ANY master);
+  a library may set `wide_boards_use_widest_master`, `nested_names_by_spec` (names inside a group follow the spec, `Placed.name_specs`),
+  `name_case: "upper"` (Hangyo's English names), per-master `name_max_page_frac` (survives `build_example_library.py`). Centre-panel designs:
+  the library records the white panel (`clip.panel`); `plan` returns `clip["panel"]` + moves the pictures on its edges (`CorelEngine._place_panel`),
+  names fill it (`PANEL_TA_FIT` / `PANEL_EN_FIT`), the tallest block of boards of that height is borrowed (`fill`) and kept apart / off the edges
+  (`_fit_blocks_in_panel`).
+- `_separate_name_lines`: the left line of a side-by-side pair ends before the right line's PLANNED start (+3 % gap).
+- `layout.compute_layout`: a name line without a box of its own no longer borrows the other script's box when the master has two name lines
+  (Agarpathi 13x2 / 5x5 printed both names on top of each other).
+- `CorelEngine._balanced_lines` minimises the longest line; a name line sized by the text fit is no longer SetSize'd first (the Tamil copy of an
+  English line came out 2x too wide on 8x3 ft GSB). Library builder: repeated logos match with a 15 % nested-shape tolerance (`_same_nested`),
+  an English name retyped by the designer is found next to the Tamil one, masters record `stamps`.
+- Libraries were rebuilt from fresh dumps (`tools/dump_brand_designers.py`). Measured on the same 34 boards: Hangyo 6 very close / 15 close / 1 different
+  (was 6 / 12 / 4), Agarpathi 10 / 1 / 1. Still different: Agarpathi 35x4 (art the master lacks), Hangyo 3x6 portrait (rules layout), PERUMAL STORE 20x4
+  (her panel is narrower than the 20x4 board the app copies), Jairam 20x4 (she sets the Tamil on two lines).
+
 **Open items, in the order I would take them.**
-1. Hangyo wide boards (12-26 ft, from the 10 X 3 master) now have the right structure but the shop names are far smaller than the designer's
-   (name block sized from the three 10x3 library boards). Look at `_text_spec` / `_apply_text_fit` for the m0 master and wide targets.
+1. (done in round 4: wide Hangyo boards - names now fill the white panel.)
 2. Hangyo 10x4 ft GSB boards show one logo, the designer two (art the master lacks); 3x6 ft portrait boards use the rules layout (the 4 X 8 master
    matches no library element; the library records them as built from the landscape 6 X 3 master).
 3. Agarpathi: only the 8 weakest boards were re-run through the UI after the routing fix (the other 55 were not); 6x5, 2x6, 6x4 ft need art the

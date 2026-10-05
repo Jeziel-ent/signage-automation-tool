@@ -34,6 +34,9 @@ from pathlib import Path
 DATA = Path(__file__).resolve().parents[1] / "brand_data"
 LANDSCAPE_MIN_RATIO = 1.25      # same split as master routing (orientation_adapter.target_orientation)
 H_WEIGHT = 0.35                 # how much board HEIGHT counts next to the aspect ratio when ranking designer boards
+PANEL_TA_FIT = 0.92             # a Tamil name (at the top of the white panel) fills this share of the panel
+PANEL_EN_FIT = 0.66             # an English name (low, between the pictures that overlap the panel corners) this share - her single English
+                                # lines measure 0.71 of the panel on every wide board (Sri Ganesha 0.191 / 0.269, Jeeva 0.294 / 0.412)
 PAGE_FIT = 0.96                 # a name line is never wider than this share of the page (a designer's own line can run off hers)
 SAME_SHAPE_TOL = 0.08           # an uploaded master whose width / height is within 8 % of the target's is the design for that shape
 EXACT_TOL = 0.01                # width / height within 1 % = "the same size"
@@ -212,7 +215,10 @@ def describe_master(dump: dict, name_ids: set[int] | None = None) -> dict:
     cc = clip_classes(clip_children(dump), W, H)
     comp = union_box(cc["rest"])
     bms = sorted(clip_bitmaps(dump), key=lambda s: -(s["w"] * s["h"]))
-    return {"page": [round(W, 2), round(H, 2)], "elements": els,
+    top = top_level(dump)
+    stamps = sorted({re.sub(r"[^A-Z]", "", (t.get("text") or "").upper()) for i, t in enumerate(top)
+                     if t["kind"] == "text" and i not in (name_ids or set()) and not TAMIL.search(t.get("text") or "")} - {""})
+    return {"page": [round(W, 2), round(H, 2)], "elements": els, "stamps": stamps,
             "composite_aspect": round(comp["w"] / comp["h"], 4) if comp else None,
             "has_band": cc["band"] is not None,
             "clip_bitmaps": [{"k": f"b{i}", "aspect": round(s["w"] / s["h"], 4), "area": round(s["w"] * s["h"] / (W * H), 5),
@@ -265,12 +271,20 @@ def is_name_text(name: str | None, text: str | None) -> bool:
     return len(a) >= 2 and len(b) >= 2 and len(a & b) >= 0.6 * min(len(a), len(b)) and len(a & b) >= 2
 
 
+COPY_NESTED_TOL = 0.15
+
+
+def _same_nested(a: int, b: int) -> bool:
+    """A repeated logo is the master's logo, but the designer often adds or drops a shape in the copy (13 shapes against 12): the
+    nested count may differ by 15 % (at least 1)."""
+    return abs(a - b) <= max(1, round(COPY_NESTED_TOL * max(a, b)))
+
+
 def board_record(master: dict, dump: dict, name_en: str | None, file: str) -> dict | None:
     """One designer file expressed against `master`; None when it is not built from it (too few elements match)."""
     W, H = dump["page_mm"]["w"], dump["page_mm"]["h"]
     top = top_level(dump)
     names = {}
-    norm = lambda t: re.sub(r"[^A-Z0-9]", "", (t or "").upper())
     for i, s in enumerate(top):
         if s["kind"] != "text":
             continue
@@ -278,6 +292,21 @@ def board_record(master: dict, dump: dict, name_en: str | None, file: str) -> di
             names.setdefault("name_ta", i)
         elif is_name_text(name_en, s.get("text")):
             names["name_en"] = i
+    if "name_en" not in names and "name_ta" in names:
+        # the designer retyped the name ('N N POOJA STORE' for 'N N NATTU MARUNDHU KADAI'): with a Tamil name line present, the biggest
+        # remaining Latin text that is no stamp of the master (and no date code) is the English line
+        stamps = set(master.get("stamps") or ())
+        best = None
+        for i, s in enumerate(top):
+            t = (s.get("text") or "")
+            if s["kind"] != "text" or i in names.values() or TAMIL.search(t) or re.search(r"\d", t) or len(re.findall(r"[A-Za-z]", t)) < 3:
+                continue
+            if re.sub(r"[^A-Z]", "", t.upper()) in stamps or s["w"] * s["h"] < 0.002 * W * H:
+                continue
+            if best is None or s["w"] * s["h"] > best[0]:
+                best = (s["w"] * s["h"], i)
+        if best:
+            names["name_en"] = best[1]
     units = dump_units(dump, set(names.values()))
     matches = match_elements(master, units, W, H)
     if not master["elements"] or len(matches) < 0.6 * len(master["elements"]):
@@ -293,7 +322,7 @@ def board_record(master: dict, dump: dict, name_en: str | None, file: str) -> di
             if e["kind"] != u.kind:
                 continue
             d = _ln(u.aspect, e["aspect"])
-            if d <= SIG_ASPECT_TOL and (e["kind"] not in ("group", "cluster") or u.n_desc == e["n_desc"])                     and (cand is None or d < cand[0]):
+            if d <= SIG_ASPECT_TOL and (e["kind"] not in ("group", "cluster") or _same_nested(u.n_desc, e["n_desc"]))                     and (cand is None or d < cand[0]):
                 cand = (d, e["k"])
         if cand and cand[1] in matches:
             copies.setdefault(cand[1], []).append(
@@ -314,6 +343,9 @@ def board_record(master: dict, dump: dict, name_en: str | None, file: str) -> di
     for k, s in (("backdrop", cc["backdrop"]), ("band", cc["band"]), ("composite", union_box(cc["rest"]))):
         if s:
             clip[k] = {a: round(b, 5) for a, b in _frac(s, W, H).items()}
+    panel = [k for k in clip_children(dump) if k["type"] in ("rectangle", "curve") and k["h"] >= 0.9 * H and 0.1 * W <= k["w"] <= 0.8 * W]
+    if len(panel) == 1:                       # the white name panel of a centre-panel design (a full-height rectangle in the page clip)
+        clip["panel"] = {a: round(b, 5) for a, b in _frac(panel[0], W, H).items()}
     rec["clip"] = clip
     rec["cbm"] = match_clip_bitmaps(master.get("clip_bitmaps", []), clip_bitmaps(dump), W, H)
     rec["texts"] = {k: {**{a: round(b, 5) for a, b in _frac(top[i], W, H).items()},
@@ -450,8 +482,31 @@ def _same_size(b: dict, w: float, h: float) -> bool:
     return abs(b["W"] / w - 1) < EXACT_TOL and abs(b["H"] / h - 1) < EXACT_TOL
 
 
-def _text_spec(lib: dict, master: dict, board: dict, key: str, new_w: float, new_h: float) -> dict | None:
-    group = [b for b in lib["boards"] if b["master"] == master["id"] and _same_size(b, board["W"], board["H"])
+def select_text_board(lib: dict, new_w: float, new_h: float, board_type: str | None = None, exclude=None):
+    """The nearest designer board of ANY master that carries shop-name text: where the master's own boards are all of another size
+    (Hangyo: a 20-26 ft board is drawn from the 10 X 3 master, but the designer made those wide boards from the 6 X 3 one) the name
+    block of a board of the target's own size says how big the name is on a wide board; the 10 X 3 boards say nothing about it.
+    Same ranking as `select_board` (distance, then TYPE OF BOARD), without the master or picture-compatibility conditions."""
+    fam, asp = family(new_w, new_h), new_w / new_h
+    want_type = norm_type(board_type)
+    skip = {exclude} if isinstance(exclude, str) else set(exclude or ())
+    cands = [b for b in lib["boards"] if family(b["W"], b["H"]) == fam and b["file"] not in skip
+             and any(k in (b.get("texts") or {}) for k in ("name_en", "name_ta"))]
+    if not cands:
+        return None
+    def rank(b):
+        d = _ln(b["W"] / b["H"], asp) + H_WEIGHT * _ln(b["H"], new_h)
+        mismatch = 1 if want_type and board_kind(b["file"]) and board_kind(b["file"]) != want_type else 0
+        return (round(d, 3), mismatch, -len(b["texts"]))
+    return min(cands, key=rank)
+
+
+def _text_spec(lib: dict, master: dict | None, board: dict, key: str, new_w: float, new_h: float, cap: float | None = None,
+               fill: list | None = None) -> dict | None:
+    """`cap`: an extra upper bound on the name width, as a share of the page (see `plan`). `fill`: designer boards of the same design and
+    height - the name block may be as tall as the biggest of theirs (she sets a short name big on two lines and a long one smaller on
+    one line to fill the panel; one board's block only knows its own name's length)."""
+    group = [b for b in lib["boards"] if (master is None or b["master"] == master["id"]) and _same_size(b, board["W"], board["H"])
              and b["texts"].get(key)]
     if not group:
         return None
@@ -466,11 +521,17 @@ def _text_spec(lib: dict, master: dict, board: dict, key: str, new_w: float, new
     h_frac = max(b["texts"][key]["h"] for b in group)
     w_cap = max(b["texts"][key]["w"] for b in group)
     lines = max(b["texts"][key].get("lines", 1) for b in group)
+    fill = [b for b in (fill or ()) if b["texts"].get(key)]
+    if fill:
+        h_frac = max(h_frac, max(b["texts"][key]["h"] for b in fill))
+        lines = max(lines, max(b["texts"][key].get("lines", 1) for b in fill))
+        if cap:
+            w_cap = cap                  # the panel's own width limits a line, not the length of the names that board happened to have
     lhs = [b["texts"][key]["h"] / max(b["texts"][key].get("lines", 1), 1) for b in group]
     line_h = max(lhs)                                                       # her font size, as a line height
     # boards of this size that agree on the font size keep it ("font"); where it varies with the name she fits each name to its
     # text block ("block"), and a lone example cannot tell the two apart
-    mode = "font" if len(lhs) >= 2 and max(lhs) / max(min(lhs), 1e-9) <= 1.15 else "block"
+    mode = "font" if len(lhs) >= 2 and max(lhs) / max(min(lhs), 1e-9) <= 1.15 and not fill else "block"
     lefts = [b["texts"][key]["x"] for b in group]
     rights = [b["texts"][key]["x"] + b["texts"][key]["w"] for b in group]
     centres = [b["texts"][key]["cx"] for b in group]
@@ -482,25 +543,96 @@ def _text_spec(lib: dict, master: dict, board: dict, key: str, new_w: float, new
         anchor = "center" if abs(box["cx"] - 0.5) < 0.06 else ("left" if box["cx"] < 0.5 else "right")
     ax = {"left": sum(lefts) / len(lefts), "right": sum(rights) / len(rights), "center": sum(centres) / len(centres)}[anchor]
     cy = sum(b["texts"][key]["cy"] for b in group) / len(group)
-    return {"anchor": anchor, "ax": ax * new_w, "cy": cy * new_h, "h": h_frac * new_h, "w_cap": min(w_cap, PAGE_FIT) * new_w, "page_w": new_w,
-            "line_h": line_h * new_h, "max_lines": lines, "mode": mode}
+    return {"anchor": anchor, "ax": ax * new_w, "cy": cy * new_h, "h": h_frac * new_h, "w_cap": min(w_cap, PAGE_FIT, cap or PAGE_FIT) * new_w, "page_w": new_w,
+            "line_h": line_h * new_h, "max_lines": lines, "mode": mode,
+            "pref_lines": int(box.get("lines") or 0) if (fill and key == "name_en") else 0}
+
+
+BLOCK_GAP_FRAC = 0.06           # clear space between a stacked Tamil and English block, as a share of the board height
+BLOCK_EDGE_FRAC = 0.04          # a borrowed name block keeps this share of the height clear of the top and bottom edges
+BLOCK_MAX_FRAC = {"name_ta": 0.56, "name_en": 0.36}   # tallest a borrowed block may be (share of the board height)
+
+
+def _fit_blocks_in_panel(texts: dict, new_h: float) -> None:
+    """Name blocks borrowed from the tallest boards of this height must stay on the page and clear of each other: a block is at most as
+    tall as the room above / below its own centre (and `BLOCK_MAX_FRAC` of the height), and a stacked pair (Tamil over English) is
+    scaled down until `BLOCK_GAP_FRAC` of the height is left between them - the glyphs of a wrapped line reach beyond the block."""
+    margin = BLOCK_EDGE_FRAC * new_h
+    for k, t in texts.items():
+        t["h"] = min(t["h"], 2 * min(t["cy"], new_h - t["cy"]) * 0.96, BLOCK_MAX_FRAC.get(k, 0.5) * new_h)
+        t["cy"] = min(max(t["cy"], t["h"] / 2 + margin), new_h - t["h"] / 2 - margin)       # the block keeps clear of the board's edges
+    if "name_en" in texts and "name_ta" in texts:
+        lo, hi = sorted((texts["name_en"], texts["name_ta"]), key=lambda t: t["cy"])
+        need = (lo["h"] + hi["h"]) / 2
+        room = hi["cy"] - lo["cy"] - BLOCK_GAP_FRAC * new_h
+        if need > 0 and 0 < room < need:
+            f = room / need
+            lo["h"] *= f
+            hi["h"] *= f
+
+
+PANEL_FULL_EN_W = 0.33           # panels at least this wide (share of the page) get the full English width ratio
+PICTURE_GAP_FRAC = 0.01          # clear space between a side-anchored name line and a picture next to it, as a share of the page width
+
+
+def _clear_of_pictures(texts: dict, bitmaps: dict, new_w: float, new_h: float) -> None:
+    """A name line anchored at its LEFT or RIGHT edge (not a centred one - those sit between pictures by design) must not run under a
+    clipped picture beside it. A picture overlapping the line's span (same rows) in its far half shortens the line; one in its near half
+    (over the anchored edge) moves the anchor past the picture."""
+    gap = PICTURE_GAP_FRAC * new_w
+    for t in texts.values():
+        if t["anchor"] not in ("left", "right"):
+            continue
+        lo, hi = t["cy"] - t["h"] / 2, t["cy"] + t["h"] / 2
+        for box in bitmaps.values():
+            x, y, w, h = box[:4]
+            if h <= 0 or y + h <= lo or y >= hi or w >= 0.5 * new_w:                  # not beside this line / a backdrop-sized picture
+                continue
+            a0, a1 = (t["ax"], t["ax"] + t["w_cap"]) if t["anchor"] == "left" else (t["ax"] - t["w_cap"], t["ax"])
+            if x + w <= a0 or x >= a1:                                                # clear of the span already
+                continue
+            far_half = (x + w / 2) > (a0 + a1) / 2 if t["anchor"] == "left" else (x + w / 2) < (a0 + a1) / 2
+            if t["anchor"] == "left":
+                if far_half:
+                    t["w_cap"] = max(x - gap - t["ax"], 0.2 * t["w_cap"])
+                else:
+                    t["w_cap"] -= x + w + gap - t["ax"]
+                    t["ax"] = x + w + gap
+            else:
+                if far_half:
+                    t["w_cap"] = max(t["ax"] - (x + w + gap), 0.2 * t["w_cap"])
+                else:
+                    t["w_cap"] -= t["ax"] - (x - gap)
+                    t["ax"] = x - gap
 
 
 def _separate_name_lines(texts: dict, board: dict, new_w: float) -> None:
-    """Two name lines side by side on the designer's board (Tamil left, English right) whose recorded boxes still overlap (a Tamil text
-    shape carries trailing spaces or a divider): the left line is held to the room left of the other one, so a longer name never runs
-    into it. Boards whose two lines do not share a row are untouched."""
+    """Two name lines side by side on the designer's board (Tamil left, English right): the left line is held to the room left of the
+    other one, so a longer name never runs into it - whether or not the recorded boxes overlap (the width cap of a spec can come from
+    another board's longer name). When the recorded boxes DO overlap (a Tamil text shape carrying trailing spaces or a divider) the left
+    line is also anchored at the board's own left edge. Boards whose two lines do not share a row are untouched."""
     bt = board.get("texts") or {}
     if "name_en" not in texts or "name_ta" not in texts or "name_en" not in bt or "name_ta" not in bt:
         return
     a, b = sorted((bt["name_en"], bt["name_ta"]), key=lambda t: t["x"])           # a = the left one
     same_row = abs(a["cy"] - b["cy"]) < (a["h"] + b["h"]) / 2 * 0.8
-    if not same_row or a["x"] + a["w"] <= b["x"]:
+    if not same_row:
         return
     key = "name_en" if a is bt["name_en"] else "name_ta"
-    room = (b["x"] - a["x"] - 0.012) * new_w
-    if room > 0:
-        texts[key] = {**texts[key], "anchor": "left", "ax": a["x"] * new_w, "w_cap": min(texts[key]["w_cap"], room)}
+    other = "name_ta" if key == "name_en" else "name_en"
+    gap = 0.03 * new_w
+    o = texts[other]                                                                # where the right-hand line really starts (its planned width)
+    o_left = {"left": o["ax"], "center": o["ax"] - o["w_cap"] / 2, "right": o["ax"] - o["w_cap"]}[o["anchor"]]
+    edge = min(b["x"] * new_w, o_left) - gap
+    t = texts[key]
+    if a["x"] + a["w"] > b["x"]:                                                    # overlapping boxes: anchor at the board's left edge
+        room = edge - a["x"] * new_w
+        if room > 0:
+            texts[key] = {**t, "anchor": "left", "ax": a["x"] * new_w, "w_cap": min(t["w_cap"], room)}
+        return
+    room = {"left": edge - t["ax"], "center": 2 * (edge - t["ax"]), "right": 0}[t["anchor"]]   # not overlapping: only the width cap follows the room
+    if t["anchor"] != "right" and 0 < room < t["w_cap"]:
+        texts[key] = {**t, "w_cap": room}
 
 
 def plan(brand: str | None, objs, page_w: float, page_h: float, new_w: float, new_h: float,
@@ -563,12 +695,54 @@ def plan(brand: str | None, objs, page_w: float, page_h: float, new_w: float, ne
     if mb and all(k in cbm for k, b in mb.items() if not b["backdrop"]):
         clip["bitmaps"] = {k: (t["cx"] * new_w - t["w"] * new_w / 2, t["cy"] * new_h - t["h"] * new_h / 2, t["w"] * new_w,
                                t["h"] * new_h, mb[k]["aspect"], bool(mb[k]["backdrop"])) for k, t in cbm.items()}
-    texts = {k: s for k in ("name_en", "name_ta") if (s := _text_spec(lib, master, board, k, new_w, new_h))}
-    _separate_name_lines(texts, board, new_w)
+    tboard, tmaster = board, master
+    mcap = master.get("name_max_page_frac")
+    if lib.get("wide_boards_use_widest_master") and not _same_size(board, new_w, new_h):
+        # no board of this size from this master: the name block comes from the nearest designer board that has one (any master)
+        alt = select_text_board(lib, new_w, new_h, board_type, exclude)
+        if alt is not None:
+            tboard, tmaster = alt, None
+    caps = {}
+    skip_files = {exclude} if isinstance(exclude, str) else set(exclude or ())
+    bpanel, tpanel = (board.get("clip") or {}).get("panel"), (tboard.get("clip") or {}).get("panel")
+    if bpanel and tpanel:
+        # a centre-panel design: the white panel is as wide as the designer's board of this size made it (0.27 - 0.41 of the page,
+        # not the master's third), the pictures on its edges move with the edge they sit on, and the names fill it
+        clip["panel"] = (tpanel["cx"] * new_w - tpanel["w"] * new_w / 2, tpanel["cy"] * new_h - tpanel["h"] * new_h / 2,
+                         tpanel["w"] * new_w, tpanel["h"] * new_h)
+        if tboard is not board and clip.get("bitmaps"):
+            moved = {}
+            for k, (x, y, w, h, asp, bd) in clip["bitmaps"].items():
+                left = (x + w / 2) / new_w < bpanel["cx"]
+                old_edge = bpanel["x"] if left else bpanel["x"] + bpanel["w"]
+                new_edge = tpanel["x"] if left else tpanel["x"] + tpanel["w"]
+                moved[k] = (x if bd else x + (new_edge - old_edge) * new_w, y, w, h, asp, bd)
+            clip["bitmaps"] = moved
+        # on a panel narrower than a third of the page the pictures on its corners take a larger share of the low English line: it narrows
+        # in step (26x3 ft: panel 0.269 -> 0.54 of her ratio) so it stays between them
+        caps = {"name_ta": PANEL_TA_FIT * tpanel["w"], "name_en": PANEL_EN_FIT * tpanel["w"] * min(1.0, tpanel["w"] / PANEL_FULL_EN_W)}
+    elif mcap:
+        # a master whose white panel stretches with the page records how wide its name zone is (a share of the page)
+        caps = {"name_ta": mcap, "name_en": mcap}
+    fill = []
+    if bpanel and tpanel:
+        fill = [b for b in lib["boards"] if (b.get("clip") or {}).get("panel") and abs(b["H"] / tboard["H"] - 1) < 0.02 and b["file"] not in skip_files]
+    texts = {k: s for k in ("name_en", "name_ta") if (s := _text_spec(lib, tmaster, tboard, k, new_w, new_h, caps.get(k), fill))}
+    if fill:
+        _fit_blocks_in_panel(texts, new_h)
+    _separate_name_lines(texts, tboard, new_w)
+    pics = dict(clip.get("bitmaps") or {})
+    kinds = {e["k"]: e["kind"] for e in master["elements"]}
+    for oid, (bx, by, bw, bh, k) in boxes.items():            # a bitmap that is an element of the master itself (Agarpathi's product pack)
+        if kinds.get(k) == "bitmap" and "_tile" not in oid:
+            pics["el_" + oid] = (bx, by, bw, bh)
+    if pics:
+        _clear_of_pictures(texts, pics, new_w, new_h)
     dist = _ln(board["W"] / board["H"], new_w / new_h) + H_WEIGHT * _ln(board["H"], new_h)
     return {"template": {"file": board["file"], "W": board["W"], "H": board["H"], "exact": _same_size(board, new_w, new_h),
                          "distance": round(dist, 4), "extra": board.get("extra", 0)},
-            "boxes": boxes, "clip": clip, "texts": texts, "board_scripts": sorted(board.get("texts") or {})}
+            "boxes": boxes, "clip": clip, "texts": texts, "board_scripts": sorted(tboard.get("texts") or {}),
+            "nested_names": bool(lib.get("nested_names_by_spec")), "name_case": lib.get("name_case")}
 
 
 def preferred_master_file(brand: str | None, new_w: float, new_h: float, available: set[str] | None = None,

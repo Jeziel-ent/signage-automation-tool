@@ -47,7 +47,7 @@ def board(W, H, fx):
                       ("group", *box(fx["comp"]))])
 
 
-@pytest.fixture()
+@pytest.fixture
 def lib(tmp_path, monkeypatch):
     m = master_dump()
     master = X.describe_master(m, {1, 2})
@@ -207,3 +207,29 @@ def test_repeated_copies_are_recorded_and_planned_as_duplicates(tmp_path, monkey
     placed = compute_layout(objs, 3000, 1000, 6000, 1000, shopname_ids={"1", "2"},
                             brand_rule={"brand": "t", "example_library": True}, shop_name="X", shop_name_local="Y")
     assert any(p.id == "4_tile1" for p in placed)                                    # CorelEngine duplicates shape 4 for it
+
+
+def test_a_repeated_logo_with_one_more_nested_shape_is_still_a_copy(tmp_path, monkeypatch):
+    """Designers add or drop a shape in the repeated logo (13 against 12): it is a copy of the master element, not unrelated art."""
+    X.library.cache_clear()
+    m = master_dump()
+    master = X.describe_master(m, {1, 2})
+    master["id"], master["file"] = "m0", "m.cdr"
+    wide = dump(6000, 1000,
+                [("group", 200, 600, 600, 300, 4), ("group", 3000, 300, 900, 600, 6), ("group", 4600, 300, 900, 600, 7),   # logo twice, 7 shapes
+                 ("bitmap", 5700, 100, 150, 700)],
+                texts=[("NEW SHOP", 100, 50, 1000, 100), ("நியூ", 3000, 50, 800, 90)],
+                clip=[("bitmap", -100, -50, 6200, 1100), ("group", -50, -300, 6100, 500), ("group", 100, 150, 1200, 700)])
+    rec = X.board_record(master, wide, "NEW SHOP", "wide.cdr")
+    assert rec["extra"] == 0 and len(rec["copies"]["e1"]) == 1
+    assert X._same_nested(12, 13) and X._same_nested(6, 7) and not X._same_nested(4, 9)
+
+
+def test_a_retyped_english_name_is_still_found_next_to_the_tamil_name():
+    master = X.describe_master(master_dump(), {1, 2})
+    d = dump(3000, 1000,
+             [("group", 100, 600, 600, 300, 4), ("group", 1500, 300, 900, 600, 6), ("bitmap", 2700, 100, 150, 700)],
+             texts=[("POOJA STORE", 100, 50, 1000, 100), ("நியூ", 1500, 50, 800, 90), ("ADINN", 2500, 900, 200, 40)],
+             clip=[("bitmap", -100, -50, 3200, 1100), ("group", -50, -300, 3100, 500), ("group", 100, 150, 1200, 700)])
+    rec = X.board_record(master, d, "NATTU MARUNDHU KADAI", "b.cdr")              # the file's name is not what the board shows
+    assert set(rec["texts"]) == {"name_ta", "name_en"} and rec["texts"]["name_en"]["w"] == pytest.approx(1000 / 3000, abs=1e-3)

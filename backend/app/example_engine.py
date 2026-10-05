@@ -146,7 +146,7 @@ def match_entities(master_ents: list[Entity], master_w: float, master_h: float,
         candidates = [b for b in remaining_board if b.kind in ("text", "shopname")]
         if not candidates:
             continue
-        best = min(candidates, key=lambda b: abs(b.bbox["h"] / board_h - m.bbox["h"] / master_h))
+        best = min(candidates, key=lambda b, m=m: abs(b.bbox["h"] / board_h - m.bbox["h"] / master_h))
         out[m.key] = [best]
         remaining_board.remove(best)
 
@@ -159,7 +159,7 @@ def match_entities(master_ents: list[Entity], master_w: float, master_h: float,
     for b in [e for e in remaining_board if e.kind == "logo_cluster"]:
         if not master_logo:
             break
-        best = min(master_logo, key=lambda m: abs(b.bbox["h"] / board_h - m.bbox["h"] / master_h))
+        best = min(master_logo, key=lambda m, b=b: abs(b.bbox["h"] / board_h - m.bbox["h"] / master_h))
         out[best.key].append(b)
 
     return out

@@ -65,6 +65,7 @@ Operations (`op` key; every op is JSON and self-contained):
 from __future__ import annotations
 
 import copy
+import math
 from typing import Any
 
 MIN_SIZE = 0.001
@@ -433,7 +434,7 @@ def _apply_text_format(t: dict, op: dict) -> bool:
                 v = float(op[key])
             except (TypeError, ValueError):
                 raise OpError(f"{key} must be a number")
-            if v != v:
+            if math.isnan(v):
                 raise OpError(f"{key} must be a number")
             if not (lo <= v <= hi):
                 raise OpError(f"{key} must be between {lo:g} and {hi:g}")

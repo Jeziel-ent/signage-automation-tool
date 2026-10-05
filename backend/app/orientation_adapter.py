@@ -723,7 +723,7 @@ def _boost_brand_roof(idx: dict, ids: list[str], frame: dict, canvas: tuple, obs
     whose columns it overlaps, its ceiling the lowest already-placed header badge it overlaps, else the badge line
     BADGE_TOP_Y), so it never touches a snapped corner badge or a product. Never smaller than the standard fit; returns None when
     it cannot be larger (the caller keeps the standard fit)."""
-    W, H = canvas
+    _, H = canvas
     frm = _union_box(idx, ids)
     if frm["w"] <= 0 or frm["h"] <= 0:
         return None
@@ -988,7 +988,7 @@ def _group_fragments(scene: dict) -> list[dict]:
                         or not _has_bitmap_only(n)
                         or float(n["w"]) * float(n["h"]) >= pe.BG_AREA_RATIO * page_w * page_h):
                     continue
-                best = max(range(len(eligible)), key=lambda i: _iou(n, boxes[i]))
+                best = max(range(len(eligible)), key=lambda i, n=n: _iou(n, boxes[i]))
                 if _iou(n, boxes[best]) >= SHADOW_IOU:
                     eligible[best].append(n)
         for members in eligible:

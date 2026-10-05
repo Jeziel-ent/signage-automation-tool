@@ -100,7 +100,9 @@ export default function BrandSelect({ value, options, onChange, placeholder = "S
                 aria-selected={o === value}
                 className={"brand-item" + (o === value ? " selected" : "") + (i === active ? " active" : "")}
                 onMouseEnter={() => setActive(i)}
+                tabIndex={-1}
                 onClick={() => pick(o)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(o); } }}
               >
                 <span>{o}</span>
                 {o === value && <Check size={16} />}

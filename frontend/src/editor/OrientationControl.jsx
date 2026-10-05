@@ -24,8 +24,8 @@ export default function OrientationControl({ unit, disabled, onConvert }) {
   };
 
   const applyCustom = () => {
-    const w = parseFloat(customW);
-    const h = parseFloat(customH);
+    const w = Number.parseFloat(customW);
+    const h = Number.parseFloat(customH);
     if (!(w > 0) || !(h > 0)) return;
     onConvert(fromUnit(w, unit), fromUnit(h, unit), `${w} × ${h} ${unit}`);
     setCustomW("");

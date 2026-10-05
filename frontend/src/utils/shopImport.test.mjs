@@ -101,11 +101,11 @@ test("a title above the header row is skipped; row numbers are spreadsheet rows;
 
 test("only name / width / height are read (phone, GST, address columns are ignored)", () => {
   const r = mapSheetRows([["Shop Name", "Size", "Phone", "GST", "Address"], ["A", "10*4", "9876543210", "G1", "Somewhere"]]);
-  assert.deepEqual(Object.keys(r.shops[0]).sort(), ["height", "name", "row", "unit", "unitSource", "width"]);
+  assert.deepEqual(Object.keys(r.shops[0]).sort((a, b) => a.localeCompare(b)), ["height", "name", "row", "unit", "unitSource", "width"]);
 });
 
 test("no usable columns -> missing is reported and nothing is imported", () => {
-  assert.deepEqual(mapSheetRows([["Foo", "Bar"], ["1", "2"]]).missing.sort(), ["name", "size"]);
+  assert.deepEqual(mapSheetRows([["Foo", "Bar"], ["1", "2"]]).missing.sort((a, b) => a.localeCompare(b)), ["name", "size"]);
   const onlyName = mapSheetRows([["Shop"], ["A"], ["B"]]);
   assert.deepEqual(onlyName.missing, ["size"]);
   assert.equal(onlyName.shops.length, 0);

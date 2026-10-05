@@ -40,7 +40,6 @@ def main():
         if pl is None:
             rows.append((b["file"][:40], "NO PLAN", [])); n += 1; continue
         errs = []
-        by_key = {k: oid for oid, (x, y, w, h, k) in pl["boxes"].items()}
         for k, be in b["els"].items():
             vs = [v for v in pl["boxes"].values() if v[4] == k]
             if not vs:

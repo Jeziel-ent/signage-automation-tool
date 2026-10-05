@@ -38,7 +38,6 @@ def _resize_to_width(src: Path, dst: Path, width: int = DISPLAY_WIDTH) -> None:
 
 def build(brand: str) -> Path:
     report = json.loads((VALIDATION_ROOT / brand / "validation_report.json").read_text(encoding="utf-8"))
-    master_file = None
     # the master-as-its-own-target board has target size == its own page size
     # and 0% diff; simplest reliable skip is "diff max == 0.0 and no tile" but
     # explicit is clearer: the brand's master filename is in BRAND_MASTER in
@@ -49,7 +48,7 @@ def build(brand: str) -> Path:
     # the one used to generate every other board, identified by max_diff==0.
     cards = []
     for b in report["boards"]:
-        if "error" in b or b.get("diff_pct", {}).get("max") == 0.0:
+        if "error" in b or abs(b.get("diff_pct", {}).get("max", 1)) < 1e-9:
             continue  # master-as-its-own-target sanity check, not a real comparison
         if "ours_png" not in b or "real_png" not in b:
             continue

@@ -14,7 +14,7 @@ test("no formatting: exactly the old live-text placement (centred, 1.2 em lines)
   assert.equal(x, 30);
   assert.equal(k, 0.2);
   assert.equal(ax, 0); // -(bb.x + width/2)
-  assert.ok(Math.abs(top + k * (bb.y - bb.y) + k * bb.height / 2 - 10) < 1e-9 && ay === 80);
+  assert.ok(Math.abs(top + k * bb.height / 2 - 10) < 1e-9 && ay === 80);
 });
 
 test("styles map to SVG: bold/italic/underline, alignment anchors, spacing", () => {

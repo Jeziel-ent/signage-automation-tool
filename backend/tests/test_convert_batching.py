@@ -34,7 +34,7 @@ def _ok(job):
     return {"status": "done", "result": {"files": {"cdr": "x.cdr"}, "report": {"timings_s": {}}}, "shop": job["shop"]}
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_corel(client, monkeypatch):  # noqa: F811
     m = _main()
     monkeypatch.setattr(m, "get_engine", lambda kind: FakeCorelEngine())

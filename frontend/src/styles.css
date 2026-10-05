@@ -517,6 +517,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .rg-table tbody tr { transition: background-color 0.15s; }
 .rg-table tbody tr:hover { background: rgba(248, 250, 252, 0.7); }
 .rg-table tbody tr:last-child td { border-bottom: none; }
+.rg-thumb-btn { background: none; border: 0; padding: 0; margin: 0; cursor: pointer; display: inline-block; line-height: 0; }
 .rg-thumb {
   display: block; width: 56px; height: 36px; border-radius: 8px; border: 1px solid #e2e8f0; object-fit: cover; background: #f1f5f9;
   box-shadow: 0 1px 1px rgba(15, 23, 42, 0.05); cursor: pointer; transition: transform 0.15s;

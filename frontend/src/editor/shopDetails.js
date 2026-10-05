@@ -54,7 +54,7 @@ export const toFieldText = (content) => (content || "").replace(/\r\n?/g, "\n");
 /** Textarea value -> board text, keeping the line separator the original text used (\r for CorelDRAW text). */
 export function toBoardText(value, original) {
   const lines = (value || "").replace(/\r\n?/g, "\n");
-  return /\r/.test(original || "") ? lines.replace(/\n/g, "\r") : lines;
+  return /\r/.test(original || "") ? lines.replaceAll("\n", "\r") : lines;
 }
 
 /** One-line label for a text object in the picker. */

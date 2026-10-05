@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 from datetime import datetime, timezone
@@ -157,23 +158,27 @@ async def create_job(
         raise HTTPException(400, "Master file must be a .cdr")
     try:
         shop_list = json.loads(shops)
-        assert isinstance(shop_list, list) and shop_list
+        if not (isinstance(shop_list, list) and shop_list):
+            raise ValueError("shops must be a non-empty list")
         for s in shop_list:
-            assert s["name"].strip()
-            assert float(s["width"]) > 0 and float(s["height"]) > 0
-            assert s["unit"] in ("mm", "cm", "in", "ft", "m")
             # optional per-shop content fields (see CLAUDE.md "Per-shop content
             # replacement"): shop_name_local (Tamil display name), phone, gst,
             # address_lines (list[str]) - all freeform, engine treats missing/empty
             # as "don't touch that line"
+            if not (s["name"].strip() and float(s["width"]) > 0 and float(s["height"]) > 0
+                    and s["unit"] in ("mm", "cm", "in", "ft", "m")):
+                raise ValueError("invalid shop")
     except Exception:
         raise HTTPException(400, "Invalid shops: each needs name, width>0, height>0, unit")
 
     job_id = uuid.uuid4().hex[:12]
     jdir = JOBS / job_id
     jdir.mkdir(parents=True)
-    with open(jdir / "master.cdr", "wb") as f:
-        shutil.copyfileobj(master.file, f)
+    def _save_master() -> None:
+        with open(jdir / "master.cdr", "wb") as f:
+            shutil.copyfileobj(master.file, f)
+
+    await asyncio.to_thread(_save_master)  # a 300 MB copy must not block the event loop
 
     _jobs[job_id] = {
         "id": job_id, "brand": brand, "master": master.filename, "status": "queued",
@@ -1166,7 +1171,7 @@ def v2_shop_thumb(shop_id: str):
     if not thumb.is_file() or thumb.stat().st_mtime < src.stat().st_mtime:
         if src.suffix.lower() not in (".png", ".jpg", ".jpeg", ".webp"):
             return FileResponse(src)  # e.g. MockEngine's SVG preview: already tiny, and vector
-        from PIL import Image, UnidentifiedImageError
+        from PIL import Image
         thumb.parent.mkdir(parents=True, exist_ok=True)
         tmp = thumb.with_name(f"{thumb.stem}.{os.getpid()}.tmp{ext}")
         try:
@@ -1175,7 +1180,7 @@ def v2_shop_thumb(shop_id: str):
                 if im.mode in ("LA", "P"):  # palette / grey+alpha: RGBA so WebP and PNG both keep any transparency
                     im = im.convert("RGBA")
                 im.save(tmp, fmt, **({"quality": 82, "method": 4} if fmt == "WEBP" else {"optimize": True}))
-        except (UnidentifiedImageError, OSError):  # an empty/corrupt preview (seen live: a 0-byte PNG) - no thumbnail
+        except OSError:  # an empty/corrupt preview (seen live: a 0-byte PNG; PIL's UnidentifiedImageError is an OSError) - no thumbnail
             tmp.unlink(missing_ok=True)
             raise HTTPException(404, "preview is not a readable image")
         try:

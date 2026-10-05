@@ -48,7 +48,10 @@ test("mock engine is ready without CorelDRAW", () => {
 
 test("checkCorelConnection never throws and uses the proxied relative URL", async () => {
   const seen = [];
-  const ok = await checkCorelConnection({ fetchImpl: async (u) => (seen.push(u), { ok: true, json: async () => ({ ok: true }) }) });
+  const ok = await checkCorelConnection({ fetchImpl: async (u) => {
+    seen.push(u);
+    return { ok: true, json: async () => ({ ok: true }) };
+  } });
   assert.deepEqual(ok, { ok: true });
   assert.deepEqual(seen, [HEALTH_URL]);
   assert.deepEqual(await checkCorelConnection({ fetchImpl: async () => { throw new TypeError("Failed to fetch"); } }), { unreachable: true });

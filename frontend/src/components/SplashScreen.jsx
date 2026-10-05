@@ -9,7 +9,7 @@ import { checkCorelConnection, describeHealth } from "../utils/corelHealth.js";
 // The download starts as soon as this module is evaluated, not when the component first renders.
 const loadCity = () => import("./CityCanvas.jsx");
 const cityPromise = typeof window !== "undefined" ? loadCity() : null;
-const CityCanvas = lazy(() => cityPromise || loadCity());
+const CityCanvas = lazy(() => cityPromise ?? loadCity());
 
 const MIN_CHECK_MS = 700; // keep the connecting state up long enough to read, even when the server answers instantly
 const FADE_MS = 320; // fade to the workspace once the camera reaches the billboard

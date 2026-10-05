@@ -215,8 +215,8 @@ function WeTransferCard({ token }) {
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${r.status}`);
       setJob({ job_id: body.job_id, status: "queued", step: "queued", progress: 0 });
-    } catch (e2) {
-      setErr(e2.message);
+    } catch (error_) {
+      setErr(error_.message);
       setJob(null);
     }
   }
@@ -240,9 +240,9 @@ function WeTransferCard({ token }) {
       if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${r.status}`);
       setOtp("");
       setJob((j) => ({ ...j, status: "running", step: "verifying", otp_error: null }));
-    } catch (e2) {
+    } catch (error_) {
       setOtpBusy(false);
-      setOtpErr(e2.message);
+      setOtpErr(error_.message);
     }
   }
 

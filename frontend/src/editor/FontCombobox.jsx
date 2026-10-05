@@ -147,7 +147,9 @@ export default function FontCombobox({ fonts, value, onChange, disabled = false,
                 className={"fcb-option" + (i === active ? " active" : "") + (f === value ? " selected" : "")}
                 onMouseEnter={() => setActive(i)}
                 onMouseDown={(e) => e.preventDefault()} /* keep focus in the search box */
+                tabIndex={-1}
                 onClick={() => pick(f)}
+                onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(f); } }}
               >
                 <span className="fcb-name" style={{ fontFamily: `"${f}", sans-serif` }}>{f}</span>
                 {f === value && <Check size={14} className="fcb-check" aria-hidden="true" />}

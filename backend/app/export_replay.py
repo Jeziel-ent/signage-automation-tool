@@ -868,7 +868,7 @@ def apply_font_substitutions(page, subs: dict[str, str] | None, warnings: list[s
         if _safe(lambda sh=sh: int(sh.Type)) != 6:
             continue
         story = _safe(lambda sh=sh: sh.Text.Story)
-        font = _safe(lambda: story.Font) if story is not None else None
+        font = _safe(lambda story=story: story.Font) if story is not None else None
         if not font:
             mixed += 1
             continue
@@ -880,7 +880,7 @@ def apply_font_substitutions(page, subs: dict[str, str] | None, warnings: list[s
             story.Font = to
         except Exception:
             pass
-        if str(_safe(lambda: story.Font) or "").lower() == to.lower():
+        if str(_safe(lambda story=story: story.Font) or "").lower() == to.lower():
             out[orig]["changed"] += 1
         else:
             out[orig]["not_applied"] += 1

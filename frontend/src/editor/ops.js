@@ -197,7 +197,7 @@ export function mapBox(box, frm, to) {
 export function bboxArg(b, what) {
   const out = {};
   for (const k of ["x", "y", "w", "h"]) {
-    const v = b == null ? NaN : Number(b[k]);
+    const v = b == null ? Number.NaN : Number(b[k]);
     if (!Number.isFinite(v)) throw new OpError(`${what} must be an object with numeric x, y, w, h`);
     out[k] = v;
   }

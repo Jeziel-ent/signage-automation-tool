@@ -67,7 +67,7 @@ const NUM = String.raw`(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)`;
 const SIZE_RE = new RegExp(
   `${NUM}\\s*(${UNIT_TOKEN})?\\s*(?:[*xX×✕\\-]|\\bby\\b)\\s*${NUM}\\s*(${UNIT_TOKEN})?`, "i");
 const SIZE_COMMA_RE = new RegExp(`^\\s*${NUM}\\s*(${UNIT_TOKEN})?\\s*,\\s*${NUM}\\s*(${UNIT_TOKEN})?\\s*$`, "i");
-const toNum = (s) => Number(String(s).replace(/,/g, ""));
+const toNum = (s) => Number(String(s).replaceAll(",", ""));
 const matchSize = (s) => SIZE_RE.exec(s) || SIZE_COMMA_RE.exec(s);
 
 const cellText = (v) => String(v ?? "").trim();
@@ -101,7 +101,7 @@ export function parseDimension(cell, defaultUnit = null) {
   const t = cellText(cell);
   const m = /^(\d[\d,]*(?:\.\d+)?)/.exec(t.replace(/^\s+/, ""));
   if (!m) return null;
-  const n = Number(m[1].replace(/,/g, ""));
+  const n = Number(m[1].replaceAll(",", ""));
   return n > 0 ? { value: n, unit: detectUnit(t.slice(m[1].length)) || defaultUnit } : null; // defaultUnit may be null
 }
 
@@ -254,7 +254,10 @@ export function mapSheetRows(rows, { defaultUnit = "in" } = {}) {
     }
   }
   if (sizeCol >= 0) taken.add(sizeCol);
-  if (widthCol >= 0) taken.add(widthCol), taken.add(heightCol);
+  if (widthCol >= 0) {
+    taken.add(widthCol);
+    taken.add(heightCol);
+  }
 
   // ---- name: by header, else the first mostly-text column that is not a size/phone column
   let nameCol = nameByHeader >= 0 && !taken.has(nameByHeader) ? nameByHeader : -1;

@@ -107,7 +107,7 @@ export function resolveMasterId(text, masters) {
   if (!want) return null;
   const all = ORIENTATIONS.flatMap((o) => mastersOf(masters, o));
   const keys = (m) => [normMaster(m.name), normMaster(masterLabel(m)), normMaster(m.file_name)].filter(Boolean);
-  const squash = (t) => t.replace(/ /g, "");
+  const squash = (t) => t.replaceAll(" ", "");
   const exact = all.find((m) => keys(m).some((k) => k === want || k.replace(/^[lp] /, "") === want || squash(k) === squash(want)));
   if (exact) return exact.id;
   const prefix = all.find((m) => keys(m).some((k) => k.replace(/^[lp] /, "").startsWith(want + " ") || want.startsWith(k.replace(/^[lp] /, "") + " ")));

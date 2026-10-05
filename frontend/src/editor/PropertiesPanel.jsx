@@ -2,13 +2,13 @@ import { useEffect, useMemo, useState } from "react";
 import { AlignCenter, AlignJustify, AlignLeft, AlignRight } from "lucide-react";
 import { CHAR_SPACING_RANGE, LINE_SPACING_RANGE, buildIndex } from "./ops.js";
 import { insidePowerclip, unionBox } from "./model.js";
-import { fromUnit, toUnit, UNITS } from "./units.js";
+import { fromUnit, toUnit, trimZeros, UNITS } from "./units.js";
 
 const FONTS = ["Arial", "Nirmala UI", "Yu Gothic Medium", "Segoe UI", "Times New Roman", "Calibri", "Verdana"];
 
 const fmtField = (mm, unit) => {
   const s = toUnit(mm, unit).toFixed(UNITS[unit].decimals);
-  return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
+  return trimZeros(s);
 };
 
 /** Right panel 1: size/position of the selection (centre reference point, like CorelDRAW's default), stacking order, text. */
@@ -47,13 +47,13 @@ export default function PropertiesPanel({ scene, sel, unit, onCommit, fonts, onT
   }
 
   const parse = (s) => {
-    const v = parseFloat(s);
+    const v = Number.parseFloat(s);
     return Number.isFinite(v) ? fromUnit(v, unit) : null;
   };
 
   function commit(field) {
     const v = parse(f[field]);
-    if (v === null) return setF((p) => ({ ...p, [field]: fmtField(box[field === "x" || field === "y" ? field : field], unit) }));
+    if (v === null) return setF((p) => ({ ...p, [field]: fmtField(box[field], unit) }));
     let { w, h } = box;
     let cx = box.x + box.w / 2;
     let cy = box.y + box.h / 2;
@@ -237,7 +237,7 @@ function TextFields({ node, locked, onCommit, fonts, onTextPreview }) {
         </label>
         <label className="ed-field">
           <span>Size pt</span>
-          <input value={size} disabled={locked} inputMode="decimal" onChange={(e) => setSize(e.target.value)} onBlur={() => { const v = parseFloat(size); if (v > 0 && v !== t.size_pt) push({ size_pt: v }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
+          <input value={size} disabled={locked} inputMode="decimal" onChange={(e) => setSize(e.target.value)} onBlur={() => { const v = Number.parseFloat(size); if (v > 0 && v !== t.size_pt) push({ size_pt: v }); }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
         </label>
       </div>
       <TextFormat t={t} locked={locked} push={push} />

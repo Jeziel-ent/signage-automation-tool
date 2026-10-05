@@ -32,7 +32,7 @@ test("an imported sheet becomes editable draft rows with every table field, enti
   const rows = parsed.shops.map(toDraftRow);
   assert.equal(rows.length, 2);
   assert.ok(rows.every(isDraft) && new Set(rows.map((r) => r.id)).size === 2);
-  assert.deepEqual(Object.keys(rows[0]).sort(), ["height", "id", "name", "progress_pct", "status", "unit", "unitSource", "width"]);
+  assert.deepEqual(Object.keys(rows[0]).sort((a, b) => a.localeCompare(b)), ["height", "id", "name", "progress_pct", "status", "unit", "unitSource", "width"]);
   assert.deepEqual([rows[1].width, rows[1].height, rows[1].unit], [12, 4, "ft"]);
   assert.equal(rows[0].status, "new");
   assert.equal(isDraft({ id: "a1b2c3" }), false);

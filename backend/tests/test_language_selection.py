@@ -92,7 +92,7 @@ class _Doc:
         pass
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_corel(monkeypatch):
     """Stub only the process plumbing around the layout; returns the document the engine will open."""
     doc = _Doc()

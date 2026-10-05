@@ -147,7 +147,8 @@ def _font(kind: str, pt: float, text: str = "") -> ImageFont.FreeTypeFont:
         try:
             f = ImageFont.truetype("DejaVuSans-Bold.ttf" if kind == "head" else "DejaVuSans.ttf", size)
         except Exception:
-            f = ImageFont.load_default(size)
+            # Pillow >= 10.1 takes a size (requirements.txt); the checker's type stubs predate it
+            f = ImageFont.load_default(size=size)  # NOSONAR
     _font_cache[key] = f
     return f
 

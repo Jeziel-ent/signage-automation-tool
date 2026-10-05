@@ -250,8 +250,6 @@ def blocked_section(prs, brand: str, label: str):
         *info.get("needed", ["Open the masters in CorelDRAW 2024 or newer and 'Save As' version 21 (CorelDRAW 2019 format), or run the evaluation on a machine with CorelDRAW 2024+."]),
         "## Ready once unblocked",
         " the generic example engine, its library builder (tools/build_example_library.py) and the evaluation (tools/example_eval.py) need no brand-specific work."], 14)
-    for prev in info.get("previews", [])[:1]:
-        pass
 
 
 def findings(prs):

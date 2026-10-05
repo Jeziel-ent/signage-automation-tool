@@ -33,7 +33,7 @@ export function sceneFonts(scene) {
 
 /** Google Fonts css2 URL for one family (regular + bold, upright + italic). */
 export function googleFontsUrl(family) {
-  const slug = encodeURIComponent(family.trim()).replace(/%20/g, "+");
+  const slug = encodeURIComponent(family.trim()).replaceAll("%20", "+");
   return `https://fonts.googleapis.com/css2?family=${slug}:ital,wght@0,400;0,700;1,400;1,700&display=swap`;
 }
 
@@ -87,7 +87,7 @@ export const fontsourceId = (family) => family.trim().toLowerCase().replace(/[^a
 
 /** Google css2 URL for ONE weight/style of a family (used to register it under another name). */
 export function googleFaceUrl(family, weight, style) {
-  const slug = encodeURIComponent(family.trim()).replace(/%20/g, "+");
+  const slug = encodeURIComponent(family.trim()).replaceAll("%20", "+");
   return `https://fonts.googleapis.com/css2?family=${slug}:ital,wght@${style === "italic" ? 1 : 0},${weight}&display=swap`;
 }
 

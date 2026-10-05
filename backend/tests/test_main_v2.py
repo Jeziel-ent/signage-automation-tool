@@ -36,7 +36,7 @@ def _fake_cdr_bytes() -> bytes:
     return buf.getvalue()
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SIGNAGE_DATA", str(tmp_path))
     monkeypatch.setenv("SIGNAGE_ENGINE", "mock")

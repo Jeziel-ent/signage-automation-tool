@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 from app import scene_ops
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SIGNAGE_DATA", str(tmp_path))
     monkeypatch.setenv("SIGNAGE_ENGINE", "mock")

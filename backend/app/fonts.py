@@ -34,7 +34,7 @@ def _from_powershell() -> list[str]:
 
 def parse_registry_name(value_name: str) -> list[str]:
     """'Yu Gothic Medium & Yu Gothic UI Semibold (TrueType)' -> both names, style suffix removed."""
-    base = re.sub(r"\s*\((TrueType|OpenType|All res|VGA res)\)\s*$", "", value_name)
+    base = re.sub(r"\((?:TrueType|OpenType|All res|VGA res)\)$", "", value_name.rstrip()).rstrip()
     return [p.strip() for p in base.split(" & ") if p.strip()]
 
 

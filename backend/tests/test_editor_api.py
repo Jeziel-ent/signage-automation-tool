@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from tests.test_main_v2 import _fake_cdr_bytes
 
 
-@pytest.fixture()
+@pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("SIGNAGE_DATA", str(tmp_path))
     monkeypatch.setenv("SIGNAGE_ENGINE", "mock")

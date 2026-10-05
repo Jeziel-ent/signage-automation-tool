@@ -99,7 +99,9 @@ export default function PillSelect({ value, options, onChange, icon: Icon, label
                   aria-selected={o.value === value}
                   className={"brand-item" + (o.value === value ? " selected" : "") + (i === active ? " active" : "")}
                   onMouseEnter={() => setActive(i)}
+                  tabIndex={-1}
                   onClick={() => pick(o)}
+                  onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); pick(o); } }}
                 >
                   <span>{o.label}</span>
                   {o.value === value && <Check size={16} />}

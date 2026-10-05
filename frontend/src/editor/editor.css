@@ -131,6 +131,8 @@ body:has(.ed-root), body:has(.ed-splash) { overflow: hidden; }
 .ed-row.drop-above::before { top: -1px; }
 .ed-row.drop-below::after { bottom: -1px; }
 .ed-row.drop-into { outline: 2px solid var(--color-red); outline-offset: -2px; }
+button.ed-caret { background: none; border: 0; padding: 0; font: inherit; }
+button.ed-caret:disabled { cursor: default; }
 .ed-caret { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; color: var(--color-gray-600); cursor: pointer; flex: none; }
 .ed-kind { display: inline-flex; color: var(--color-gray-600); flex: none; }
 .ed-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

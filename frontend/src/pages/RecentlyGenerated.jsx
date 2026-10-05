@@ -66,7 +66,7 @@ export default function RecentlyGenerated() {
   }, [anyActive]);
 
   const brandOptions = useMemo(
-    () => [{ value: "", label: "All brands" }, ...[...new Set((rows || []).map((r) => r.brand))].sort().map((b) => ({ value: b, label: b }))],
+    () => [{ value: "", label: "All brands" }, ...[...new Set((rows || []).map((r) => r.brand))].sort((a, b) => a.localeCompare(b)).map((b) => ({ value: b, label: b }))],
     [rows],
   );
   const statusOptions = useMemo(() => [{ value: "", label: "All statuses" }, ...Object.entries(STATUS_LABELS).map(([value, label]) => ({ value, label }))], []);
@@ -131,8 +131,10 @@ export default function RecentlyGenerated() {
                     <tr key={r.shop_id}>
                       <td>
                         {previewUrl && !badThumbs.has(r.shop_id) ? (
-                          <img className="rg-thumb" src={thumbUrl} alt={`${r.name} preview`} loading="lazy" decoding="async" title="Open preview" onClick={() => window.open(previewUrl, "_blank")}
-                            onError={() => setBadThumbs((s) => new Set(s).add(r.shop_id))} />
+                          <button type="button" className="rg-thumb-btn" title="Open preview" onClick={() => window.open(previewUrl, "_blank")}>
+                            <img className="rg-thumb" src={thumbUrl} alt={`${r.name} preview`} loading="lazy" decoding="async"
+                              onError={() => setBadThumbs((s) => new Set(s).add(r.shop_id))} />
+                          </button>
                         ) : (
                           <div className="rg-thumb empty" />
                         )}

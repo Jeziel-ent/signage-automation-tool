@@ -20,6 +20,13 @@ function rowLabel(node) {
 }
 
 /** Right panel 2: the layers tree, mirroring CorelDRAW's Object Manager (top of the stack first). */
+// Enter / Space on the row itself (not on a button inside it) selects it, like a click.
+function onRowKey(e, activate) {
+  if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+  e.preventDefault();
+  activate();
+}
+
 export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextId }) {
   const idx = useMemo(() => buildIndex(scene), [scene]);
   const [expanded, setExpanded] = useState(() => new Set(scene.layers.map((l) => l.id)));
@@ -103,7 +110,11 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
               title={inClip ? "Inside a PowerClip - drag it above/below its siblings to restack it inside the clip; it can't be dragged out of the clip, grouped or deleted separately" : undefined}
               style={{ paddingLeft: 6 + row.depth * 16 }}
               draggable={row.isLayer || !row.locked}
+              role="treeitem"
+              aria-selected={selected}
+              tabIndex={-1}
               onClick={(e) => clickRow(e, row)}
+              onKeyDown={(e) => onRowKey(e, () => clickRow(e, row))}
               onDragStart={(e) => { dragId.current = row.id; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", row.id); }}
               onDragOver={(e) => {
                 if (!dragId.current) return;
@@ -121,9 +132,9 @@ export default function LayersPanel({ scene, sel, ctx, onSelect, onCommit, nextI
                 if (plan) onCommit(plan);
               }}
             >
-              <span className="ed-caret" onClick={(e) => { e.stopPropagation(); row.hasChildren && toggle(row.id); }}>
+              <button type="button" className="ed-caret" disabled={!row.hasChildren} aria-label="Expand or collapse" onClick={(e) => { e.stopPropagation(); toggle(row.id); }}>
                 {row.hasChildren ? <Caret open={expanded.has(row.id)} /> : null}
-              </span>
+              </button>
               {!row.isLayer && <span className="ed-kind"><KindIcon kind={n.kind} type={n.type} /></span>}
               <span className="ed-name" title={rowLabel(n)}>{row.isLayer ? n.name : rowLabel(n)}</span>
               {n.stale && <span className="ed-badge" title={n.text ? "Edited - drawn as live text here; CorelDRAW's exact result appears after Save and Generate" : "Edited - preview refreshes after Save and Generate"}>edited</span>}

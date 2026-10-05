@@ -11,7 +11,7 @@ import { UploadCloud } from "lucide-react";
  * files (e.g. 300MB) since the browser streams the multipart body and
  * reports real bytes-sent/bytes-total as it goes.
  */
-export default function UploadDropzone({ brand, onUploaded, disabled, orientation = "landscape", label = "master", compact = false, card = null }) {
+export default function UploadDropzone({ brand, onUploaded, disabled, orientation = "landscape", label = "master", compact = false, card = null, strip = null }) {
   const inputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
   const [progress, setProgress] = useState(null); // null = idle; 0-100 while uploading
@@ -74,11 +74,15 @@ export default function UploadDropzone({ brand, onUploaded, disabled, orientatio
   }
 
   return (
-    <div className={card ? "mc-root" : undefined}>
-      <div
+    <div className={card ? "mc-root" : strip ? "mt-root" : undefined}>
+      <div // NOSONAR a native <button> cannot hold this block content (the hidden input, the progress bar)
         data-orientation={orientation}
-        className={card ? `master-card${dragOver ? " drag" : ""}` : `dropzone${dragOver ? " drag" : ""}${compact ? " compact" : ""}`}
+        className={strip ? `mt-drop${strip.empty ? " empty" : ""}${dragOver ? " drag" : ""}`
+          : card ? `master-card${dragOver ? " drag" : ""}` : `dropzone${dragOver ? " drag" : ""}${compact ? " compact" : ""}`}
+        role="button"
+        tabIndex={disabled ? -1 : 0}
         onClick={() => !disabled && inputRef.current?.click()}
+        onKeyDown={(e) => { if (!disabled && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); inputRef.current?.click(); } }}
         onDragOver={(e) => {
           e.preventDefault();
           if (!disabled) setDragOver(true);
@@ -100,7 +104,13 @@ export default function UploadDropzone({ brand, onUploaded, disabled, orientatio
         />
         {progress === null ? (
           <>
-            {card ? (
+            {strip ? (
+              <>
+                <UploadCloud size={strip.empty ? 22 : 16} className="mt-drop-icon" />
+                <span className="mt-drop-text">{strip.text}</span>
+                <span className="mt-drop-browse">or browse</span>
+              </>
+            ) : card ? (
               <>
                 <div className={`mc-icon ${card.tone || ""}`}>
                   <UploadCloud size={24} />

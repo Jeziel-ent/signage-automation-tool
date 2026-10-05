@@ -69,7 +69,6 @@ def derive(brand: str) -> dict:
     from app.batch_import import parse_shop_lines
     from app.layout import to_mm
 
-    master_dir = ROOT.parent / "signage_dataset" / ("Agarpathi" if brand == "agarpathi" else brand)
     dump_path = ROOT / "dataset_analysis" / "dumps"
     master_page = None
     for f in dump_path.glob("*.json"):

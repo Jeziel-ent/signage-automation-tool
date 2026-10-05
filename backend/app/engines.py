@@ -328,21 +328,20 @@ class CorelEngine:
 
     @staticmethod
     def _balanced_lines(words: list[str], n: int) -> list[str]:
-        """Split words into n lines of about equal length (character count), keeping word order."""
+        """Split words into n lines (word order kept) so that the LONGEST line (characters) is as short as possible - the designers break
+        'ஏசியன் ஜூஸ் பார்' as 'ஏசியன்' / 'ஜூஸ் பார்', not after the second word; ties: the first lines shorter, the last longer."""
         if n <= 1 or len(words) <= 1:
             return [" ".join(words)]
-        total = sum(len(w) for w in words) + len(words) - 1
-        lines, cur, cur_len = [], [], 0
-        for i, w in enumerate(words):
-            cur.append(w)
-            cur_len += len(w) + 1
-            left = len(words) - i - 1
-            if len(lines) < n - 1 and cur_len >= total / n and left >= (n - 1 - len(lines)):
-                lines.append(" ".join(cur))
-                cur, cur_len = [], 0
-        if cur:
-            lines.append(" ".join(cur))
-        return lines
+        import itertools
+        n = min(n, len(words))
+        best = None
+        for cuts in itertools.combinations(range(1, len(words)), n - 1):
+            parts = [words[a:b] for a, b in zip((0,) + cuts, cuts + (len(words),))]
+            lens = [sum(len(w) for w in pt) + len(pt) - 1 for pt in parts]
+            key = (max(lens), sum(abs(l - max(lens)) for l in lens), [-l for l in lens])
+            if best is None or key < best[0]:
+                best = (key, parts)
+        return [" ".join(pt) for pt in best[1]]
 
     @classmethod
     def _apply_text_fit(cls, shape, spec: dict, warnings: list[str]) -> None:
@@ -371,7 +370,10 @@ class CorelEngine:
             font_mode = spec.get("mode") == "font"
             line_h = float(spec.get("line_h") or spec["h"])
             tries = []
-            for n in range(1, min(max(max_lines, 1), max(len(words), 1)) + 1):
+            # a panel design: the English name starts at the line count of the designer's board (she wraps 'KARTHIKEYAN / STORE' even
+            # where one line would fit the room) and only goes beyond it, never below
+            first = min(max(int(spec.get("pref_lines") or 1), 1), max(max_lines, 1), max(len(words), 1))
+            for n in range(first, min(max(max_lines, 1), max(len(words), 1)) + 1):
                 story.Text = CR.join(cls._balanced_lines(words, n)) if n > 1 else " ".join(words)
                 w0, h0 = float(shape.SizeWidth), float(shape.SizeHeight)
                 if w0 <= 0 or h0 <= 0:
@@ -424,6 +426,23 @@ class CorelEngine:
             elif t == cls.SHAPE_GROUP:
                 cls._leaf_bitmaps(ch.Shapes, out)
         return out
+
+    @staticmethod
+    def _place_panel(kids: list, box: tuple, page_w: float, page_h: float, warnings: list[str]) -> int:
+        """The white name panel of a centre-panel design: the one full-height, narrow vector child of the page clip. It takes the width
+        the designer's board of this size gave it (box = x, y, w, h in mm); the pictures that sit on its edges were moved the same way."""
+        cands = [k for k in kids if int(k[0].Type) != CorelEngine.SHAPE_BITMAP and k[4] >= 0.9 * page_h and 0.1 * page_w <= k[3] <= 0.8 * page_w]
+        if len(cands) != 1:
+            return 0
+        try:
+            bx, by, bw, bh = box
+            cands[0][0].SetSize(bw, bh)
+            cands[0][0].LeftX = bx
+            cands[0][0].BottomY = by
+            return 1
+        except Exception as e:
+            warnings.append(f"could not resize the name panel: {e}")
+            return 0
 
     @classmethod
     def _place_clip_bitmaps(cls, coll, boxes: dict, warnings: list[str], sx: float = 1.0, sy: float = 1.0) -> int:
@@ -489,6 +508,8 @@ class CorelEngine:
                 plan = {k: v for k, v in plan.items() if k not in ("backdrop", "composite", "bitmaps")}
                 kids = [k for k in kids if int(k[0].Type) != cls.SHAPE_BITMAP and not cls._has_bitmap(k[0])]
                 placed_individually = True
+                if "panel" in plan:
+                    done += cls._place_panel(kids, plan["panel"], page_w, page_h, warnings)
                 if not kids or "band" not in plan:
                     return done
         bitmaps = [k for k in kids if int(k[0].Type) == cls.SHAPE_BITMAP and k[3] * k[4] >= 0.9 * page_w * page_h]
@@ -720,11 +741,13 @@ class CorelEngine:
         return (best["en"][1] if best["en"] else None, best["ta"][1] if best["ta"] else None)
 
     @classmethod
-    def _replace_nested_shopnames(cls, top_shapes, shop: dict, warnings: list[str]) -> int:
+    def _replace_nested_shopnames(cls, top_shapes, shop: dict, warnings: list[str], specs: dict | None = None,
+                                  name_case: str | None = None) -> int:
         """Rewrite shop-name texts nested inside groups / PowerClips: a text named `shopname...` in CorelDRAW's Object
         Manager, or whose content matches the master's current shop name (either script). The Tamil line stacked
         next to a matched English one is found the same way as for top-level text (layout.find_local_partner_ids).
-        Text is replaced in place and fitted to its original width. Returns how many texts were rewritten."""
+        Text is replaced in place and fitted to its original width - or, given `specs` (the example library's designer name boxes for
+        this size, keyed name_en / name_ta), sized and placed like the designer's name block. Returns how many texts were rewritten."""
         name = shop.get("name")
         local = shop.get("shop_name_local")
         if not (name or local):
@@ -776,6 +799,8 @@ class CorelEngine:
                 continue  # no local name given: never print the English name in the Tamil line's place
             else:
                 new, font = (name, TAMIL_FONT if is_tamil(name) else None) if name else (local, TAMIL_FONT)
+                if name_case == "upper" and new and not is_tamil(new):
+                    new = new.upper()
             font = name_font(new, shop)       # only an explicit override - the master's font is kept otherwise
             try:
                 story = sh.Text.Story
@@ -788,7 +813,11 @@ class CorelEngine:
             except Exception as e:
                 warnings.append(f"could not set nested shop-name text: {e}")
                 continue
-            cls._fit_text(sh, o.w, warnings)
+            spec = (specs or {}).get("name_ta" if is_tamil(new) else "name_en")
+            if spec:
+                cls._apply_text_fit(sh, spec, warnings)
+            else:
+                cls._fit_text(sh, o.w, warnings)
             done += 1
         return done
 
@@ -876,7 +905,7 @@ class CorelEngine:
             except Exception:
                 pass
         t0 = time.time()
-        app, we_launched_it, pid = corel_util.acquire_instance()
+        app, _, pid = corel_util.acquire_instance()
         timings["launch"] = round(time.time() - t0, 1)
 
         watchdog = None
@@ -1032,7 +1061,11 @@ class CorelEngine:
                         p.warnings.append("shape locked; skipped")
                         continue
                     old_w, old_h = float(shape.SizeWidth), float(shape.SizeHeight)
-                    shape.SetSize(p.w, p.h)
+                    if not (p.text_fit and p.text is not None):
+                        # a name line sized by the text fit gets its size there, UNIFORMLY: resizing it here to the master-based box
+                        # first stretched a duplicate (the Tamil copy of an already fitted English line: 2.05x wider, 1.12x higher) and
+                        # CorelDRAW keeps such a stretch when the text is replaced - Tamil twice as wide as its font (8x3 ft GSB boards)
+                        shape.SetSize(p.w, p.h)
                     shape.LeftX = p.x
                     shape.BottomY = p.y
                     if p.role == "bg" and p.clip_plan:
@@ -1076,7 +1109,8 @@ class CorelEngine:
                 # Shop-name texts INSIDE a group or PowerClip are not layout objects of their own (only top-level shapes
                 # are); their parent was placed above, so they are rewritten in place.
                 self._apply_language(shop_language(shop, warnings), placed, {o.id: o for o in objs}, shapes_by_id, warnings)
-                nested = self._replace_nested_shopnames(shapes, shop, warnings)
+                nested = self._replace_nested_shopnames(shapes, shop, warnings, next((p.name_specs for p in placed if p.name_specs), None),
+                                                        next((p.name_case for p in placed if p.name_case), None))
                 if (shop.get("name") or shop.get("shop_name_local")) and not nested and not any(
                         p.role == "shopname" for p in placed):
                     warnings.append("SHOP NAME NOT REPLACED: none of the master's text matches its shop name "

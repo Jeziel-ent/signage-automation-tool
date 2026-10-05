@@ -89,8 +89,6 @@ def main():
                "seconds": round(time.time() - t0, 1), "error": status.get("error")}
         if status.get("status") == "done":
             png = out / f"auto_{sno}_{w}x{h}.png"
-            urllib.request.urlretrieve(f"{API}/api/v2/shops/{shop['id']}/files/preview.png", png) if False else None
-            files = http("GET", f"/api/v2/shops/{shop['id']}/downloads") if False else None
             # preview: use the generic file route with the report's preview name
             rep = status.get("report") or {}
             rec_row = next(r for r in http("GET", "/api/v2/recent") if r["shop_id"] == shop["id"])

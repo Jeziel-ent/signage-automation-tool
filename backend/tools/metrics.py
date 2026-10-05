@@ -163,7 +163,7 @@ def _match_clusters(ours: list[dict], real: list[dict], factor: float):
         candidates = [j for j in remaining if real[j]["role"] == oc["role"] and size_similar(oc, real[j])]
         if not candidates:
             continue
-        best = min(candidates, key=lambda j: (real[j]["bbox"]["x"] + real[j]["bbox"]["w"] / 2 - ocx) ** 2
+        best = min(candidates, key=lambda j, ocx=ocx, ocy=ocy: (real[j]["bbox"]["x"] + real[j]["bbox"]["w"] / 2 - ocx) ** 2
                                              + (real[j]["bbox"]["y"] + real[j]["bbox"]["h"] / 2 - ocy) ** 2)
         pairs.append((oc, real[best]))
         remaining.remove(best)

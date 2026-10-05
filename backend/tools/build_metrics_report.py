@@ -69,7 +69,7 @@ def build_cards(brand: str, out_root: Path | None = None, want_images: bool = Tr
 
     cards = []
     for b in report["boards"]:
-        if "error" in b or b.get("diff_pct", {}).get("max") == 0.0:
+        if "error" in b or abs(b.get("diff_pct", {}).get("max", 1)) < 1e-9:
             continue  # master-as-its-own-target sanity check, not a real comparison
         if "ours_png" not in b or "real_png" not in b:
             continue

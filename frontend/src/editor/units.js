@@ -12,10 +12,18 @@ export const toUnit = (mm, unit) => mm / UNITS[unit].mm;
 export const fromUnit = (v, unit) => v * UNITS[unit].mm;
 
 /** "120 in", "3048 mm" - trailing zeros trimmed. */
+/** "12.500" -> "12.5", "12.000" -> "12" (a number string from toFixed; no regex, so no backtracking on long zero runs). */
+export function trimZeros(s) {
+  if (!s.includes(".")) return s;
+  let end = s.length;
+  while (end > 0 && s[end - 1] === "0") end--;
+  if (s[end - 1] === ".") end--;
+  return s.slice(0, end);
+}
 export function fmt(mm, unit) {
   const v = toUnit(mm, unit);
   const s = v.toFixed(UNITS[unit].decimals);
-  return s.includes(".") ? s.replace(/0+$/, "").replace(/\.$/, "") : s;
+  return trimZeros(s);
 }
 
 /** A "nice" step (1/2/5 x 10^k, in the ruler's unit) that is at least `minPx` wide on screen. */

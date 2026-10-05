@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FileCheck2, FolderOpen, Layers, Play, Plus, Store, Trash2, X } from "lucide-react";
+import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FolderOpen, Layers, Play, Plus, RectangleHorizontal, RectangleVertical, Store, Trash2 } from "lucide-react";
+import "../components/MasterPanels.css";
 import UploadDropzone from "../components/UploadDropzone.jsx";
 import BrandSelect from "../components/BrandSelect.jsx";
 import AnimatedCount from "../components/AnimatedCount.jsx";
@@ -505,47 +506,61 @@ export default function Automation() {
   const nMasters = countMasters(masters);
   const masterBadge = bothMasters ? `${nMasters} Masters Ready (${masters.landscape.length} L / ${masters.portrait.length} P)`
     : landscapeJob ? `Landscape only (${masters.landscape.length})` : portraitJob ? `Portrait only (${masters.portrait.length})` : "No master yet";
-  // every master of one orientation as a card, then an "Add" card - any number of masters per orientation
-  const masterCards = (o, addCard) => (
-    <div className="mc-stack many">
-      {mastersOf(masters, o).map((m, i) => (
-        <div key={m.id} className="master-card filled" data-master-id={m.id}>
-          <div className="mc-filled-head" title={m.name}>
-            {m.name}
-            {i === 0 && mastersOf(masters, o).length > 1 && <span className="mc-default">default</span>}
+  // one orientation's panel: a header (icon, name, size rule, count), one compact row per uploaded master, then a slim drop strip.
+  // Any number of masters per orientation; the first is that orientation's default. A queue row picks among them in its Master column.
+  const masterPanel = (o) => {
+    const list = mastersOf(masters, o);
+    const land = o === "landscape";
+    const Icon = land ? RectangleHorizontal : RectangleVertical;
+    return (
+      <div key={o} className={`mt-panel ${o}`} data-orientation={o}>
+        <div className="mt-head">
+          <span className="mt-icon"><Icon size={18} /></span>
+          <div className="mt-head-text">
+            <h3>{land ? "Landscape" : "Portrait"}</h3>
+            <span className="mt-rule">{land ? "wider than tall · W:H ≥ 1.25" : "taller or square · W:H < 1.25"}</span>
           </div>
-          <div className="master-thumb">
-            {m.preview_url ? (
-              <img src={m.preview_url} alt={`${m.name} preview`} />
-            ) : (
-              <div className="preview-missing">{m.preview_error || "Preview not available"}</div>
-            )}
-          </div>
-          <div className="file-badge">
-            <FileCheck2 size={18} className="ok" />
-            <div className="file-badge-text">
-              <div className="file-badge-name" title={m.file_name}>{m.file_name || "master.cdr"}</div>
-              <div className="file-badge-size">{fmtBytes(m.file_size)}</div>
-            </div>
-            <button className="icon-btn" onClick={() => removeMaster(m)} title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
-              <X size={16} />
-            </button>
-          </div>
+          <span className="mt-count" title={`${list.length} ${o} master${list.length === 1 ? "" : "s"}`}>{list.length}</span>
         </div>
-      ))}
-      <div className="mc-slot" data-add={o}>
-        <UploadDropzone
-          key={`${o}-${mastersOf(masters, o).length}`}
-          card={addCard}
-          disabled={!brand}
-          brand={brand}
-          orientation={o}
-          label={addCard.title}
-          onUploaded={(body) => onMasterAdded(body)}
-        />
+        {list.length > 0 && (
+          <ul className="mt-list">
+            {list.map((m, i) => (
+              <li key={m.id} className="mt-row" data-master-id={m.id}>
+                {m.preview_url ? (
+                  <a className="mt-thumb" href={m.preview_url} target="_blank" rel="noreferrer" title="Open the preview">
+                    <img src={m.preview_url} alt={`${m.name} preview`} />
+                  </a>
+                ) : (
+                  <span className="mt-thumb empty" title={m.preview_error || "Preview not available"}>no preview</span>
+                )}
+                <div className="mt-info">
+                  <div className="mt-name" title={m.name}>
+                    {m.name}
+                    {i === 0 && list.length > 1 && <span className="mt-default">default</span>}
+                  </div>
+                  <div className="mt-file" title={m.file_name}>{m.file_name || "master.cdr"} <span>{fmtBytes(m.file_size)}</span></div>
+                </div>
+                <button className="icon-btn mt-del" onClick={() => removeMaster(m)} title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
+                  <Trash2 size={15} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="mt-slot" data-add={o}>
+          <UploadDropzone
+            key={`${o}-${list.length}`}
+            strip={{ empty: list.length === 0, text: list.length ? `Add another ${o} master` : `Drop a ${o} master (.cdr) here` }}
+            disabled={!brand}
+            brand={brand}
+            orientation={o}
+            label={`${o} master`}
+            onUploaded={(body) => onMasterAdded(body)}
+          />
+        </div>
       </div>
-    </div>
-  );
+    );
+  };
 
   return (
     <div className="ws-page">
@@ -594,7 +609,7 @@ export default function Automation() {
       </header>
 
       <div className="ws-stack">
-        {/* TOP - master templates, the two cards side by side */}
+        {/* TOP - master templates: a Landscape panel and a Portrait panel side by side */}
         <section className="ws-card ws-masters" aria-label="Master Templates">
           <div className="ws-card-head">
             <h2>Master Templates</h2>
@@ -603,28 +618,7 @@ export default function Automation() {
             </button>
           </div>
           <div className="ws-card-body">
-            {/* Landscape Masters left, Portrait Masters right: every uploaded master of that orientation, then an "Add" card.
-                A row of that orientation picks one of them in the queue's Master column. */}
-            <div className="mc-modules">
-              {[
-                ["landscape", "Landscape Masters", "W:H \u2265 1.25", "red", "Browse Landscape"],
-                ["portrait", "Portrait Masters", "W:H < 1.25, incl. square", "rose", "Browse Portrait"],
-              ].map(([o, title, rule, tone, browse]) => (
-                <div key={o} className={`mc-module ${o}`} data-orientation={o}>
-                  <div className="mc-module-head">
-                    <h3>{title}</h3>
-                    <span className="mc-module-rule">({rule})</span>
-                    <span className="mc-module-count">{mastersOf(masters, o).length}</span>
-                  </div>
-                  {masterCards(o, {
-                    title: mastersOf(masters, o).length ? `Add ${o} master` : `${o === "landscape" ? "Landscape" : "Portrait"} Master 1`,
-                    help: "Drag & drop .cdr or browse",
-                    browse,
-                    tone: mastersOf(masters, o).length ? "muted" : tone,
-                  })}
-                </div>
-              ))}
-            </div>
+            <div className="mt-grid">{["landscape", "portrait"].map(masterPanel)}</div>
             {registry.error && <p className="err">{registry.error}</p>}
             {!brand && <p className="hint hero-note">Pick or create a brand above to enable uploads.</p>}
           </div>
@@ -881,10 +875,9 @@ export default function Automation() {
 // Empty state of the Shops Queue: an upload hero (click or drop a sheet) with the quick-start actions.
 function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportClick, onManual, onDropFile }) {
   return (
-    <>
       <div
         className={"empty-hero" + (dragOver ? " drag" : "") + (hasJob ? "" : " disabled")}
-        onClick={() => hasJob && onImportClick()}
+        onClick={(e) => hasJob && !e.target.closest(".hero-actions") && onImportClick()}
         onDragOver={(e) => {
           e.preventDefault();
           if (hasJob) setDragOver(true);
@@ -897,14 +890,14 @@ function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportCli
         }}
         role="button"
         tabIndex={hasJob ? 0 : -1}
-        onKeyDown={(e) => hasJob && (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onImportClick())}
+        onKeyDown={(e) => hasJob && e.target === e.currentTarget && (e.key === "Enter" || e.key === " ") && (e.preventDefault(), onImportClick())}
       >
         <div className="hero-icon sheet">
           <FileSpreadsheet size={40} />
         </div>
         <div className="hero-title">Import Shop Details Sheet</div>
         <div className="hero-help">Supports .xlsx, .xls, and .csv files directly parsed in your browser via SheetJS</div>
-        <div className="hero-actions" onClick={(e) => e.stopPropagation()}>
+        <div className="hero-actions">
           <button className="btn-gradient" disabled={!hasJob || importing} onClick={onImportClick}>
             <FolderOpen size={15} /> {importing ? "Importing..." : "Import Excel File"}
           </button>
@@ -914,7 +907,6 @@ function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportCli
         </div>
         {!hasJob && <div className="hero-note">Upload a master template first - shops convert from it.</div>}
       </div>
-    </>
   );
 }
 

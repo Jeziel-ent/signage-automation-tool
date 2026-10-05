@@ -141,7 +141,7 @@ def _match(ours: list[dict], real: list[dict]) -> tuple[list[tuple[dict, dict]],
         candidates = [j for j in remaining_real if real[j]["role"] == o["role"] and _size_similar(o, real[j])]
         if not candidates:
             continue
-        best = min(candidates, key=lambda j: (real[j]["x"] + real[j]["w"] / 2 - ocx) ** 2
+        best = min(candidates, key=lambda j, ocx=ocx, ocy=ocy: (real[j]["x"] + real[j]["w"] / 2 - ocx) ** 2
                                              + (real[j]["y"] + real[j]["h"] / 2 - ocy) ** 2)
         pairs.append((o, real[best]))
         remaining_real.remove(best)

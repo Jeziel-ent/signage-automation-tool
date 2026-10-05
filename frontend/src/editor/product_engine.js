@@ -44,8 +44,8 @@ export function isBitmap(node) {
 
 export function checkAsset(asset) {
   const name = asset && asset.name != null ? String(asset.name).trim() : "";
-  const w = asset ? Number(asset.w) : NaN;
-  const h = asset ? Number(asset.h) : NaN;
+  const w = asset ? Number(asset.w) : Number.NaN;
+  const h = asset ? Number(asset.h) : Number.NaN;
   if (!name || !(w > 0) || !(h > 0)) throw new OpError("asset must be an object with a name and positive numeric w, h (pixels)");
   const out = { name, w, h };
   // the filename POST /api/editor/{job}/{shop}/product-assets returned - resolved against that
@@ -200,7 +200,7 @@ export function mapSlots(scene) {
           continue;
         }
         if (bitmaps.length > 1) warnings.push(`${n.id} is tagged ${kind} and holds ${bitmaps.length} bitmaps - using the largest`);
-        const target = bitmaps.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b));
+        const target = bitmaps.reduce((a, b) => (a.w * a.h >= b.w * b.h ? a : b), bitmaps[0]);
         imageSlot(target, "tag", n.name || "");
       } else {
         warnings.push(`${n.id} is tagged ${kind} but is a ${n.type}, not a bitmap`);

@@ -319,3 +319,51 @@ def test_a_tie_in_line_length_follows_the_masters_line_shape():
     # "ஸ்ரீ | சாய் கஃபே" and "ஸ்ரீ சாய் | கஃபே" share the longest line; the master "நியூ சென்னை / பேக்கரி" has the longer
     # top line, so the second wins - no lone "ஸ்ரீ" on the first line (seen on the New Chennai bakery 3x6 ft board)
     assert split("ஸ்ரீ சாய் கஃபே", ["நியூ சென்னை", "பேக்கரி"], even=True) == ["ஸ்ரீ சாய்", "கஃபே"]
+
+
+def test_nested_shop_names_follow_the_designer_name_specs_when_given(monkeypatch):
+    en = _Shape(100, 134, 800, 29, text="SRI KANNIYAMMAN NATTU MARUNTHU KADAI")
+    ta = _Shape(100, 57, 800, 42, text=TAMIL)
+    group = _Shape(0, 0, 1000, 1000, kids=[en, ta])
+    shop = {"name": "ANISH STORES", "shop_name_local": "அனிஷ் ஸ்டோர்ஸ்", "master_shop_name": "SRI KANNIYAMMAN NATTU MARUNTHU KADAI"}
+    specs = {"name_en": {"tag": "en"}, "name_ta": {"tag": "ta"}}
+    fitted = []
+    monkeypatch.setattr(CorelEngine, "_apply_text_fit", classmethod(lambda cls, sh, spec, w: fitted.append((sh, spec["tag"]))))
+    monkeypatch.setattr(CorelEngine, "_fit_text", staticmethod(lambda *a, **k: fitted.append("old")))
+    assert CorelEngine._replace_nested_shopnames([group], shop, [], specs) == 2
+    assert (en, "en") in fitted and (ta, "ta") in fitted and "old" not in fitted           # sized by the spec, not to the old width
+    fitted.clear()
+    assert CorelEngine._replace_nested_shopnames([_Shape(0, 0, 1000, 1000, kids=[
+        _Shape(100, 134, 800, 29, text="SRI KANNIYAMMAN NATTU MARUNTHU KADAI")])], shop, []) == 1      # no specs: the old fit to width
+    assert fitted == ["old"]
+
+
+def test_nested_english_name_is_set_in_capitals_when_the_library_says_so():
+    en = _Shape(100, 134, 800, 29, text="SRI KANNIYAMMAN NATTU MARUNTHU KADAI")
+    ta = _Shape(100, 57, 800, 42, text=TAMIL)
+    group = _Shape(0, 0, 1000, 1000, kids=[en, ta])
+    shop = {"name": "Anish Stores", "shop_name_local": "அனிஷ் ஸ்டோர்ஸ்", "master_shop_name": "SRI KANNIYAMMAN NATTU MARUNTHU KADAI"}
+    assert CorelEngine._replace_nested_shopnames([group], shop, [], None, "upper") == 2
+    assert en.Text.Story.Text == "ANISH STORES" and ta.Text.Story.Text == "அனிஷ் ஸ்டோர்ஸ்"
+
+
+def test_the_white_name_panel_is_resized_to_the_designers_width():
+    page_w, page_h = 6096.0, 914.4
+    panel = _Shape(2032.0, 0.0, 2032.0, page_h)              # the master's third, stretched with the page
+    pic = _Shape(1500.0, 0.0, 500.0, 400.0)
+    pic.Type = CorelEngine.SHAPE_BITMAP
+    band = _Shape(0.0, 0.0, 6096.0, 300.0)
+    kids = [(pic, 1500.0, 0.0, 500.0, 400.0), (panel, 2032.0, 0.0, 2032.0, page_h), (band, 0.0, 0.0, 6096.0, 300.0)]
+    warnings = []
+    assert CorelEngine._place_panel(kids, (1932.0, 0.0, 2232.0, page_h), page_w, page_h, warnings) == 1
+    assert (panel.LeftX, panel.SizeWidth, panel.SizeHeight) == (1932.0, 2232.0, page_h) and not warnings
+    assert pic.SizeWidth == 500.0 and band.SizeWidth == 6096.0                # nothing else is touched
+    assert CorelEngine._place_panel([kids[0], kids[2]], (0, 0, 1, 1), page_w, page_h, []) == 0   # no panel-like child: nothing to do
+
+
+def test_name_lines_are_split_so_that_the_longest_line_is_shortest():
+    split = CorelEngine._balanced_lines
+    assert split(["ஏசியன்", "ஜூஸ்", "பார்"], 2) == ["ஏசியன்", "ஜூஸ் பார்"]              # her break, not 'ஏசியன் ஜூஸ்' / 'பார்'
+    assert split(["KANISH", "COOL", "DRINK'S"], 3) == ["KANISH", "COOL", "DRINK'S"]
+    assert split(["Guru", "tea", "stall"], 2) == ["Guru tea", "stall"]
+    assert split(["ONE"], 3) == ["ONE"] and split(["A", "B"], 5) == ["A", "B"]

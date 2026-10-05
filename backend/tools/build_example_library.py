@@ -20,7 +20,7 @@ from app.batch_import import parse_shop_lines  # noqa: E402
 def shop_name_of(file: str) -> str | None:
     try:
         name = parse_shop_lines(Path(file).stem).shops[0].name
-        return re.sub(r"\s*\(\d+\)\s*$", "", name)          # "Sri Sai cafe (1)": the (1) / (2) marks the double-sided variant
+        return re.sub(r"\(\d+\)$", "", name.rstrip()).rstrip()          # "Sri Sai cafe (1)": the (1) / (2) marks the double-sided variant
     except Exception:
         return None
 
@@ -90,6 +90,12 @@ def main():
         boards.append(best[1])
     out = ROOT / "brand_data" / brand
     out.mkdir(parents=True, exist_ok=True)
+    if (out / "library.json").exists():                         # hand-set per-master keys (e.g. name_max_page_frac) survive a rebuild too
+        old_masters = {m["file"]: m for m in json.load(open(out / "library.json", encoding="utf-8")).get("masters", [])}
+        for m in masters:
+            for k, v in (old_masters.get(m["file"]) or {}).items():
+                if k not in m:
+                    m[k] = v
     keep = {}                                                   # hand-set routing flags survive a rebuild
     if (out / "library.json").exists():
         old = json.load(open(out / "library.json", encoding="utf-8"))

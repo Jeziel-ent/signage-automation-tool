@@ -109,6 +109,10 @@ class Placed:
     text_fit: dict | None = None
     # how the layout was made (set on the first object only): {"mode": "example", template, exact, ...} or {"mode": "rules", reason}
     layout_source: dict | None = None
+    # first object only: the designer name specs ({"name_en", "name_ta"} -> text_fit dict) for shop names NESTED in a group, which are not
+    # layout objects of their own (CorelEngine._replace_nested_shopnames fits them by the spec instead of to their old width)
+    name_specs: dict | None = None
+    name_case: str | None = None    # first object only: "upper" = the English shop name is set in capitals (also for names inside groups)
 
     def to_dict(self):
         return asdict(self)
@@ -191,6 +195,8 @@ def compute_layout(
         from . import example_layout
         tpl_plan = example_layout.plan(brand_rule["brand"], objects, page_w, page_h, new_w, new_h,
                                        name_ids=shopname_ids, exclude=template_exclude, board_type=board_type)
+    if tpl_plan and tpl_plan.get("name_case") == "upper" and shop_name:
+        shop_name = shop_name.upper()        # the brand's designers set every English shop name in capitals (library "name_case")
     # a master with ONE name line, a board whose designer example shows ONE script, and a shop with both names: "Both" stacks the two
     # names as two lines of that line's text box (a second box would sit on top of the first)
     stack_both = bool(tpl_plan and language in (None, "both") and shop_name and shop_name_local and len(shopname_ids) == 1
@@ -222,7 +228,12 @@ def compute_layout(
             spec = None
             if tpl_plan:
                 tamil_out = bool(text) and is_tamil(text)          # the script the line will actually carry
-                spec = tpl_plan["texts"].get("name_ta" if tamil_out else "name_en") or                     tpl_plan["texts"].get("name_en" if tamil_out else "name_ta")
+                spec = tpl_plan["texts"].get("name_ta" if tamil_out else "name_en")
+                if spec is None and len(shopname_ids) == 1:
+                    # a master with ONE name line takes the box of the other script when the designer's board shows only that one; with
+                    # two name lines (English + Tamil) a line without a box of its own keeps the ordinary placement - borrowing its
+                    # neighbour's box printed both names on top of each other (Agarpathi 13x2 and 5x5 ft)
+                    spec = tpl_plan["texts"].get("name_en" if tamil_out else "name_ta")
             if spec is not None:
                 k = spec["h"] / o.h                       # same proportions as the master's line; CorelEngine fits it
                 w, h = o.w * k, o.h * k
@@ -335,6 +346,10 @@ def compute_layout(
     if out and brand_rule and brand_rule.get("example_library"):
         out[0].layout_source = ({"mode": "example", **tpl_plan["template"]} if tpl_plan else
                                 {"mode": "rules", "reason": "no designer example of this brand fits this master and size"})
+    if out and tpl_plan and tpl_plan.get("nested_names") and tpl_plan.get("texts"):
+        out[0].name_specs = tpl_plan["texts"]
+    if out and tpl_plan and tpl_plan.get("name_case"):
+        out[0].name_case = tpl_plan["name_case"]
     _distribute_shopname_lines(out, objects)
     return out
 
@@ -697,7 +712,7 @@ def _place_panel_sequence(panel_objs, roles, page_w, page_h, new_w, new_h, axis,
         if not candidates:
             fixed_objs.append(o)
             continue
-        gid = min(candidates, key=lambda gid: _dist(o, groups_cfg[gid]))
+        gid = min(candidates, key=lambda gid, o=o: _dist(o, groups_cfg[gid]))
         buckets.setdefault(gid, []).append(o)
 
     target_aspect = new_w / new_h
@@ -939,7 +954,7 @@ def _shopname_replacement(o: Obj, shop_name, shop_name_local, language: str | No
 
 
 _PHONE_RE = re.compile(r"(phone\s*no\.?\s*[:.]?\s*)([\d][\d +-]*)", re.IGNORECASE)
-_GST_RE = re.compile(r"(gst\s*no\.?\s*[:.]?\s*)([A-Za-z0-9]*)", re.IGNORECASE)
+_GST_RE = re.compile(r"(gst\s*no\.?\s*[:.]?\s*)([a-z0-9]*)", re.IGNORECASE)
 
 
 def find_contact_ids(objects: list[Obj]) -> set[str]:
@@ -1217,12 +1232,12 @@ def _place_logo_units(logos: list[Obj], page_w: float, page_h: float, new_w: flo
             out[o.id] = (x, y, w, h, warns)
         elif o.kind == "shape":
             loose.append(o)
-    units = [u for u in cluster_fragments(loose, page_w, page_h)]
+    units = list(cluster_fragments(loose, page_w, page_h))
     boxes = [(min(o.x for o in u), min(o.y for o in u), max(o.x + o.w for o in u), max(o.y + o.h for o in u)) for u in units]
     for o in logos:
         if o.kind in ("group", "bitmap") and o.id not in out and units:
             ob = (o.x, o.y, o.x + o.w, o.y + o.h)
-            best = max(range(len(units)), key=lambda i: _iou(ob, boxes[i]))
+            best = max(range(len(units)), key=lambda i, ob=ob: _iou(ob, boxes[i]))
             if _iou(ob, boxes[best]) >= SHADOW_IOU:
                 units[best].append(o)
     for u in units:

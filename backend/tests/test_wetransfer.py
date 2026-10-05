@@ -36,7 +36,7 @@ def test_extract_link_and_limits(monkeypatch):
     assert wt.valid_email("a.b@company.co.in") and not wt.valid_email("nope") and not wt.valid_email(None)
 
 
-@pytest.fixture()
+@pytest.fixture
 def fake_uploader(monkeypatch):
     """Replace the browser upload; `calls` records each upload, `gate` holds it until released."""
     calls, gate = [], threading.Event()

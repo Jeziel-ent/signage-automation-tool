@@ -84,7 +84,7 @@ export default function ShopDetailsPanel({ scene, shop, shopId, onSelect, onComm
   };
   const focusOnCanvas = (id) => {
     const chain = ancestry(idx, id);
-    onSelect([chain.length ? chain[chain.length - 1].id : id], null);
+    onSelect([chain.length ? chain.at(-1).id : id], null);
   };
   const applyText = (id, content) => {
     try {
