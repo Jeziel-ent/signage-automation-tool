@@ -41,3 +41,8 @@ coverage-lcov.info
 frontend-lcov.info
 .scannerwork/
 frontend/lcov.info
+
+# CI outputs (regenerable)
+frontend/lcov.info
+.ci-data/
+ci-reports/
