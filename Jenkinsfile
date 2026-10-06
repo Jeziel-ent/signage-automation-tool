@@ -1,6 +1,8 @@
 // CI for the signage automation tool. A push to GitHub triggers:
 //   backend tests -> frontend tests -> SonarQube analysis -> quality gate report
 // Runs on a WINDOWS Jenkins agent (the backend needs pywin32). It never drives CorelDRAW: SIGNAGE_ENGINE=mock, a throwaway data directory.
+// SonarQube does not have to be running when a build starts: the first stage starts it in the background when it is down (ci/ensure_sonarqube.py)
+// and the analysis stage waits for it. If it never comes up the build is UNSTABLE (tests still count) instead of failing.
 // Setup (Jenkins, plugins, credentials, job): docs/ci-jenkins.md
 pipeline {
     agent any
@@ -25,6 +27,12 @@ pipeline {
     }
 
     stages {
+        stage('Start SonarQube if needed') {
+            steps {
+                bat '%PY% ci\\ensure_sonarqube.py start'       // returns at once; SonarQube boots while the tests run
+            }
+        }
+
         stage('Backend tests') {
             steps {
                 dir('backend') {
@@ -54,14 +62,27 @@ pipeline {
 
         stage('SonarQube analysis') {
             steps {
-                withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                    // sonar-project.properties in the repo root holds the project key, sources, exclusions and report paths
-                    bat 'npx --yes @sonar/scan -Dsonar.host.url=%SONAR_HOST_URL%'
+                script {
+                    // wait for the SonarQube started above (exit 3 = it never came up)
+                    def rc = bat(returnStatus: true, script: '%PY% ci\\ensure_sonarqube.py wait')
+                    if (rc != 0) {
+                        env.SONAR_SKIPPED = 'true'
+                        unstable('SonarQube is not reachable - analysis and quality gate skipped (the tests above still count)')
+                    }
+                }
+                script {
+                    if (env.SONAR_SKIPPED != 'true') {
+                        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                            // sonar-project.properties in the repo root holds the project key, sources, exclusions and report paths
+                            bat 'npx --yes @sonar/scan -Dsonar.host.url=%SONAR_HOST_URL%'
+                        }
+                    }
                 }
             }
         }
 
         stage('Quality gate report') {
+            when { expression { env.SONAR_SKIPPED != 'true' } }
             steps {
                 withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
                     // waits for SonarQube to process the analysis, writes ci-reports/, and FAILS the build when the gate is ERROR

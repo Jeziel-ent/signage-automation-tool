@@ -2,7 +2,7 @@
 
 Every push to `main` on GitHub (`Jeziel-ent/signage-automation-tool`) is picked up by Jenkins, which runs the tests, publishes
 coverage to SonarQube and fails the build when the SonarQube quality gate is not OK. `Jenkinsfile` is the pipeline;
-`ci/` holds three small helpers it calls.
+`ci/` holds four small helpers it calls.
 
 ```
 push -> Jenkins polls GitHub (every ~2 min)
@@ -57,6 +57,11 @@ Test results appear under the build's "Test Result"; `coverage.xml` and `lcov.in
   needs a public tunnel; polling needs none. To switch later, add the webhook and remove `pollSCM`.
 * **SonarQube Community Build analyses one branch (`main`).** A pull-request/branch job would run the tests but its scan would
   overwrite `main`'s analysis - keep this job on `main`.
+* **SonarQube does not have to be running.** The first stage (`ci/ensure_sonarqube.py start`) launches `StartSonar.bat` in the background
+  when SonarQube is down (default folder `D:\sonarqube`; override with the `SONARQUBE_HOME` environment variable). It boots while the
+  tests run (about 1-3 minutes) and stays running after the build. The analysis stage waits for it (`... wait`, up to 7 minutes). If it
+  never comes up the build is **UNSTABLE** (yellow): tests still count, analysis and the quality gate are skipped. A quality gate that
+  is ERROR still fails the build. Jenkins itself must be running for anything to trigger.
 * **No live CorelDRAW in CI.** `SIGNAGE_ENGINE=mock`; tests that need a real CorelDRAW are skipped (37 as of the last run).
   Layout changes still need a visual check on real boards - CI proves the API, the logic and the UI build, not the artwork.
 * The first backend run installs all of `requirements.txt` into `backend\.venv` inside the workspace (a few minutes); later
