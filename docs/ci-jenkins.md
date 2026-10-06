@@ -22,8 +22,8 @@ archived with the build.
 Python 3.10 (`py -3.10` works), Node 22+ and npm, JDK 21 (Jenkins and the scanner), Git. SonarQube Community Build on
 `http://localhost:9000` (see `sonar-project.properties`).
 
-**1. Jenkins.** Run the LTS war as the current user: `java -jar jenkins.war --httpPort=8080` with `JENKINS_HOME` set to a folder
-you own (for example `D:\jenkins_home`). Open http://localhost:8080, unlock with
+**1. Jenkins.** Run the LTS war as the current user: `java -jar jenkins.war --httpPort=7070` with `JENKINS_HOME` set to a folder
+you own (for example `D:\jenkins_home`). Open http://localhost:7070, unlock with
 `<JENKINS_HOME>\secrets\initialAdminPassword`, choose "Install suggested plugins" (Git, Pipeline, Credentials Binding, JUnit and
 Timestamper are all in that set) and create your admin user.
 
