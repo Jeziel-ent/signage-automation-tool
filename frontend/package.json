@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/editor/ops.test.mjs src/editor/model.test.mjs src/editor/product_engine.test.mjs src/editor/shopDetails.test.mjs src/editor/fontSubs.test.mjs src/utils/shopImport.test.mjs src/utils/shopPayload.test.mjs src/utils/masters.test.mjs src/utils/gallery.test.mjs src/utils/batchStats.test.mjs src/utils/recentFilter.test.mjs src/utils/fileSize.test.mjs src/utils/loadStages.test.mjs src/utils/fontLoader.test.mjs src/utils/corelHealth.test.mjs src/utils/exportOptions.test.mjs src/utils/printSheet.test.mjs src/utils/assetZip.test.mjs src/utils/generateZip.test.mjs src/utils/tamilTranslit.test.mjs src/editor/textFormat.test.mjs src/editor/units.test.mjs src/utils/shopDownload.test.mjs"
+    "test": "node --test src/utils/printFile.test.mjs src/editor/ops.test.mjs src/editor/model.test.mjs src/editor/product_engine.test.mjs src/editor/shopDetails.test.mjs src/editor/fontSubs.test.mjs src/utils/shopImport.test.mjs src/utils/shopPayload.test.mjs src/utils/masters.test.mjs src/utils/gallery.test.mjs src/utils/batchStats.test.mjs src/utils/recentFilter.test.mjs src/utils/fileSize.test.mjs src/utils/loadStages.test.mjs src/utils/fontLoader.test.mjs src/utils/corelHealth.test.mjs src/utils/exportOptions.test.mjs src/utils/printSheet.test.mjs src/utils/assetZip.test.mjs src/utils/generateZip.test.mjs src/utils/tamilTranslit.test.mjs src/editor/textFormat.test.mjs src/editor/units.test.mjs src/utils/shopDownload.test.mjs"
   },
   "dependencies": {
     "@react-three/drei": "^9.122.0",

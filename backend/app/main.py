@@ -1289,6 +1289,101 @@ def print_sheet_generate(body: PrintSheetRequest):
                         background=BackgroundTask(lambda: shutil.rmtree(tmp, ignore_errors=True)))
 
 
+_PRINT_FILE_IMAGES = (".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff")
+_PRINT_FILE_MAX_BYTES = 400 * 1024 * 1024
+
+
+def _print_file_preview(upload: UploadFile, folder: Path, n: int) -> Path | None:
+    """Save one uploaded CDR / image and return an image path for its card: the image itself, or a .cdr's embedded preview
+    (no CorelDRAW; a pre-X4 .cdr has none -> None and the card says "No preview available")."""
+    suffix = Path(upload.filename or "").suffix.lower()
+    if suffix not in (".cdr", *_PRINT_FILE_IMAGES):
+        raise HTTPException(422, f"\"{upload.filename}\": only .cdr and image files (jpg, png, ...) can be added")
+    sub = folder / f"f{n}"
+    sub.mkdir()
+    dest = sub / f"upload{suffix}"
+    size = 0
+    with dest.open("wb") as f:
+        while chunk := upload.file.read(1024 * 1024):
+            size += len(chunk)
+            if size > _PRINT_FILE_MAX_BYTES:
+                raise HTTPException(413, f"\"{upload.filename}\" is larger than 400 MB")
+            f.write(chunk)
+    if suffix == ".cdr":
+        return _extract_cdr_preview(dest)[0]
+    return dest
+
+
+@app.post("/api/print-file/generate", responses={413: {"description": "Too large"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
+def print_file_generate(spec: str = Form(...), files: list[UploadFile] = File(default=[])):
+    """"Create Print File" page: `spec` is JSON {title, project_no, date, lines[], format, sections[{name, qty, sqft,
+    items[{file, name, width, height, unit, type, no, qty}]}]} and `files` the uploads (an item's `file` is the index into
+    `files`, or null for a card without a picture). Rendered by print_file.py; nothing is stored."""
+    try:
+        from . import print_file, print_sheet
+    except ImportError as e:
+        raise HTTPException(503, f"The print file needs Pillow, which is not installed for the Python running this server: {e}")
+    try:
+        data = json.loads(spec)
+        fmt = data.get("format", "pdf")
+        if fmt not in ("pdf", "jpeg"):
+            raise ValueError("format must be 'pdf' or 'jpeg'")
+        raw_sections = data["sections"]
+        if not isinstance(raw_sections, list) or not raw_sections:
+            raise ValueError("add at least one section")
+        if sum(len(s.get("items", [])) for s in raw_sections) > print_file.MAX_ITEMS:
+            raise ValueError(f"at most {print_file.MAX_ITEMS} items per print file")
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise HTTPException(422, f"invalid spec: {e}")
+    tmp = Path(tempfile.mkdtemp(prefix="print_file_"))
+    try:
+        previews: dict[int, Path | None] = {}
+
+        def preview(idx):
+            if idx is None:
+                return None
+            if not isinstance(idx, int) or not 0 <= idx < len(files):
+                raise HTTPException(422, f"item refers to file #{idx}, which was not uploaded")
+            if idx not in previews:
+                previews[idx] = _print_file_preview(files[idx], tmp, idx)
+            return previews[idx]
+
+        sections = []
+        for s in raw_sections:
+            items = []
+            for it in s.get("items", []):
+                try:
+                    w, h = float(it["width"]), float(it["height"])
+                    unit = it.get("unit", "in")
+                    qty = int(it.get("qty") or 1)
+                except (KeyError, ValueError, TypeError):
+                    raise HTTPException(422, f"item \"{it.get('name', '')}\" needs a numeric width and height")
+                if not (w > 0 and h > 0) or unit not in ("in", "ft", "cm", "mm") or qty < 1:
+                    raise HTTPException(422, f"item \"{it.get('name', '')}\" needs width/height > 0, a unit in/ft/cm/mm and qty >= 1")
+                items.append(print_file.Item(name=str(it.get("name", "")).strip(), width=w, height=h, unit=unit,
+                                             board_type=str(it.get("type", "")).strip(), no=it.get("no") or "", qty=qty,
+                                             image=preview(it.get("file"))))
+            try:
+                qo = int(s["qty"]) if s.get("qty") not in (None, "") else None
+                so = float(s["sqft"]) if s.get("sqft") not in (None, "") else None
+            except (ValueError, TypeError):
+                raise HTTPException(422, f"section \"{s.get('name', '')}\": QTY and Sq.feet must be numbers")
+            sections.append(print_file.Section(name=str(s.get("name", "")).strip(), items=items, qty_override=qo, sqft_override=so))
+        meta = print_file.FileMeta(title=str(data.get("title", "")).strip(), project_no=str(data.get("project_no", "")).strip(),
+                                   date=print_sheet.format_date(str(data.get("date", ""))),
+                                   lines=[str(x) for x in data.get("lines", [])])
+        try:
+            path, media = print_file.write(meta, sections, fmt, tmp / "sheet")
+        except ValueError as e:
+            raise HTTPException(422, str(e))
+    except BaseException:
+        shutil.rmtree(tmp, ignore_errors=True)
+        raise
+    name = "_".join(p for p in ("Print_File", _safe_file_part(meta.project_no), _safe_file_part(meta.date)) if p)
+    return FileResponse(path, media_type=media, filename=f"{name}{path.suffix}",
+                        background=BackgroundTask(lambda: shutil.rmtree(tmp, ignore_errors=True)))
+
+
 class AssetZipRequest(BaseModel):
     shop_ids: list[str]
     numbers: dict[str, int | str] | None = None  # the S.no each shop has in the queue, for the file names (default: its own)
