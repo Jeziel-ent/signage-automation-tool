@@ -46,3 +46,5 @@ frontend/lcov.info
 frontend/lcov.info
 .ci-data/
 ci-reports/
+backend/pytest-report.xml
+frontend/frontend-junit.xml
