@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FolderOpen, Layers, Play, Plus, RectangleHorizontal, RectangleVertical, Store, Trash2 } from "lucide-react";
+import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FolderOpen, Layers, Play, Plus, RectangleHorizontal, RectangleVertical, Sparkles, Store, Trash2 } from "lucide-react";
 import "../components/MasterPanels.css";
 import UploadDropzone from "../components/UploadDropzone.jsx";
 import BrandSelect from "../components/BrandSelect.jsx";
@@ -110,6 +110,24 @@ export default function Automation() {
     },
     [],
   );
+
+  // ---- Corel Intelligence: while the switch is on, the designers' editor corrections are collected (server side, default ON);
+  // a converted row's sparkle icon re-runs that board with the learned corrections for its size, the footer button does it for every row.
+  const [intelOn, setIntelOn] = useState(true);
+  const [intelAvail, setIntelAvail] = useState({}); // done shop id -> number of learned corrections that fit its board
+  useEffect(() => {
+    fetch("/api/v2/intelligence").then((r) => r.json()).then((d) => setIntelOn(d.enabled !== false)).catch(() => {});
+  }, []);
+  async function toggleIntelligence() {
+    const next = !intelOn;
+    setIntelOn(next);
+    const r = await fetch("/api/v2/intelligence", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: next }),
+    }).catch(() => null);
+    if (!r || !r.ok) setIntelOn(!next); // not saved: show what the server still has
+  }
 
   async function addBrand() {
     const name = newBrand.trim();
@@ -362,7 +380,7 @@ export default function Automation() {
     else setShopError((await r.json().catch(() => ({}))).detail || "Could not remove the shop");
   }
 
-  async function convertShop(shopId) {
+  async function convertShop(shopId, { useIntelligence = false } = {}) {
     // conversions keep the master's own fonts (no font fields are sent); a pending auto-Tamil update is applied first
     let current = withFreshAutoTamil(shops.find((x) => x.id === shopId) || null);
     if (!current) return null;
@@ -396,7 +414,7 @@ export default function Automation() {
     const r = await fetch(`/api/v2/shops/${id}/convert`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ...shopPayload(current), ...masterIds }),
+      body: JSON.stringify({ ...shopPayload(current), ...masterIds, ...(useIntelligence ? { use_intelligence: true } : {}) }),
     });
     if (gen !== masterGen.current) return null; // reset while the request was in flight: that row is gone from the queue
     if (r.ok || r.status === 409) {
@@ -434,6 +452,37 @@ export default function Automation() {
     const warning = row && fallbackWarning([row], masters);
     if (warning && !window.confirm(warning)) return null;
     return convertShop(shopId);
+  }
+
+  // done rows (saved on the server) and how many learned corrections fit each: refreshed when the set of done rows changes and
+  // whenever an editor tab reports a save (that save may have just taught the model something)
+  const doneIds = shops.filter((x) => x.status === "done" && !isDraft(x)).map((x) => x.id).join(",");
+  const refreshIntel = () => {
+    if (!doneIds) return setIntelAvail({});
+    fetch(`/api/v2/intelligence/available?ids=${doneIds}`).then((r) => r.json()).then((d) => setIntelAvail(d.available || {})).catch(() => {});
+  };
+  const refreshIntelRef = useRef(refreshIntel);
+  refreshIntelRef.current = refreshIntel; // the editor-save listener below is set up once and must call the latest version
+  useEffect(refreshIntel, [doneIds]); // eslint-disable-line react-hooks/exhaustive-deps
+  const intelRows = shops.filter((x) => x.status === "done" && intelAvail[x.id]);
+
+  function applyIntelligence(shopId) {
+    if (!intelAvail[shopId]) {
+      setQueueNotice("Corel Intelligence has nothing learned for this board size yet - correct a board of this size in the editor first.");
+      return null;
+    }
+    return convertShop(shopId, { useIntelligence: true });
+  }
+
+  async function applyIntelligenceAll() {
+    const todo = intelRows.map((x) => x.id);
+    if (!todo.length) return;
+    setQueueNotice(`Corel Intelligence is re-running ${todo.length} board${todo.length === 1 ? "" : "s"} with learned corrections.`);
+    const gen = masterGen.current;
+    for (const id of todo) {
+      if (gen !== masterGen.current) return;
+      await convertShop(id, { useIntelligence: true });
+    }
   }
 
   async function convertAll() {
@@ -498,6 +547,7 @@ export default function Automation() {
       if (m.type !== "saved") return;
       const shop = shopsRef.current.find((x) => x.id === m.shopId);
       if (shop) setQueueNotice(`Edits to "${shop.name}" saved. Use the download button on its row to export the files.`);
+      refreshIntelRef.current();
     };
     return () => ch.close();
   }, []);
@@ -599,6 +649,12 @@ export default function Automation() {
           </button>
         </div>
         <div className="ws-badges">
+          <button type="button" role="switch" aria-checked={intelOn} className={"ci-switch" + (intelOn ? " on" : "")} onClick={toggleIntelligence}
+            title={intelOn ? "Corel Intelligence is ON: corrections you make in the editor are collected to improve later boards. Click to turn off."
+              : "Corel Intelligence is OFF: editor corrections are not collected. Click to turn on."}>
+            <Sparkles size={13} /> Corel Intelligence
+            <span className="ci-track" aria-hidden="true"><span className="ci-knob" /></span>
+          </button>
           <span className="ws-badge">
             <Store size={13} /> <AnimatedCount value={shops.length} /> Shop{shops.length === 1 ? "" : "s"} Loaded
           </span>
@@ -768,6 +824,8 @@ export default function Automation() {
                         onOpen={() => openEditor(s)}
                         onExport={() => setDownloadShop({ ...s, no: rowSno(s, i) })}
                         onPreview={() => setGalleryShop(s)}
+                        onIntelligence={() => applyIntelligence(s.id)}
+                        intelCount={intelAvail[s.id] || 0}
                         stepEstimates={stepEstimates}
                       />
                     ))}
@@ -809,6 +867,15 @@ export default function Automation() {
                       title={printable.length ? "Every converted shop's CDR, PDF, JPG or PNG in one ZIP - choose the format" : "Convert at least one shop first"}
                     >
                       <FileCode2 size={15} /> Download All
+                    </button>
+                    <button
+                      className="btn-outline-red"
+                      onClick={applyIntelligenceAll}
+                      disabled={!intelRows.length}
+                      title={intelRows.length ? `Re-run ${intelRows.length} converted board${intelRows.length === 1 ? "" : "s"} with what designers corrected on the same size`
+                        : "Nothing learned yet for the converted boards - correct a board in the editor first"}
+                    >
+                      <Sparkles size={15} /> Corel Intelligence{intelRows.length ? ` (${intelRows.length})` : ""}
                     </button>
                     {convertible.length > 0 && (
                       <button className="btn-gradient" onClick={convertAll}>
@@ -913,7 +980,7 @@ function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportCli
 // One editable row: name, width, height and the shared unit are live inputs (disabled while the shop is queued or
 // converting, or once it is done - its output would no longer match the row); text/number fields save on blur, the unit
 // on change.
-function ShopRow({ shop, index, masters, onEdit, onSave, onDelete, onConvert, onOpen, onExport, onPreview, stepEstimates }) {
+function ShopRow({ shop, index, masters, onEdit, onSave, onDelete, onConvert, onOpen, onExport, onPreview, onIntelligence, intelCount, stepEstimates }) {
   const locked = shop.status === "queued" || shop.status === "converting" || shop.status === "done";
   const field = (key, label, extra = {}) => (
     <input
@@ -980,7 +1047,8 @@ function ShopRow({ shop, index, masters, onEdit, onSave, onDelete, onConvert, on
         <MasterCell shop={shop} masters={masters} locked={locked} onChoose={(id) => onEdit({ master_id: id })} />
       </td>
       <td>
-        <ConvertCell shop={shop} onConvert={onConvert} onExport={onExport} onPreview={onPreview} stepEstimates={stepEstimates} />
+        <ConvertCell shop={shop} onConvert={onConvert} onExport={onExport} onPreview={onPreview} onIntelligence={onIntelligence}
+          intelCount={intelCount} stepEstimates={stepEstimates} />
       </td>
       <td>
         {shop.status === "done" ? (
@@ -1173,7 +1241,7 @@ function NewShopRow({ seqNo, form, setForm, onAdd, onCancel }) {
 }
 
 // The Convert column: a button while a shop is new, then a status badge (queued / processing with the eased % / completed).
-function ConvertCell({ shop, onConvert, onExport, onPreview, stepEstimates }) {
+function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, intelCount = 0, stepEstimates }) {
   // Called unconditionally (hooks can't be conditional) - it's a no-op
   // until `shop.status === "converting"` actually starts reporting steps.
   const smoothedPct = useSteppedProgress(CONVERT_STEPS, shop.step, shop.status === "done", stepEstimates);
@@ -1202,6 +1270,16 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, stepEstimates }) {
             {shop.confidence.label === "GOOD" ? "Exact size" : shop.confidence.label === "REVIEW" ? "Check" : "Draft"}
           </span>
         )}
+        {shop.report?.layout?.intelligence?.applied > 0 && (
+          <span className="badge conf-badge conf-GOOD" title="Made with what designers corrected on this board size">
+            Learned ({shop.report.layout.intelligence.applied})
+          </span>
+        )}
+        <button className={"icon-btn row-dl-btn ci-row-btn" + (intelCount ? " ready" : "")} onClick={onIntelligence} aria-label={`Use Corel Intelligence on ${shop.name}`}
+          title={intelCount ? `Use Corel Intelligence: re-run this board with ${intelCount} learned designer correction${intelCount === 1 ? "" : "s"}`
+            : "Corel Intelligence: nothing learned for this board size yet"}>
+          <Sparkles size={16} />
+        </button>
         <button className="icon-btn row-dl-btn" onClick={onPreview} title="Preview the converted output" aria-label={`Preview the output of ${shop.name}`}>
           <Eye size={16} />
         </button>

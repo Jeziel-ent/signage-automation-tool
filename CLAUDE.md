@@ -17,9 +17,15 @@ is being built alongside it, not as a replacement yet. Engine-side work
 (layout rules, validation, tiling) is unaffected by either UI and
 continues independently - none of it was touched building the new UI.
 
-## Continue here (handoff, 2026-10-05) - read this first on another machine
+## Continue here (handoff, 2026-10-07) - read this first on another machine
 
-**State.** `main` holds everything: the example-library layout engine, master routing ("Auto (best match)"), Excel MASTER / CONVERT / (TA)
+**Newest work: "Corel Intelligence" (learning from designer corrections) - branch `corel-intelligence`, NOT yet merged to `main`.** Full
+description in "Corel Intelligence" below. In one line: the editor's saved edits are captured as page-fraction records, a top-bar switch
+(default ON) gates collection, every converted queue row has a sparkle icon (+ a common footer button) that re-runs the board with the
+learned corrections, and `tools/seed_corrections.py` seeded 12 dalmia records from the designer files. Backend 1001 passed / 37 skipped.
+Everything below this paragraph is the 2026-10-05 handoff, still accurate for the rest of the project.
+
+**State (2026-10-05).** `main` holds everything: the example-library layout engine, master routing ("Auto (best match)"), Excel MASTER / CONVERT / (TA)
 columns, the masters registry UI, tests (backend 902 passed / 37 skipped, frontend 269) and the decks in `presentations/` (`presentations/final/` =
 the two final UI-run decks). Details of every change are in "Example-library layout" -> Round 2 / Round 3 below.
 
@@ -79,6 +85,79 @@ image, app PNG, name, similarity); Agarpathi designer pictures are in `dataset_a
 4. Tamil spelling can only come from the sheet's TA column; transliteration differs from the designer's (flag for review, do not "fix").
 5. Not yet tested: Dalmia / Agni through the example library (dalmia keeps its rules: `"example_library": false`), "approve and add to library".
 6. The browser pane is small (800x450) and screenshots time out when the Claude window is behind another window; prefer `read_page`/`javascript_tool`.
+
+## Corel Intelligence - correction memory (2026-10-07, branch `corel-intelligence`)
+
+**Idea.** The engine copies the nearest designer board; when a designer then fixes a board in the editor, that fix is knowledge for the next
+board of the same size. No neural model: the "model" is DATA - approved corrections stored as JSON in SQLite (moves to Spaces/Postgres when
+hosted; behind a storage interface it is a config change). Reasoning for not training a net: dozens of corrections, not hundreds.
+
+**Capture** (`backend/app/corrections.py`, pure Python, tested without CorelDRAW). `PUT /api/editor/{job}/{shop}/ops` now also calls
+`main._capture_correction`: `diff_scenes(base, edited)` compares the engine's scene with the scene after the saved ops, per TOP-LEVEL object,
+as page fractions (origin bottom-left, like the scene): moved / resized / moved+resized / hidden / deleted. Nudges < 0.2 % of the page are
+ignored; an object the designer GROUPED is still found (searches all depths); a page-size edit records nothing; text edits are only counted
+(Tamil spelling / names come from the sheet). `build_record` adds brand, the master the board was REALLY made from
+(`report.master_used.job_id`), page size, board type, and the `report.layout` block. Stored in table `corrections` (one record per shop,
+replaced on every save, `status` pending|approved|rejected). Failure to record never breaks saving (logged only).
+
+**Switch + settings.** Table `settings`; `GET/PUT /api/v2/intelligence` {enabled} (default ON; OFF = `_capture_correction` returns early).
+Top bar of Automation.jsx: "Corel Intelligence" switch (`.ci-switch`).
+
+**Apply.** `corrections.usable_records` = same brand + same master FILE name + same page size (within 0.5 %) + same board type when both name
+one; rejected never used. `corrections.apply_to_placed(placed, new_w, new_h, records)` runs in `engines.py` right after `compute_layout`
+(only when `shop["intelligence"]` is set): each recorded "before" box is matched to the placed object nearest it (within 1.2 % of the page),
+that object takes the recorded "after" box. CONSENSUS: one record applies as is; several records on the same object must agree within 2 % of
+the page (then the MEDIAN is used) or the object is left alone ("conflicting"). Text objects are never moved; hidden/deleted are not
+re-applied. The result goes to `report["layout"]["intelligence"]` = {applied, skipped, conflicting, records}.
+Endpoints: `POST /api/v2/shops/{id}/convert` with `use_intelligence: true` (stored in `shops.use_intelligence`; a plain convert resets it;
+re-running a DONE board first discards its cached scene + saved editor ops - they describe the old board); `GET
+/api/v2/intelligence/available?ids=` = learned changes that fit each done shop. UI: sparkle icon in every converted row's Convert cell
+(red = learned data fits, grey = none), "Learned (n)" badge after use, footer button "Corel Intelligence (N)" re-runs every row that has
+data. The row list refreshes on the editor tab's BroadcastChannel "saved" message.
+
+**Seeding from the designer files** (`backend/tools/seed_corrections.py <brand> [--from-cache] [--dry-run] [--no-eval]`). Compares the engine's
+output dump with the designer's board of the same size, but matches whole UNITS (loose shapes within `layout.FRAGMENT_GAP_FRAC` form a
+unit, same rule as the engine; logos here are 100+ loose curves, matching curve to curve would scramble them), then moves every member of the
+engine's unit by the same scale + shift. Units already within 1 % of the page record nothing; known outliers (`validate_all.KNOWN_OUTLIERS`)
+are skipped. Stored `approved`, `source: "designer-dataset"`, id `seed:<brand>:<file stem>`. `evaluate()` = held-out check per board size.
+RESULT on dalmia (fresh dumps): 144x60 boards 11.1->6.8, 7.4->3.0, 7.3->3.0 mm mean centre error; 120x48 boards unchanged (designers
+disagree -> consensus skips them); overall 4.6 -> 2.5 mm. Tiny sample (8 testable boards, two are near-twins). Wide boards (180-240 in)
+have ONE record each and no peer to test against - untested. Agarpathi/Hangyo are already learned as `library.json`; Agni has no
+designer boards. 12 dalmia records are in `backend/data/signage.db` (NOT in git).
+
+**To rebuild the seed data on a machine (needs CorelDRAW + `signage_dataset/`):**
+```
+cd backend
+set SIGNAGE_COREL_PROGID=CorelDRAW.Application.21      # CorelDRAW 2019, see "Findings" - 27 is ~5x slower on dalmia files
+# validate_all in ONE batch fails after board 1 (see Findings): run it once per board, --resume keeps the finished ones
+python tools/validate_all.py dalmia --only "<full file stem>" --resume        # repeat for each dalmia .cdr
+python tools/cache_ours_dumps.py dalmia --force                               # healthy dumps of every generated board
+python tools/seed_corrections.py dalmia --from-cache                          # stores the records; add --dry-run to preview
+```
+
+**Findings that matter (found 2026-10-07, root cause not fully proven for #1).**
+1. CorelDRAW 27.0.0.121 takes 130-340 s to OPEN the dalmia files (CPU-bound, no disk, no dialog, 5 GB RAM free, AC power); CorelDRAW 2019
+   opens + dumps the same file in 43 s; a Hangyo file on 27 takes 18 s. Not the embedded Yu Gothic font (a copy without it still took 341 s).
+   The dalmia .cdr carries 60 MB raster data + 12 MB data1.dat + two 6 MB style vectors (Hangyo ~11 MB / 0.03 MB / none). The 300 s open
+   limit killed several validation boards. The older notes say ~10 s on 27 - something changed (CorelDRAW 27 was reinstalled 2026-10-04 13:49).
+   The app still defaults to 27; pin 2019 per run with `SIGNAGE_COREL_PROGID=CorelDRAW.Application.21`. Open question: make that the default for dalmia?
+2. `validate_all.py` batches: after board 1 the next boards fail with "Object is not connected to server" / "CoInitialize has not been called"
+   (`tools/dump_objects.dump` does its own `CoInitialize`/`CoUninitialize` + `quit_corel` inside the worker that holds the reused CorelDRAW), and
+   the in-worker dump can lose text, which made the report's `content_check` fail 10/14 boards although the engine output is right. The
+   saved dalmia report's `content_check` was recomputed from the healthy `ours_dumps_cache` dumps. NOT fixed in code - run per board.
+3. The 120x48 dalmia boards now differ more from the designers' files (max 6.8-22 %) than the old notes (1.9-4.8 %); 144x60 max ~58 % (was
+   2-15 %). The engine changed since (loose-logo units 2026-10-01); not yet investigated. The old numbers in this file are historical.
+
+**Open items, in order.**
+1. Review/approve screen for corrections (today `pending` records are used straight away; a single bad edit applies to the next board of
+   that size). Idea: show a diff per record, approve/reject, and only use `approved` ones.
+2. Verify the apply step on a REAL CorelDRAW board (only the mock engine + unit tests ran it): convert, move an object in the editor,
+   save, convert another board of the same size, click the sparkle icon. Upload the dalmia master under its ORIGINAL file name - records match by it.
+3. Decide the CorelDRAW 2019-vs-27 default; fix the dump/COM bug in `corel_worker`/`dump_objects` so batches work.
+4. Hosting plan (discussed, not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs
+   `corel_worker`, uploads results (browsers cannot call COM); needs login/per-user data, storage interface (local -> Spaces), Postgres if
+   more than one writer. Build hosting first, then the agent.
+5. Consider learning for Agarpathi/Hangyo only if designers keep correcting boards (their libraries already reproduce known sizes ~exactly).
 
 ## New UI (in progress, phased - `frontend/src/pages/`, `backend/app/db.py`)
 

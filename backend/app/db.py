@@ -34,6 +34,27 @@ CREATE TABLE IF NOT EXISTS editor_ops (
     updated_at REAL NOT NULL
 );
 
+-- Correction memory (app/corrections.py): what the designer changed in the editor, one record per shop, replaced on every save.
+-- `status` is pending until a later step approves it for reuse; nothing reads these rows when a board is generated yet.
+CREATE TABLE IF NOT EXISTS corrections (
+    shop_id TEXT PRIMARY KEY,
+    brand TEXT,
+    master_file TEXT,
+    page_w_mm REAL NOT NULL,
+    page_h_mm REAL NOT NULL,
+    board_type TEXT,
+    record_json TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',   -- pending | approved | rejected
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+
+-- Small app-wide switches (Corel Intelligence on/off).
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
 -- Permanent font substitutions per shop ("Missing Font Detected" in the editor): text in `original_font`, a font not
 -- installed on the server, is set to `substitute_font` in CorelDRAW before every export of that board.
 CREATE TABLE IF NOT EXISTS font_substitutions (
@@ -128,6 +149,8 @@ _MIGRATIONS = [
     # "Type of board" (Nonlit / Frontlit / Backlit / ...): shown in the Shops table and part of every export's file
     # name (file_naming.signage_basename). NULL = the default type.
     ("shops", "board_type", "ALTER TABLE shops ADD COLUMN board_type TEXT"),
+    # 1 = the last conversion applied designers' corrections (Corel Intelligence); the next plain Convert resets it to 0
+    ("shops", "use_intelligence", "ALTER TABLE shops ADD COLUMN use_intelligence INTEGER NOT NULL DEFAULT 0"),
     # Fonts for the replaced English / Tamil shop names (NULL = keep the master's font for English, layout.TAMIL_FONT
     # for Tamil) and the Excel sheet a row was imported from (the Shops Queue's sheet tabs).
     ("shops", "font_en", "ALTER TABLE shops ADD COLUMN font_en TEXT"),
@@ -446,6 +469,63 @@ def set_editor_ops(shop_id: str, ops: list[dict]) -> None:
                ON CONFLICT(shop_id) DO UPDATE SET ops_json = excluded.ops_json, updated_at = excluded.updated_at""",
             (shop_id, json.dumps(ops), time.time()),
         )
+
+
+# ---------------------------------------------------------------- settings
+
+def get_setting(key: str, default: str) -> str:
+    with _conn() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    return row["value"] if row else default
+
+
+def set_setting(key: str, value: str) -> None:
+    with _conn() as conn:
+        conn.execute("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                     (key, value))
+
+
+def set_shop_intelligence(shop_id: str, on: bool) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE shops SET use_intelligence = ? WHERE id = ?", (1 if on else 0, shop_id))
+
+
+# ----------------------------------------------------------- corrections
+
+def save_correction(record: dict) -> None:
+    """Store (or replace) a correction record. A record from the editor goes back to `pending` when replaced (the edits it described
+    changed); one that names its own `status` (the dataset seeding tool stores `approved`) keeps it."""
+    now = time.time()
+    status = record.get("status", "pending")
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO corrections (shop_id, brand, master_file, page_w_mm, page_h_mm, board_type, record_json, status, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(shop_id) DO UPDATE SET brand = excluded.brand, master_file = excluded.master_file,
+                 page_w_mm = excluded.page_w_mm, page_h_mm = excluded.page_h_mm, board_type = excluded.board_type,
+                 record_json = excluded.record_json, status = excluded.status, updated_at = excluded.updated_at""",
+            (record["shop_id"], record.get("brand"), record.get("master_file"), record["page_w_mm"], record["page_h_mm"],
+             record.get("board_type"), json.dumps(record), status, now, now))
+
+
+def delete_correction(shop_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM corrections WHERE shop_id = ?", (shop_id,))
+
+
+def get_correction(shop_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM corrections WHERE shop_id = ?", (shop_id,)).fetchone()
+    if not row:
+        return None
+    return {**dict(row), "record": json.loads(row["record_json"])}
+
+
+def list_corrections(status: str | None = None) -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM corrections WHERE (? IS NULL OR status = ?) ORDER BY updated_at DESC",
+                            (status, status)).fetchall()
+    return [{**dict(r), "record": json.loads(r["record_json"])} for r in rows]
 
 
 # ---------------------------------------------------------------- exports

@@ -28,7 +28,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
-from . import confidence, file_naming
+from . import confidence, corrections, file_naming
 from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename, strip_copy_suffix
 from .engines import get_engine
 from .layout import to_mm
@@ -829,6 +829,12 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
     # No font_en / font_ta from the queue: conversions keep the master's own fonts (fonts are changed in the Signage Editor).
     # Values a row may still carry from the old queue font pickers are deliberately NOT forwarded.
     master_path, master_used = _select_shop_master(shop_row, job_row, shop_dict["width"], shop_dict["height"])
+    if shop_row.get("use_intelligence"):
+        chosen = db.get_job(master_used["job_id"]) or job_row
+        found = corrections.usable_records(db.list_corrections(), job_row["brand"], chosen.get("master_filename"),
+                                           shop_dict["width"], shop_dict["height"], shop_row.get("board_type"))
+        if found:
+            shop_dict["intelligence"] = found
     # What the CHOSEN master currently shows as its shop name - how the engine finds the text shape to overwrite on an
     # untagged master (layout.find_shopname_ids); a `shopname`-tagged shape is used regardless.
     mrow = db.get_job(master_used["job_id"]) or job_row
@@ -1010,11 +1016,62 @@ def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
     # the master picked in the queue's Master column; an explicit null / "" goes back to the orientation's default
     if payload and "master_id" in payload:
         db.set_shop_master_id(shop_id, _validated_master_id(payload, db.get_job(row["job_id"])))
+    # Corel Intelligence: only a request that says so applies designers' corrections; a plain Convert is the engine alone
+    use_intel = bool(payload and payload.get("use_intelligence"))
+    if use_intel and row["status"] == "done":
+        _discard_board_edits(row["job_id"], shop_id)         # the saved edits and scene belong to the board being replaced
+    db.set_shop_intelligence(shop_id, use_intel)
     db.set_shop_status(shop_id, "queued")
     with _convert_queue_lock:
         _convert_queue.append(shop_id)
     _pool.submit(_v2_convert_worker, shop_id, row["job_id"])
-    return {"status": "queued"}
+    return {"status": "queued", "use_intelligence": use_intel}
+
+
+def _discard_board_edits(job_id: str, shop_id: str) -> None:
+    """A board is being regenerated: its cached scene and saved editor ops describe the old board (ids would not match)."""
+    shutil.rmtree(_scene_dir(job_id, shop_id), ignore_errors=True)
+    db.set_editor_ops(shop_id, [])
+
+
+INTELLIGENCE_KEY = "corel_intelligence"
+
+
+@app.get("/api/v2/intelligence")
+def v2_intelligence_get():
+    """The Corel Intelligence switch: while on, designers' editor corrections are collected. Defaults to ON."""
+    return {"enabled": db.get_setting(INTELLIGENCE_KEY, "1") == "1"}
+
+
+@app.put("/api/v2/intelligence", responses={422: {"description": "Validation error"}})
+def v2_intelligence_set(payload: dict = Body(...)):
+    if not isinstance(payload.get("enabled"), bool):
+        raise HTTPException(422, "enabled must be true or false")
+    db.set_setting(INTELLIGENCE_KEY, "1" if payload["enabled"] else "0")
+    return {"enabled": payload["enabled"]}
+
+
+@app.get("/api/v2/intelligence/available")
+def v2_intelligence_available(ids: str = ""):
+    """For each shop id (comma separated): how many learned designer corrections Corel Intelligence could apply to its board -
+    same brand, master and page size. Only shops that have a count above zero are listed."""
+    rows = db.list_corrections()
+    out: dict[str, int] = {}
+    for sid in [s for s in ids.split(",") if s]:
+        shop = db.get_shop(sid)
+        job = db.get_job(shop["job_id"]) if shop else None
+        if not shop or not job or shop["status"] != "done":
+            continue
+        used = ((json.loads(shop["report_json"]) if shop.get("report_json") else {}).get("master_used") or {})
+        chosen = db.get_job(used.get("job_id")) if used.get("job_id") else job
+        found = corrections.usable_records(rows, job["brand"], (chosen or job).get("master_filename"),
+                                           to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
+                                           shop.get("board_type"))
+        n = sum(1 for r in found for c in r["record"]["changes"]
+                if c["action"] in corrections.APPLIED_ACTIONS and (c.get("signature") or {}).get("kind") != "text")
+        if n:
+            out[sid] = n
+    return {"available": out}
 
 
 @app.get("/api/v2/shops/{shop_id}/status", responses={404: {"description": "Not found"}})
@@ -2097,11 +2154,33 @@ def editor_put_ops(job_id: str, shop_id: str, body: EditorOps):
     if scene is None:
         raise HTTPException(409, "scene has not been built yet")
     try:  # never persist a list that cannot be replayed
-        scene_ops.apply_ops(scene, body.ops)
+        edited = scene_ops.apply_ops(scene, body.ops)
     except scene_ops.OpError as e:
         raise HTTPException(422, str(e))
     db.set_editor_ops(shop_id, body.ops)
+    _capture_correction(job_id, shop_id, scene, edited)
     return {"saved": len(body.ops)}
+
+
+def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> None:
+    """Record what the designer changed (correction memory). Learning is never allowed to break saving: any failure is only logged."""
+    try:
+        if db.get_setting(INTELLIGENCE_KEY, "1") != "1":
+            return                                              # Corel Intelligence is switched off: collect nothing
+        shop = db.get_shop(shop_id)
+        try:
+            report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
+        except ValueError:
+            report = {}
+        # the master the board was really made from (a shop can use another upload's master), not just its own job's
+        made_from = db.get_job((report.get("master_used") or {}).get("job_id") or job_id) or db.get_job(job_id)
+        record = corrections.build_record(shop, made_from, base, edited, report.get("layout"))
+        if record:
+            db.save_correction(record)
+        else:
+            db.delete_correction(shop_id)
+    except Exception:
+        logging.getLogger("signage.corrections").exception("could not record the correction for shop %s", shop_id)
 
 
 @app.get("/api/editor/{job_id}/{shop_id}/replayed", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})

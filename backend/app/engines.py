@@ -20,7 +20,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import corel_util
+from . import corel_util, corrections
 from .corel_watchdog import Watchdog
 from .layout import (_norm_name, MIN_TEXT_PT, TAMIL_FONT, Obj, compute_layout, detect_role, find_contact_ids, find_local_partner_ids,
                      find_shopname_ids, is_tamil, load_brand_rule, brand_rule_for_shop, to_mm)
@@ -1053,6 +1053,15 @@ class CorelEngine:
                     language=shop_language(shop, warnings),
                 )
                 apply_name_fonts(placed, shop)
+                if shop.get("intelligence"):
+                    summary = corrections.apply_to_placed(placed, new_w, new_h, shop["intelligence"])
+                    src = next((p.layout_source for p in placed if p.layout_source), None)
+                    if src is None and placed:
+                        src = placed[0].layout_source = {}
+                    if src is not None:
+                        src["intelligence"] = summary
+                    if not summary["applied"]:
+                        warnings.append("Corel Intelligence had no matching designer correction to apply to this board")
 
                 page.SetSize(new_w, new_h)
                 reused_base_ids: set[str] = set()
