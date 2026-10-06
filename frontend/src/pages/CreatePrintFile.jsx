@@ -1,16 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CheckCircle2, FileCode, FileImage, FileText, FileUp, Loader2, Plus, Printer, Trash2, UploadCloud } from "lucide-react";
 import { BOARD_TYPES, filenameFrom, fmtSqft, todayISO } from "../utils/printSheet.js";
-import { assignSections, buildSpec, parseFileName, sectionTotals, validate } from "../utils/printFile.js";
+import { buildSpec, downloadBlob, figures, planAdd, progressPct, sectionTotals, validate } from "../utils/printFile.js";
 import { postPrintFile } from "../utils/printFileRequest.js";
 import "./CreatePrintFile.css";
 
 let seq = 0;
 const uid = (p) => `${p}${++seq}`;
 const newSection = (name = "ACP BOARD") => ({ id: uid("s"), name, qty: "", sqft: "" });
-const ACCEPTED = /\.(cdr|jpe?g|png|webp|bmp|tiff?)$/i;
 const isImage = (f) => /\.(jpe?g|png|webp|bmp|tiff?)$/i.test(f.name);
 const STAGES = [["uploading", "Uploading files"], ["rendering", "Building the sheet"], ["downloading", "Preparing download"]];
+
+function stageState(n, current) {
+  if (n < current) return "done";
+  return n === current ? "now" : "todo";
+}
+
+const STAGE_ICON = {
+  done: <CheckCircle2 size={14} />,
+  now: <Loader2 size={14} className="pf-spin" />,
+  todo: <span className="pf-dot" />,
+};
+
+function StageItem({ label, state, extra }) {
+  return <li className={state === "todo" ? "" : state}>{STAGE_ICON[state]}{label}{extra}</li>;
+}
 
 function Thumb({ url }) {
   const [loaded, setLoaded] = useState(false);
@@ -51,23 +65,19 @@ export default function CreatePrintFile() {
   }, []);
 
   const add = (fileList) => {
-    const all = [...fileList];
-    if (!all.length) return;
+    if (!fileList.length) return;
     setReading(true);
     // yield one frame so the "Reading files" loader paints before the (synchronous) parsing of a big drop
     setTimeout(() => {
-      const parsed = all.filter((f) => ACCEPTED.test(f.name)).map((file) => ({ file, ...parseFileName(file.name) }));
-      // a board type in the file name files it under the section of that name (made when it does not exist yet)
-      const placed = assignSections(sections, parsed.map((p) => p.type), () => uid("s"), sections[sections.length - 1].id);
-      const next = parsed.map((p, n) => {
+      const plan = planAdd(fileList, sections, () => uid("s"));
+      const next = plan.parsed.map(({ file, ...fields }, n) => {
         const id = uid("i");
-        if (isImage(p.file)) urls.current.set(id, URL.createObjectURL(p.file));
-        const { file, ...fields } = p;
-        return { id, file, fileName: file.name, sectionId: placed.sectionIds[n], qty: "", ...fields };
+        if (isImage(file)) urls.current.set(id, URL.createObjectURL(file));
+        return { id, file, fileName: file.name, sectionId: plan.sectionIds[n], qty: "", ...fields };
       });
-      setError(next.length < all.length ? "Only .cdr and image files (jpg, png, ...) can be added - the others were skipped." : "");
+      setError(plan.skipped ? "Only .cdr and image files (jpg, png, ...) can be added - the others were skipped." : "");
       setDone("");
-      setSections(placed.sections);
+      setSections(plan.sections);
       setItems((cur) => [...cur, ...next]);
       setReading(false);
     }, 30);
@@ -92,10 +102,10 @@ export default function CreatePrintFile() {
     [sections, items],
   );
   const used = sections.filter((s) => totals[s.id].qty && items.some((i) => i.sectionId === s.id));
-  const sum = used.reduce((a, s) => ({
-    qty: a.qty + (s.qty === "" ? totals[s.id].qty : Number(s.qty) || 0),
-    sqft: a.sqft + (s.sqft === "" ? totals[s.id].sqft : Number(s.sqft) || 0),
-  }), { qty: 0, sqft: 0 });
+  const sum = used.reduce((a, s) => {
+    const f = figures(s, totals[s.id]);
+    return { qty: a.qty + f.qty, sqft: a.sqft + f.sqft };
+  }, { qty: 0, sqft: 0 });
 
   async function generate() {
     setError("");
@@ -112,14 +122,7 @@ export default function CreatePrintFile() {
     try {
       const { blob, disposition } = await postPrintFile(form, { onStage: setStage, onUpload: setUpPct });
       const name = filenameFrom(disposition, `Print_File.${format === "pdf" ? "pdf" : "jpg"}`);
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = name;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
+      downloadBlob(blob, name);
       setDone(name);
     } catch (e) {
       setError(`Could not create the print file: ${e.message}`);
@@ -130,7 +133,7 @@ export default function CreatePrintFile() {
   }
 
   const stageIdx = STAGES.findIndex(([k]) => k === stage);
-  const progress = !busy ? 0 : stage === "uploading" ? Math.max(4, upPct * 0.4) : stage === "rendering" ? 40 : 90;
+  const progress = progressPct(busy, stage, upPct);
 
   // while a sheet is being built the inputs are inert (not just greyed): no edits can slip in between the spec and the render
   const lock = (el) => { if (el) el.inert = busy; };
@@ -184,13 +187,11 @@ export default function CreatePrintFile() {
 
         <section className="ws-card pf-card pf-files pf-col" ref={lock}>
           <div className="pf-step"><span>2</span><h2>Files</h2>{items.length > 0 && <em>{items.length} added</em>}</div>
-          <div
+          <button
+            type="button"
             className={"pf-drop" + (drag ? " over" : "") + (items.length ? " compact" : "")}
-            role="button"
-            tabIndex={0}
             data-testid="pf-drop"
             onClick={() => input.current?.click()}
-            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); input.current?.click(); } }}
             onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
             onDragLeave={() => setDrag(false)}
             onDrop={(e) => { e.preventDefault(); setDrag(false); add(e.dataTransfer.files); }}
@@ -198,17 +199,16 @@ export default function CreatePrintFile() {
             {reading ? <Loader2 size={items.length ? 20 : 34} className="pf-spin" /> : <UploadCloud size={items.length ? 20 : 34} />}
             <b>{reading ? "Reading files..." : "Drop CDR or image files here, or click to browse"}</b>
             {!items.length && <span>Names like &quot;16 - 12 X 4 Feet - Nonlit - SHOP NAME.cdr&quot; fill the size, type and name, and file the card under its board type. A CDR shows its saved preview.</span>}
-            <input
-              ref={input}
-              data-testid="pf-input"
-              type="file"
-              multiple
-              accept=".cdr,image/*"
-              hidden
-              onClick={(e) => e.stopPropagation()}
-              onChange={(e) => { add(e.target.files); e.target.value = ""; }}
-            />
-          </div>
+          </button>
+          <input
+            ref={input}
+            data-testid="pf-input"
+            type="file"
+            multiple
+            accept=".cdr,image/*"
+            hidden
+            onChange={(e) => { add(e.target.files); e.target.value = ""; }}
+          />
 
           {items.length > 0 && (
             <div className="pf-table-wrap">
@@ -249,7 +249,7 @@ export default function CreatePrintFile() {
           {items.length === 0 ? <span className="pf-empty">No files yet - add files to see the totals.</span> : used.map((s) => (
             <span className="pf-chip" key={s.id}>
               <b>{s.name || "Untitled"}</b>
-              {s.qty === "" ? totals[s.id].qty : s.qty} Nos · {s.sqft === "" ? fmtSqft(totals[s.id].sqft) : s.sqft} sq.ft
+              {figures(s, totals[s.id]).qty} Nos · {fmtSqft(figures(s, totals[s.id]).sqft)} sq.ft
             </span>
           ))}
         </div>
@@ -259,24 +259,21 @@ export default function CreatePrintFile() {
           <button type="button" role="radio" aria-checked={format === "jpeg"} className={format === "jpeg" ? "on" : ""} onClick={() => setFormat("jpeg")} disabled={busy}><FileImage size={15} /> JPEG</button>
         </div>
         {busy ? (
-          <div className="pf-progress" role="status" aria-live="polite">
+          <output className="pf-progress" aria-live="polite">
             <div className="pf-bar"><i className={stage === "rendering" ? "indeterminate" : ""} style={{ width: `${progress}%` }} /></div>
             <ol>
               {STAGES.map(([k, label], n) => (
-                <li key={k} className={n < stageIdx ? "done" : n === stageIdx ? "now" : ""}>
-                  {n < stageIdx ? <CheckCircle2 size={14} /> : n === stageIdx ? <Loader2 size={14} className="pf-spin" /> : <span className="pf-dot" />}
-                  {label}{k === "uploading" && stage === "uploading" ? ` ${upPct}%` : ""}
-                </li>
+                <StageItem key={k} label={label} state={stageState(n, stageIdx)} extra={k === "uploading" && stage === "uploading" ? ` ${upPct}%` : ""} />
               ))}
             </ol>
-          </div>
+          </output>
         ) : (
           <button type="button" className="btn-gradient pf-go" onClick={generate} data-testid="pf-generate">
             <Printer size={16} /> Generate print file
           </button>
         )}
         {error && <div className="pf-error" role="alert">{error}</div>}
-        {done && !busy && <div className="pf-done" role="status"><FileUp size={16} /><span><b>Downloaded</b> {done}</span></div>}
+        {done && !busy && <output className="pf-done"><FileUp size={16} /><span><b>Downloaded</b> {done}</span></output>}
       </footer>
     </div>
   );

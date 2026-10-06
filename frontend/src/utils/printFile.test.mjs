@@ -58,3 +58,27 @@ test("assignSections reuses an empty unnamed section", () => {
   assert.deepEqual(r.sectionIds, ["a"]);
   assert.equal(r.sections[0].name, "NONLIT");
 });
+
+import { figures, planAdd, progressPct } from "./printFile.js";
+
+test("planAdd skips unusable files and files the rest by type", () => {
+  const secs = [{ id: "a", name: "ACP BOARD", qty: "", sqft: "" }];
+  const files = [{ name: "1 - 10 X 4 Feet - GSB - A.png" }, { name: "notes.txt" }, { name: "B.cdr" }];
+  const r = planAdd(files, secs, () => "g");
+  assert.equal(r.skipped, 1);
+  assert.deepEqual(r.sectionIds, ["g", "a"]);                 // GSB -> a new section, no type -> the last existing one
+  assert.equal(r.parsed[0].width, "10");
+});
+
+test("figures prefers the typed override", () => {
+  assert.deepEqual(figures({ qty: "", sqft: "" }, { qty: 3, sqft: 9 }), { qty: 3, sqft: 9 });
+  assert.deepEqual(figures({ qty: "5", sqft: "x" }, { qty: 3, sqft: 9 }), { qty: 5, sqft: 0 });
+});
+
+test("progressPct follows the stages", () => {
+  assert.equal(progressPct(false, "uploading", 50), 0);
+  assert.equal(progressPct(true, "uploading", 50), 20);
+  assert.equal(progressPct(true, "uploading", 0), 4);
+  assert.equal(progressPct(true, "rendering", 100), 40);
+  assert.equal(progressPct(true, "downloading", 100), 90);
+});

@@ -111,59 +111,77 @@ def _bar(d, y_u: float, width: int, name: str, totals: tuple[int, float] | None)
         ps._label_value(d, 1230, y_u + 35, "Sq.feet : ", ps.fmt_sqft(totals[1]), 62 * ps.K)
 
 
+class _Pager:
+    """Flows sections onto A4 pages: owns the current page, the y cursor and the layout limits."""
+
+    def __init__(self, meta: FileMeta):
+        self.meta = meta
+        self.width, self.height = round(ps._u(ps.REF_W)), round(ps._u(PAGE_H_U))
+        self.grid = _grid()
+        self.limit = PAGE_H_U - FOOT_U
+        self.pages: list[Image.Image] = []
+        self.img = self.d = None
+        self.y = HEADER_U
+        self.new_page()
+
+    def new_page(self) -> None:
+        self.img = Image.new("RGB", (self.width, self.height), ps.WHITE)
+        self.d = ImageDraw.Draw(self.img)
+        _draw_header(self.d, self.meta)
+        self.pages.append(self.img)
+        self.y = HEADER_U
+
+    def _card(self, item: Item, n: int, col: int, y_u: float) -> None:
+        g = self.grid
+        x_pt, y_pt = (ps.SIDE + col * (g["card_u"] + GAP_U)) * ps.K, y_u * ps.K
+        shop = _shop(item, n + 1)
+        ps._draw_thumb(self.img, self.d, shop, x_pt, y_pt, g)
+        self.d = ImageDraw.Draw(self.img)
+        ps._draw_caption(self.d, x_pt, y_pt + g["box_h"] + ps.CAP_GAP_PT, g["card_w"], ps.caption(shop, item.board_type), g, ps.CAPTION)
+
+    def _rows(self, sec: Section, n: int, y_u: float) -> tuple[int, float]:
+        """Draw whole rows of cards from item `n` while they fit; returns the next item and the y below the last row."""
+        while n < len(sec.items) and y_u + self.grid["row_u"] <= self.limit:
+            for col in range(min(COLS, len(sec.items) - n)):
+                self._card(sec.items[n + col], n + col, col, y_u)
+            n += COLS
+            y_u += self.grid["row_u"]
+        return min(n, len(sec.items)), y_u
+
+    def section(self, sec: Section) -> None:
+        name = (sec.name or "BOARD").upper()
+        n, first = 0, True
+        while n < len(sec.items):
+            need = SECTION_GAP_U + BAR_H_U + 40 + self.grid["row_u"]
+            if self.y + need > self.limit and self.y > HEADER_U:
+                self.new_page()
+            y = self.y + (SECTION_GAP_U if self.y > HEADER_U or first else 0)
+            _bar(self.d, y, self.width, name if first else f"{name} (CONT.)", section_totals(sec) if first else None)
+            first = False
+            n, self.y = self._rows(sec, n, y + BAR_H_U + 40)
+            if n < len(sec.items):
+                self.new_page()
+
+    def number_pages(self) -> None:
+        if len(self.pages) < 2:
+            return
+        pf = ps._font("caption", 7.5)
+        for i, img in enumerate(self.pages, 1):
+            ps._text_cap(ImageDraw.Draw(img), (ps.PAGE_PT[0] - ps.SIDE * ps.K) * ps._P, (ps.PAGE_PT[1] - 20) * ps._P,
+                         f"Page {i} of {len(self.pages)}", pf, ps.MUTED, "right")
+
+
 def render_pages(meta: FileMeta, sections: list[Section]) -> list[Image.Image]:
     """A4 portrait pages (2480 x 3508 px). Sections flow down the page; a row that does not fit moves to the next page, which
     repeats the header, and a section split over pages repeats its bar as "NAME (CONT.)"."""
-    if not sections or not any(s.items for s in sections):
+    if not any(s.items for s in sections):
         raise ValueError("add at least one item")
-    width, height = round(ps._u(ps.REF_W)), round(ps._u(PAGE_H_U))
-    g = _grid()
-    limit = PAGE_H_U - FOOT_U
-    pages: list[Image.Image] = []
-    state = {}
-
-    def new_page():
-        img = Image.new("RGB", (width, height), ps.WHITE)
-        d = ImageDraw.Draw(img)
-        _draw_header(d, meta)
-        pages.append(img)
-        state.update(img=img, d=d, y=HEADER_U)
-
-    new_page()
-    for sec in (s for s in sections if s.items):
-        name = (sec.name or "BOARD").upper()
-        first = True
-        n = 0
-        while n < len(sec.items):
-            need = SECTION_GAP_U + BAR_H_U + 40 + g["row_u"]
-            if state["y"] + need > limit and state["y"] > HEADER_U:
-                new_page()
-            y = state["y"] + (SECTION_GAP_U if state["y"] > HEADER_U or first else 0)
-            _bar(state["d"], y, width, name if first else f"{name} (CONT.)", section_totals(sec) if first else None)
-            first = False
-            y += BAR_H_U + 40
-            while n < len(sec.items) and y + g["row_u"] <= limit:
-                for c in range(COLS):
-                    if n >= len(sec.items):
-                        break
-                    item = sec.items[n]
-                    x_pt, y_pt = (ps.SIDE + c * (g["card_u"] + GAP_U)) * ps.K, y * ps.K
-                    shop = _shop(item, n + 1)
-                    ps._draw_thumb(state["img"], state["d"], shop, x_pt, y_pt, g)
-                    state["d"] = ImageDraw.Draw(state["img"])
-                    ps._draw_caption(state["d"], x_pt, y_pt + g["box_h"] + ps.CAP_GAP_PT, g["card_w"],
-                                     ps.caption(shop, item.board_type), g, ps.CAPTION)
-                    n += 1
-                y += g["row_u"]
-            state["y"] = y
-            if n < len(sec.items):
-                new_page()
-    if len(pages) > 1:
-        pf = ps._font("caption", 7.5)
-        for i, img in enumerate(pages, 1):
-            ps._text_cap(ImageDraw.Draw(img), (ps.PAGE_PT[0] - ps.SIDE * ps.K) * ps._P, (ps.PAGE_PT[1] - 20) * ps._P,
-                         f"Page {i} of {len(pages)}", pf, ps.MUTED, "right")
-    return pages
+    pager = _Pager(meta)
+    for sec in sections:
+        if sec.items:
+            pager.section(sec)
+    pager.number_pages()
+    return pager.pages
 
 
 def render(meta: FileMeta, sections: list[Section]) -> Image.Image:

@@ -1314,6 +1314,47 @@ def _print_file_preview(upload: UploadFile, folder: Path, n: int) -> Path | None
     return dest
 
 
+def _print_file_spec(spec: str, max_items: int) -> dict:
+    """Parse and sanity-check the `spec` form field; anything wrong is a 422."""
+    try:
+        data = json.loads(spec)
+        if data.get("format", "pdf") not in ("pdf", "jpeg"):
+            raise ValueError("format must be 'pdf' or 'jpeg'")
+        sections = data["sections"]
+        if not isinstance(sections, list) or not sections:
+            raise ValueError("add at least one section")
+        if sum(len(s.get("items", [])) for s in sections) > max_items:
+            raise ValueError(f"at most {max_items} items per print file")
+    except (ValueError, KeyError, TypeError, AttributeError) as e:
+        raise HTTPException(422, f"invalid spec: {e}")
+    return data
+
+
+def _print_file_item(it: dict, image, print_file):
+    """One spec item -> print_file.Item (a bad number, unit or qty is a 422 that names the item)."""
+    name = str(it.get("name", "")).strip()
+    try:
+        w, h, qty = float(it["width"]), float(it["height"]), int(it.get("qty") or 1)
+    except (KeyError, ValueError, TypeError):
+        raise HTTPException(422, f"item \"{name}\" needs a numeric width and height")
+    unit = it.get("unit", "in")
+    if not (w > 0 and h > 0) or unit not in ("in", "ft", "cm", "mm") or qty < 1:
+        raise HTTPException(422, f"item \"{name}\" needs width/height > 0, a unit in/ft/cm/mm and qty >= 1")
+    return print_file.Item(name=name, width=w, height=h, unit=unit, board_type=str(it.get("type", "")).strip(),
+                           no=it.get("no") or "", qty=qty, image=image)
+
+
+def _print_file_section(s: dict, preview, print_file):
+    """One spec section -> print_file.Section; `preview(file_index)` resolves an item's upload to an image path."""
+    items = [_print_file_item(it, preview(it.get("file")), print_file) for it in s.get("items", [])]
+    try:
+        qo = int(s["qty"]) if s.get("qty") not in (None, "") else None
+        so = float(s["sqft"]) if s.get("sqft") not in (None, "") else None
+    except (ValueError, TypeError):
+        raise HTTPException(422, f"section \"{s.get('name', '')}\": QTY and Sq.feet must be numbers")
+    return print_file.Section(name=str(s.get("name", "")).strip(), items=items, qty_override=qo, sqft_override=so)
+
+
 @app.post("/api/print-file/generate", responses={413: {"description": "Too large"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
 def print_file_generate(spec: str = Form(...), files: list[UploadFile] = File(default=[])):
     """"Create Print File" page: `spec` is JSON {title, project_no, date, lines[], format, sections[{name, qty, sqft,
@@ -1323,57 +1364,26 @@ def print_file_generate(spec: str = Form(...), files: list[UploadFile] = File(de
         from . import print_file, print_sheet
     except ImportError as e:
         raise HTTPException(503, f"The print file needs Pillow, which is not installed for the Python running this server: {e}")
-    try:
-        data = json.loads(spec)
-        fmt = data.get("format", "pdf")
-        if fmt not in ("pdf", "jpeg"):
-            raise ValueError("format must be 'pdf' or 'jpeg'")
-        raw_sections = data["sections"]
-        if not isinstance(raw_sections, list) or not raw_sections:
-            raise ValueError("add at least one section")
-        if sum(len(s.get("items", [])) for s in raw_sections) > print_file.MAX_ITEMS:
-            raise ValueError(f"at most {print_file.MAX_ITEMS} items per print file")
-    except (ValueError, KeyError, TypeError, AttributeError) as e:
-        raise HTTPException(422, f"invalid spec: {e}")
+    data = _print_file_spec(spec, print_file.MAX_ITEMS)
     tmp = Path(tempfile.mkdtemp(prefix="print_file_"))
+    previews: dict[int, Path | None] = {}
+
+    def preview(idx):
+        if idx is None:
+            return None
+        if not isinstance(idx, int) or not 0 <= idx < len(files):
+            raise HTTPException(422, f"item refers to file #{idx}, which was not uploaded")
+        if idx not in previews:
+            previews[idx] = _print_file_preview(files[idx], tmp, idx)
+        return previews[idx]
+
     try:
-        previews: dict[int, Path | None] = {}
-
-        def preview(idx):
-            if idx is None:
-                return None
-            if not isinstance(idx, int) or not 0 <= idx < len(files):
-                raise HTTPException(422, f"item refers to file #{idx}, which was not uploaded")
-            if idx not in previews:
-                previews[idx] = _print_file_preview(files[idx], tmp, idx)
-            return previews[idx]
-
-        sections = []
-        for s in raw_sections:
-            items = []
-            for it in s.get("items", []):
-                try:
-                    w, h = float(it["width"]), float(it["height"])
-                    unit = it.get("unit", "in")
-                    qty = int(it.get("qty") or 1)
-                except (KeyError, ValueError, TypeError):
-                    raise HTTPException(422, f"item \"{it.get('name', '')}\" needs a numeric width and height")
-                if not (w > 0 and h > 0) or unit not in ("in", "ft", "cm", "mm") or qty < 1:
-                    raise HTTPException(422, f"item \"{it.get('name', '')}\" needs width/height > 0, a unit in/ft/cm/mm and qty >= 1")
-                items.append(print_file.Item(name=str(it.get("name", "")).strip(), width=w, height=h, unit=unit,
-                                             board_type=str(it.get("type", "")).strip(), no=it.get("no") or "", qty=qty,
-                                             image=preview(it.get("file"))))
-            try:
-                qo = int(s["qty"]) if s.get("qty") not in (None, "") else None
-                so = float(s["sqft"]) if s.get("sqft") not in (None, "") else None
-            except (ValueError, TypeError):
-                raise HTTPException(422, f"section \"{s.get('name', '')}\": QTY and Sq.feet must be numbers")
-            sections.append(print_file.Section(name=str(s.get("name", "")).strip(), items=items, qty_override=qo, sqft_override=so))
+        sections = [_print_file_section(s, preview, print_file) for s in data["sections"]]
         meta = print_file.FileMeta(title=str(data.get("title", "")).strip(), project_no=str(data.get("project_no", "")).strip(),
                                    date=print_sheet.format_date(str(data.get("date", ""))),
                                    lines=[str(x) for x in data.get("lines", [])])
         try:
-            path, media = print_file.write(meta, sections, fmt, tmp / "sheet")
+            path, media = print_file.write(meta, sections, data.get("format", "pdf"), tmp / "sheet")
         except ValueError as e:
             raise HTTPException(422, str(e))
     except BaseException:

@@ -2,19 +2,34 @@
 import { sqFeet } from "./printSheet.js";
 
 const UNITS = { in: "in", inch: "in", inches: "in", ft: "ft", feet: "ft", foot: "ft", cm: "cm", mm: "mm" };
-const SIZE_RE = /^(\d+(?:\.\d+)?)\s*[xX*]\s*(\d+(?:\.\d+)?)\s*([A-Za-z]+)?$/;
+const NUMBER = /^\d{1,6}(?:\.\d{1,6})?$/;
+
+/** "12 X 4 Feet" / "10.5x4in" -> {w, h, unit} (strings), or null. Split by hand: a one-regex version backtracks badly. */
+function parseSize(piece) {
+  const t = piece.trim();
+  const at = t.search(/[xX*]/);
+  if (at < 1) return null;
+  const rest = t.slice(at + 1).trim();
+  let k = 0;
+  while (k < rest.length && /[\d.]/.test(rest[k])) k++;
+  const w = t.slice(0, at).trim();
+  const h = rest.slice(0, k);
+  const unit = rest.slice(k).trim();
+  const unitOk = unit === "" || (unit.length <= 10 && /^[A-Za-z]+$/.test(unit));
+  return NUMBER.test(w) && NUMBER.test(h) && unitOk ? { w, h, unit } : null;
+}
 
 /** `16 - 12 X 4 Feet - Nonlit - AL MADEENA.cdr` -> {no, width, height, unit, type, name}; whatever cannot be read stays empty. */
 export function parseFileName(fileName) {
   const base = String(fileName || "").replace(/\.[^.]+$/, "").trim();
-  const parts = base.split(/\s+-\s+/);
+  const parts = base.split(" - ").map((p) => p.trim());
   const out = { no: "", width: "", height: "", unit: "in", type: "", name: base };
-  const at = parts.findIndex((p) => SIZE_RE.test(p.trim()));
+  const at = parts.findIndex((p) => parseSize(p));
   if (at < 0) return out;
-  const m = SIZE_RE.exec(parts[at].trim());
-  out.width = m[1];
-  out.height = m[2];
-  out.unit = UNITS[(m[3] || "").toLowerCase()] || "in";
+  const size = parseSize(parts[at]);
+  out.width = size.w;
+  out.height = size.h;
+  out.unit = UNITS[size.unit.toLowerCase()] || "in";
   if (at >= 1 && /^\d+$/.test(parts[0].trim())) out.no = parts[0].trim();
   const rest = parts.slice(at + 1);
   if (rest.length >= 2) { out.type = rest[0].trim(); out.name = rest.slice(1).join(" - ").trim(); }
@@ -89,4 +104,41 @@ export function assignSections(sections, types, newId, fallbackId) {
     }),
     sections: out,
   };
+}
+
+const ACCEPTED = /\.(cdr|jpe?g|png|webp|bmp|tiff?)$/i;
+
+/** Which of the dropped files can be used, parsed from their names and placed in sections (see assignSections). */
+export function planAdd(fileList, sections, newId) {
+  const all = [...fileList];
+  const parsed = all.filter((f) => ACCEPTED.test(f.name)).map((file) => ({ file, ...parseFileName(file.name) }));
+  const placed = assignSections(sections, parsed.map((p) => p.type), newId, sections.at(-1).id);
+  return { skipped: all.length - parsed.length, parsed, sections: placed.sections, sectionIds: placed.sectionIds };
+}
+
+/** A section's QTY and Sq.feet as printed: the typed override, else the calculated figure (`totals` = sectionTotals). */
+export function figures(section, totals) {
+  return {
+    qty: section.qty === "" ? totals.qty : Number(section.qty) || 0,
+    sqft: section.sqft === "" ? totals.sqft : Number(section.sqft) || 0,
+  };
+}
+
+/** Width of the progress bar (0-100): the upload fills the first 40 %, the render holds 40, the download is the rest. */
+export function progressPct(busy, stage, uploadPct) {
+  if (!busy) return 0;
+  if (stage === "uploading") return Math.max(4, uploadPct * 0.4);
+  return stage === "rendering" ? 40 : 90;
+}
+
+/** Hands a blob to the browser as a download. */
+export function downloadBlob(blob, name) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
 }

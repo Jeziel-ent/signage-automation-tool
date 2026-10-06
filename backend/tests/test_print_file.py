@@ -55,7 +55,8 @@ def test_pages_are_a4_and_overflow_moves_to_the_next_page():
     few = print_file.render_pages(print_file.FileMeta(title="T"), [print_file.Section("S", [print_file.Item("A", 1, 1)] * 3)])
     many = print_file.render_pages(print_file.FileMeta(title="T"), [print_file.Section("S", [print_file.Item("A", 1, 1)] * 40),
                                                                     print_file.Section("T", [print_file.Item("B", 1, 1)])])
-    assert len(few) == 1 and len(many) > 1
+    assert len(few) == 1
+    assert len(many) > 1
     assert all(p.size == (2480, 3508) for p in few + many)
 
 
@@ -66,15 +67,17 @@ def test_render_is_2480_wide_and_has_red_bar(tmp_path):
 
 
 def test_render_needs_an_item():
+    meta, sections = print_file.FileMeta(), [print_file.Section("S", [])]
     with pytest.raises(ValueError):
-        print_file.render(print_file.FileMeta(), [print_file.Section("S", [])])
+        print_file.render(meta, sections)
 
 
 def test_many_items_make_a_multi_page_pdf_and_a_zip_of_jpegs(client):
     spec = _spec()
     spec["sections"][0]["items"] = [{"file": None, "name": f"Shop {i}", "width": 10, "height": 4, "unit": "ft"} for i in range(40)]
     r = _post(client, {**spec, "format": "pdf"}, [])
-    assert r.status_code == 200 and len(re.findall(rb"/Type /Page(?![a-z])", r.content)) >= 2
+    assert r.status_code == 200
+    assert len(re.findall(rb"/Type /Page(?![a-z])", r.content)) >= 2
     r = _post(client, {**spec, "format": "jpeg"}, [])
     assert r.headers["content-type"] == "application/zip"
     assert len(zipfile.ZipFile(io.BytesIO(r.content)).namelist()) >= 2
@@ -82,13 +85,15 @@ def test_many_items_make_a_multi_page_pdf_and_a_zip_of_jpegs(client):
 
 def test_generate_jpeg_and_pdf_from_image_and_cdr(client):
     r = _post(client, _spec(), [("a.png", _png())])
-    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg"
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
     assert "Print_File_P-1_06.10.2026.jpg" in r.headers["content-disposition"]
     assert Image.open(io.BytesIO(r.content)).width == 2480
     spec = _spec(format="pdf")
     spec["sections"][0]["items"][0]["file"] = 0
     r = _post(client, spec, [("master.cdr", _cdr())])
-    assert r.status_code == 200 and r.content.startswith(b"%PDF")
+    assert r.status_code == 200
+    assert r.content.startswith(b"%PDF")
 
 
 def test_cdr_without_preview_still_renders(client):
