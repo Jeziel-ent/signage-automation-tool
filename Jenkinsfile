@@ -99,7 +99,26 @@ pipeline {
                     currentBuild.description = readFile('ci-reports/summary.txt').trim()   // shown on the build page
                 }
             }
+            junit allowEmptyResults: true, testResults: 'frontend/frontend-junit.xml'
             archiveArtifacts artifacts: 'ci-reports/**,backend/coverage.xml,frontend/lcov.info', allowEmptyArchive: true
+            script {
+                // E-mail report after EVERY build (passed, unstable, failed). The recipient is not in this file (the repository is public):
+                // it is Jenkins' "Default Recipients" under Manage Jenkins > System > Extended E-mail Notification. A mail problem never
+                // changes the build result.
+                try {
+                    bat(returnStatus: true, script: "%PY% ci\\make_email_report.py ${currentBuild.currentResult}")
+                    def body = fileExists('ci-reports/email-report.html') ? readFile('ci-reports/email-report.html') : "Build ${currentBuild.currentResult}: ${env.BUILD_URL}"
+                    emailext(
+                        subject: "[${env.JOB_NAME}] #${env.BUILD_NUMBER} ${currentBuild.currentResult}" + (currentBuild.description ? " - ${currentBuild.description}" : ''),
+                        to: '$DEFAULT_RECIPIENTS',
+                        mimeType: 'text/html',
+                        body: body,
+                        attachmentsPattern: 'ci-reports/quality-gate-report.md'
+                    )
+                } catch (err) {
+                    echo "E-mail report could not be sent (is SMTP configured in Jenkins?): ${err}"
+                }
+            }
         }
         success { echo "Pipeline OK - dashboard: ${env.SONAR_HOST_URL}/dashboard?id=signage-automation-tool" }
         failure { echo 'Pipeline FAILED - see the first red stage (backend tests, frontend tests, analysis or the quality gate report).' }

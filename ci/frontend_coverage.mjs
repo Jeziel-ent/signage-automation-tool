@@ -18,6 +18,7 @@ const result = spawnSync(
     "--experimental-test-coverage",
     "--test-reporter=spec", "--test-reporter-destination=stdout",
     "--test-reporter=lcov", "--test-reporter-destination=lcov.info",
+    "--test-reporter=junit", "--test-reporter-destination=frontend-junit.xml",    // read by Jenkins and by the e-mail report
     ...files,
   ],
   { stdio: "inherit" },
