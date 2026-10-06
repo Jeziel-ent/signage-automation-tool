@@ -367,7 +367,9 @@ def test_export_zip_bundles_every_file_under_the_shop_name(client):
     assert r.headers["content-type"] == "application/zip"
     from tests.test_file_naming import _download_name
     cd = _download_name(r)
-    assert " X " in cd and " - Nonlit - " in cd and cd.endswith(".zip"), cd
+    assert " X " in cd, cd
+    assert " - Nonlit - " in cd, cd
+    assert cd.endswith(".zip"), cd
     z = zipfile.ZipFile(io.BytesIO(r.content))
     assert len(z.namelist()) == len(final["files"])
     stem = cd[:-len(".zip")]

@@ -74,8 +74,10 @@ def test_conversion_invariants_across_the_ratio_matrix(name, label, w_in, h_in):
     for i in fg:                                               # inside the canvas [0, 1] x [0, 1], no NaN
         b = _box(out, i)
         assert not any(math.isnan(v) for v in b.values()), i
-        assert b["x"] >= -1e-2 and b["y"] >= -1e-2, (i, label)
-        assert b["x"] + b["w"] <= W + 1e-2 and b["y"] + b["h"] <= H + 1e-2, (i, label)
+        assert b["x"] >= -1e-2, (i, label)
+        assert b["y"] >= -1e-2, (i, label)
+        assert b["x"] + b["w"] <= W + 1e-2, (i, label)
+        assert b["y"] + b["h"] <= H + 1e-2, (i, label)
 
     for a in range(len(fg)):                                   # no NEW collision (overlaps already on the source are kept)
         for c in range(a + 1, len(fg)):

@@ -14,7 +14,12 @@ from pptx.dml.color import RGBColor
 
 raw = json.load(open(sys.argv[1], encoding="utf-8"))
 groups = raw if isinstance(raw, dict) else {None: raw}
-TITLE = sys.argv[3] if len(sys.argv) > 3 else ("AGARPATHI + HANGYO" if isinstance(raw, dict) else "HANGYO")
+if len(sys.argv) > 3:
+    TITLE = sys.argv[3]
+elif isinstance(raw, dict):
+    TITLE = "AGARPATHI + HANGYO"
+else:
+    TITLE = "HANGYO"
 NOTE = sys.argv[4] if len(sys.argv) > 4 else "designer JPEG vs automated picture from the app"
 def ratio(sz): return sz[0] / sz[1]
 def verdict(r):

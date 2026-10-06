@@ -188,7 +188,12 @@ def main():
                     row["warnings"] = res["report"].get("warnings", [])
                     row["files"] = res["files"]
                     pv = res["files"].get("preview")
-                    png = Path(pv) if pv and Path(pv).is_absolute() else (Path(j["out_dir"]) / Path(pv).name if pv else None)
+                    if pv and Path(pv).is_absolute():
+                        png = Path(pv)
+                    elif pv:
+                        png = Path(j["out_dir"]) / Path(pv).name
+                    else:
+                        png = None
                     row["png"] = str(png) if png else None
                     try:
                         if png and png.exists() and png.suffix.lower() == ".png" and m["ref"]:

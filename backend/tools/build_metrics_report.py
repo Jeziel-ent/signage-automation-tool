@@ -264,6 +264,12 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
                 return (f'<tr class="{cls}"><td>{esc(label)}</td><td>{esc(f["status"])}</td>'
                         f'<td>{esc(f["expected"])}</td><td>{esc(f["found"])}</td></tr>')
 
+            if cc["overall"] == "CONTENT_OK":
+                overall_cls = "pass"
+            elif cc["overall"] == "CONTENT_FAIL":
+                overall_cls = "fail"
+            else:
+                overall_cls = "unscored"
             content_html = f"""
             <table class="metric-table">
               <tr><th>field</th><th>status</th><th>expected</th><th>found</th></tr>
@@ -271,7 +277,7 @@ def _render_html(brand: str, cards: list[dict], config: dict) -> str:
               {_row("phone", cc["phone"])}
               {_row("gst", cc["gst"])}
             </table>
-            <p class="meta">overall: <span class="badge {'pass' if cc['overall'] == 'CONTENT_OK' else 'fail' if cc['overall'] == 'CONTENT_FAIL' else 'unscored'}">{esc(cc['overall'])}</span></p>"""
+            <p class="meta">overall: <span class="badge {overall_cls}">{esc(cc['overall'])}</span></p>"""
         else:
             content_html = '<p class="err">no content check recorded for this board</p>'
 

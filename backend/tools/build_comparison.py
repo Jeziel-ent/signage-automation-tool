@@ -87,7 +87,14 @@ def _render_html(brand: str, cards: list[dict]) -> str:
 
     card_html = []
     for c in cards:
-        badge = "outlier" if c["outlier"] else ("pass" if c["pass_2"] else ("close" if c["pass_5"] else "fail"))
+        if c["outlier"]:
+            badge = "outlier"
+        elif c["pass_2"]:
+            badge = "pass"
+        elif c["pass_5"]:
+            badge = "close"
+        else:
+            badge = "fail"
         diff_s = f"{c['max_diff']:.1f}%" if c["max_diff"] is not None else "-"
         ssim_s = f"{c['ssim']:.3f}" if c["ssim"] is not None else "-"
         outlier_html = f'<p class="outlier-note">{esc(c["outlier"])}</p>' if c["outlier"] else ""

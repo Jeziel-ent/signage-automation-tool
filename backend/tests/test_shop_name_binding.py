@@ -250,7 +250,8 @@ def test_hangyo_asian_juice_bar_board_layout():
             Obj("3", "c", "text", 1654, 481, 1553, 401, "ஏசியன்")]
     placed = {p.id: p for p in compute_layout(objs, 4876.8, 914.4, 4876.8, 914.4, shop_name="Asian Juice bar",
                                               shop_name_local="ஏசியன் ஜூஸ் பார்", shopname_ids={"1", "2", "3"})}
-    assert placed["3"].text == "ஏசியன்" and placed["2"].text == "ஜூஸ் பார்"      # top line first, not the whole name twice
+    assert placed["3"].text == "ஏசியன்"
+    assert placed["2"].text == "ஜூஸ் பார்"  # top line first, not the whole name twice
     assert placed["3"].no_wrap
     assert placed["2"].no_wrap
     assert placed["1"].text == "ASIAN JUICE BAR"

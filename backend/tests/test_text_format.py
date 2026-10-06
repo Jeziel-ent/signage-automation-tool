@@ -70,7 +70,8 @@ def test_replay_applies_every_field_and_keeps_the_text_in_place():
     _, r, _, v = run(ops, doc, scene)
     st = shape.Text.Story
     assert (st.Alignment, st.Bold, st.Italic, st.Underline, st.LineSpacing, st.CharSpacing) == (1, True, True, 1, 150.0, 25.0)
-    assert r.warnings == [] and v["ok"], (r.warnings, v)
+    assert r.warnings == [], (r.warnings, v)
+    assert v["ok"], (r.warnings, v)
     assert (shape.LeftX, shape.TopY) == (left, top)
 
 
@@ -82,7 +83,8 @@ def test_right_alignment_keeps_the_right_edge_where_the_editor_shows_it():
     right = shape.RightX
     _, r, _, v = run([{"op": "text", "id": t, "align": "right"}], doc, scene)
     assert shape.Text.Story.Alignment == 2                     # cdrRightAlignment (not 3 - that is centre)
-    assert abs(shape.RightX - right) < 1e-6 and v["ok"], v
+    assert abs(shape.RightX - right) < 1e-6, v
+    assert v["ok"], v
 
 
 def test_an_ignored_setting_is_reported():

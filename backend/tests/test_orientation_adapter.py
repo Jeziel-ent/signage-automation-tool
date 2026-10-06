@@ -159,7 +159,8 @@ def test_stack_template_uses_the_same_normalized_bands_for_every_portrait_ratio(
     for zone, (lo, hi) in ((oa.ZONE_FOOTER, (0.0, 0.20)), (oa.ZONE_PRODUCT, oa.STACK_BAND_PRODUCT),
                            (oa.ZONE_MAIN_TEXT, oa.STACK_BAND_BRAND), (oa.ZONE_HEADER, oa.STACK_BAND_HEADER)):
         y0, y1 = band(zone)
-        assert lo - 1e-9 <= y0 <= lo + tol and hi - tol <= y1 <= hi + 1e-9, (zone, y0, y1)
+        assert lo - 1e-9 <= y0 <= lo + tol, (zone, y0, y1)
+        assert hi - tol <= y1 <= hi + 1e-9, (zone, y0, y1)
         assert f[zone]["w"] == pytest.approx(W - 2 * oa.MARGIN_FRAC * min(W, H), abs=1e-6)   # full width
     # strictly stacked top to bottom, no overlap, products anchored right above the footer, and the
     # header reaches high enough that there is no large empty top region
@@ -1077,8 +1078,10 @@ def test_extracted_clip_children_are_placed_once_inside_their_zone_and_the_conta
     for nid, zone in zone_of.items():
         b, f = box_of(out, nid), frames[zone]
         tol = 1e-2
-        assert f["x"] - tol <= b["x"] and b["x"] + b["w"] <= f["x"] + f["w"] + tol, (nid, target)
-        assert f["y"] - tol <= b["y"] and b["y"] + b["h"] <= f["y"] + f["h"] + tol, (nid, target)
+        assert f["x"] - tol <= b["x"], (nid, target)
+        assert b["x"] + b["w"] <= f["x"] + f["w"] + tol, (nid, target)
+        assert f["y"] - tol <= b["y"], (nid, target)
+        assert b["y"] + b["h"] <= f["y"] + f["h"] + tol, (nid, target)
     # not transformed twice: the children move only through their own zone op, never again via the container's
     assert sum(1 for op in ops if op["op"] == "resize" and "pc" in op["ids"]) == 1
     # bitmaps inside extracted groups keep their aspect ratio (uniform scale)
@@ -1243,7 +1246,8 @@ def test_wide_stage_bands_are_the_same_normalized_fractions_for_every_wide_ratio
     for zone, (lo, hi) in ((oa.ZONE_FOOTER, oa.WIDE_STAGE_FOOTER), (oa.ZONE_PRODUCT, oa.WIDE_STAGE_PRODUCT),
                            (oa.ZONE_MAIN_TEXT, oa.WIDE_STAGE_BRAND), (oa.ZONE_HEADER, oa.WIDE_STAGE_HEADER)):
         y0, y1 = f[zone]["y"] / H, (f[zone]["y"] + f[zone]["h"]) / H
-        assert lo - 1e-9 <= y0 <= lo + tol and hi - tol <= y1 <= hi + 1e-9, (zone, y0, y1)
+        assert lo - 1e-9 <= y0 <= lo + tol, (zone, y0, y1)
+        assert hi - tol <= y1 <= hi + 1e-9, (zone, y0, y1)
         assert f[zone]["w"] == pytest.approx(W - 2 * oa.MARGIN_FRAC * H, abs=1e-6)          # full width
     assert (f[oa.ZONE_FOOTER]["y"] + f[oa.ZONE_FOOTER]["h"]) / H <= 0.12                     # slim footer bar
     # a landscape SOURCE keeps the original wide template, untouched
@@ -1589,8 +1593,10 @@ def test_a_logo_cluster_keeps_its_card_and_content_together_through_a_conversion
     card = box_of(out, "card")
     for k in range(8):                                     # every piece is still inside the card it started in
         p = box_of(out, f"piece{k}")
-        assert card["x"] - 1e-2 <= p["x"] and p["x"] + p["w"] <= card["x"] + card["w"] + 1e-2, (k, target)
-        assert card["y"] - 1e-2 <= p["y"] and p["y"] + p["h"] <= card["y"] + card["h"] + 1e-2, (k, target)
+        assert card["x"] - 1e-2 <= p["x"], (k, target)
+        assert p["x"] + p["w"] <= card["x"] + card["w"] + 1e-2, (k, target)
+        assert card["y"] - 1e-2 <= p["y"], (k, target)
+        assert p["y"] + p["h"] <= card["y"] + card["h"] + 1e-2, (k, target)
     # relative layout preserved: the same affine map for card, shadow and pieces (both axes)
     a, b = box_of(scene, "card"), box_of(scene, "shadow")
     sx, sy = card["w"] / a["w"], card["h"] / a["h"]

@@ -204,7 +204,13 @@ def brand_section(prs, brand: str, label: str):
         s = prs.slides.add_slide(blank)
         bg(s)
         pill(s, Inches(0.5), Inches(0.35), Inches(1.15), Inches(0.5), f"S.No {r['sno']}", RED, 15)
-        tb(s, Inches(1.85), Inches(0.3), Inches(7.6), Inches(0.6), r["name"], 26 if len(r["name"]) <= 26 else (20 if len(r["name"]) <= 36 else 16), True, INK, "Cambria", anchor=MSO_ANCHOR.MIDDLE)
+        if len(r["name"]) <= 26:
+            name_pt = 26
+        elif len(r["name"]) <= 36:
+            name_pt = 20
+        else:
+            name_pt = 16
+        tb(s, Inches(1.85), Inches(0.3), Inches(7.6), Inches(0.6), r["name"], name_pt, True, INK, "Cambria", anchor=MSO_ANCHOR.MIDDLE)
         tb(s, Inches(9.6), Inches(0.35), Inches(3.2), Inches(0.5), f"{r['w']:g} X {r['h']:g} {r['unit']}", 15, False, GREY, align=PP_ALIGN.RIGHT, anchor=MSO_ANCHOR.MIDDLE)
         pill(s, Inches(0.5), Inches(0.98), Inches(2.5), Inches(0.36), "Known size: " + LABEL[kc[r["file"]]], COL[kc[r["file"]]], 11)
         pill(s, Inches(3.15), Inches(0.98), Inches(2.9), Inches(0.36), "Unseen size: " + LABEL[uc[r["file"]]], COL[uc[r["file"]]], 11)
