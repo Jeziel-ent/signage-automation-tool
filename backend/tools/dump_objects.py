@@ -93,11 +93,16 @@ def _dump_shape(shape, layer_name: str, group_path: list[str], out: list[dict]):
 
 
 def dump(cdr_path: Path) -> dict:
-    import pythoncom
-
-    pythoncom.CoInitialize()
-    app, we_launched_it, pid = corel_util.dispatch_corel()
+    # The shared instance pool, like CorelEngine: a worker that just converted a board holds a pooled CorelDRAW, and a plain Dispatch would
+    # hand back THAT instance - quitting it here (or CoUninitialize-ing its apartment) is what made every later board in a batch fail with
+    # "Object is not connected to server". Standalone runs (pool size 1) still get a fresh instance that is quit afterwards.
+    corel_util.ensure_com()
+    app, _, pid = corel_util.acquire_instance()
+    success = False
     try:
+        from app import engines
+
+        engines.close_master_session_on(pid)
         doc = corel_util.run_with_timeout(
             lambda: app.OpenDocument(str(cdr_path.resolve())), pid, "OpenDocument",
         )
@@ -117,12 +122,14 @@ def dump(cdr_path: Path) -> dict:
                 for s in top_shapes:
                     _dump_shape(s, layer_name, [], shapes)
 
-            return {
+            result = {
                 "file": cdr_path.name,
                 "page_mm": {"w": page_w, "h": page_h},
                 "shape_count": len(shapes),
                 "shapes": shapes,
             }
+            success = True
+            return result
         finally:
             # Best-effort: a cleanup failure (e.g. the COM server already died)
             # must not clobber a result we already successfully read.
@@ -131,8 +138,7 @@ def dump(cdr_path: Path) -> dict:
             except Exception:
                 pass
     finally:
-        corel_util.quit_corel(app, we_launched_it, pid)
-        pythoncom.CoUninitialize()
+        corel_util.release_instance(pid, success)
 
 
 def main():

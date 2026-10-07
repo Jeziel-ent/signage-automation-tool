@@ -143,6 +143,14 @@ def close_master_session() -> None:
     _MasterSession.doc = _MasterSession.pid = _MasterSession.key = _MasterSession.snapshot = None
 
 
+def close_master_session_on(pid) -> None:
+    """Close the kept-open master if it lives on CorelDRAW `pid`. Anything else that opens a document on the same pooled instance
+    (the dump tools) calls this first: a second document opened and closed under the engine's kept-open master left it unusable for
+    the next shop ("The server threw an exception"), found by running a 3-board validate_all batch. The next shop just reopens it."""
+    if _MasterSession.pid == pid:
+        close_master_session()
+
+
 atexit.register(close_master_session)   # registered after corel_util's, so it runs first: the doc closes before the quit
 
 

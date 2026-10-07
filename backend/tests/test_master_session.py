@@ -59,3 +59,58 @@ def test_keep_master_open_switch(monkeypatch):
     assert engines.keep_master_open()
     monkeypatch.setenv("SIGNAGE_KEEP_MASTER_OPEN", "0")
     assert not engines.keep_master_open()
+
+
+class _Doc:
+    def __init__(self):
+        self.closed = False
+        self.Unit = None
+
+    def Close(self):
+        self.closed = True
+
+
+def test_close_master_session_on_only_closes_that_instance(monkeypatch):
+    kept = _Doc()
+    monkeypatch.setattr(engines._MasterSession, "doc", kept)
+    monkeypatch.setattr(engines._MasterSession, "pid", 111)
+    engines.close_master_session_on(222)                       # another instance: left alone
+    assert kept.closed is False
+    engines.close_master_session_on(111)
+    assert kept.closed is True
+    assert engines._MasterSession.doc is None
+
+
+def test_dump_uses_the_shared_pool_and_closes_the_kept_master(monkeypatch):
+    """A batch worker holds a pooled CorelDRAW with the engine's master kept open: the dump must use that pool (never quit or
+    CoUninitialize it) and close the kept master first - the 2026-10 'batch fails after board 1' bug."""
+    from pathlib import Path
+
+    from tools import dump_objects
+
+    events = []
+    kept = _Doc()
+    monkeypatch.setattr(engines._MasterSession, "doc", kept)
+    monkeypatch.setattr(engines._MasterSession, "pid", 777)
+
+    class _Page:
+        SizeWidth, SizeHeight = 100.0, 50.0
+
+        class Layers:
+            Count = 0
+
+    class _App:
+        def OpenDocument(self, path):
+            events.append(("open", kept.closed))
+            doc = _Doc()
+            doc.ActivePage = _Page()
+            return doc
+
+    monkeypatch.setattr(corel_util, "ensure_com", lambda: events.append("com"))
+    monkeypatch.setattr(corel_util, "acquire_instance", lambda: (_App(), True, 777))
+    monkeypatch.setattr(corel_util, "release_instance", lambda pid, ok: events.append(("release", pid, ok)))
+    monkeypatch.setattr(corel_util, "run_with_timeout", lambda fn, pid, name: fn())
+    out = dump_objects.dump(Path("x.cdr"))
+    assert out["shape_count"] == 0
+    assert ("open", True) in events                            # the kept master was closed BEFORE the file was opened
+    assert events[-1] == ("release", 777, True)                # released to the pool, not quit

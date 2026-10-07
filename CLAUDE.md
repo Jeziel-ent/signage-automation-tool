@@ -144,7 +144,15 @@ python tools/seed_corrections.py dalmia --from-cache                          # 
 2. `validate_all.py` batches: after board 1 the next boards fail with "Object is not connected to server" / "CoInitialize has not been called"
    (`tools/dump_objects.dump` does its own `CoInitialize`/`CoUninitialize` + `quit_corel` inside the worker that holds the reused CorelDRAW), and
    the in-worker dump can lose text, which made the report's `content_check` fail 10/14 boards although the engine output is right. The
-   saved dalmia report's `content_check` was recomputed from the healthy `ours_dumps_cache` dumps. NOT fixed in code - run per board.
+   saved dalmia report's `content_check` was recomputed from the healthy `ours_dumps_cache` dumps. **FIXED 2026-10-07** (reproduced with
+   `validate_all.py dalmia --limit 3`: board 1 ok, 2 "not connected", 3 "CoInitialize has not been called"): `dump_objects.dump` called a plain
+   `Dispatch`, which returns the ONE running CorelDRAW - the worker's pooled instance - and then `Quit()`ed it and `CoUninitialize`d the thread;
+   it now uses `ensure_com` + `acquire_instance` / `release_instance` like the engine, and first closes the engine's kept-open master on that
+   instance (`engines.close_master_session_on`) - a second document opened and closed under it left it unusable ("The server threw an
+   exception" on the next shop). 3 boards in one batch now all complete. Side note: the dump's text measurement differs by context - the
+   same 120x48 board reads max_diff 0.0 % with the master still open and 2.3 % without (also on the old code with KEEP_MASTER_OPEN=0) - the
+   Tamil text variance noted in "Nested corrections" above, not a regression. `render_real_preview`, `export_replay`, `scene_export` keep their own
+   dispatch/quit (each runs in a worker that has no pooled engine instance).
 3. The 120x48 dalmia boards now differ more from the designers' files (max 6.8-22 %) than the old notes (1.9-4.8 %); 144x60 max ~58 % (was
    2-15 %). The engine changed since (loose-logo units 2026-10-01); not yet investigated. The old numbers in this file are historical.
 
