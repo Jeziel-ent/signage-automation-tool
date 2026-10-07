@@ -129,7 +129,7 @@ def test_designers_who_disagree_are_not_applied_and_a_different_structure_is_ski
 
 
 def test_summarize_lists_nested_changes_with_their_style():
-    row = {"shop_id": "x", "brand": "b", "master_file": "m", "page_w_mm": 1000.0, "page_h_mm": 2000.0, "status": "pending",
+    row = {"shop_id": "x", "brand": "b", "master_file": "m", "page_w_mm": 1000.0, "page_h_mm": 2000.0,
            "record": {"changes": [], "nested": corrections.diff_scenes(_board(), _edited(DESIGNER_OPS))["nested"]}}
     out = corrections.summarize(row, "Shop")
     text = next(c for c in out["changes"] if c["id"] == "s97")
@@ -155,7 +155,6 @@ def test_a_sparkle_conversion_replays_the_learned_nested_edits_and_publishes_the
     assert client.put(f"/api/editor/{job}/{a}/ops", json={"ops": [{"op": "move", "ids": ["s3"], "dx": 120, "dy": 0}]}).status_code == 200
     rec = db.get_correction(a)
     assert [c["id"] for c in rec["record"]["nested"]] == ["s3"]
-    assert client.put(f"/api/v2/corrections/{a}/status", json={"status": "approved"}).status_code == 200
     # another board of the same size on the same master, converted with Corel Intelligence
     b = client.post(f"/api/v2/jobs/{job}/shops", json={"name": "Second", "width": 120, "width_unit": "in", "height": 4, "height_unit": "ft"}).json()["id"]
     client.post(f"/api/v2/shops/{b}/convert")
@@ -174,7 +173,7 @@ def test_a_sparkle_conversion_replays_the_learned_nested_edits_and_publishes_the
     assert db.list_exports(b), "the replayed edits are published as the board's new files"
 
 
-def test_recapture_rereads_pending_records_from_their_saved_edits(client):  # noqa: F811
+def test_recapture_rereads_stored_records_from_their_saved_edits(client):  # noqa: F811
     import app.db as db
     import app.main as main
     job, a = _converted_shop(client)
@@ -186,4 +185,4 @@ def test_recapture_rereads_pending_records_from_their_saved_edits(client):  # no
     assert db.get_correction(a)["record"]["nested"] == []
     assert main.recapture_corrections() == {"updated": 1, "skipped": 0}
     assert [c["id"] for c in db.get_correction(a)["record"]["nested"]] == ["s3"]
-    assert db.get_correction(a)["status"] == "pending"
+    assert db.get_correction(a)["status"] == "approved"      # legacy column: every record is used

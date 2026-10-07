@@ -821,7 +821,7 @@ _batch_slots: dict[str, tuple[Path, int]] = {}  # shop id -> (its batch's heartb
 
 
 def _learned_records(shop_row: dict, job_row: dict, master_used: dict, w_mm: float, h_mm: float) -> list[dict]:
-    """The approved corrections Corel Intelligence applies to this conversion: none unless the sparkle asked for them (use_intelligence)."""
+    """The stored corrections Corel Intelligence applies to this conversion: none unless the sparkle asked for them (use_intelligence)."""
     if not shop_row.get("use_intelligence"):
         return []
     chosen = db.get_job(master_used["job_id"]) or job_row
@@ -1016,7 +1016,7 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
 
 
 def _apply_learned_nested(shop_id: str) -> None:
-    """After a Corel Intelligence conversion: the approved corrections that touch objects INSIDE groups (the shop-name block and its text)
+    """After a Corel Intelligence conversion: the stored corrections that touch objects INSIDE groups (the shop-name block and its text)
     cannot be placed during the conversion, so they are replayed on the new board as ordinary editor edits - build its scene, work out the
     ops (corrections.nested_ops), save them as the board's edits (the designer sees and can undo them in the editor) and publish the files.
     Never raises: a failure only means the board keeps the top-level learning."""
@@ -1112,23 +1112,6 @@ def _discard_board_edits(job_id: str, shop_id: str) -> None:
     db.set_editor_ops(shop_id, [])
 
 
-INTELLIGENCE_KEY = "corel_intelligence"
-
-
-@app.get("/api/v2/intelligence")
-def v2_intelligence_get():
-    """The Corel Intelligence switch: while on, designers' editor corrections are collected. Defaults to ON."""
-    return {"enabled": db.get_setting(INTELLIGENCE_KEY, "1") == "1"}
-
-
-@app.put("/api/v2/intelligence", responses={422: {"description": "Validation error"}})
-def v2_intelligence_set(payload: dict = Body(...)):
-    if not isinstance(payload.get("enabled"), bool):
-        raise HTTPException(422, "enabled must be true or false")
-    db.set_setting(INTELLIGENCE_KEY, "1" if payload["enabled"] else "0")
-    return {"enabled": payload["enabled"]}
-
-
 @app.get("/api/v2/intelligence/available")
 def v2_intelligence_available(ids: str = ""):
     """For each shop id (comma separated): how many learned designer corrections Corel Intelligence could apply to its board -
@@ -1139,7 +1122,7 @@ def v2_intelligence_available(ids: str = ""):
         n = _learned_for(rows, db.get_shop(sid))
         if n:
             out[sid] = n
-    return {"available": out, "pending": len(db.list_corrections("pending"))}
+    return {"available": out}
 
 
 def _learned_for(rows: list[dict], shop: dict | None) -> int:
@@ -1157,31 +1140,14 @@ def _learned_for(rows: list[dict], shop: dict | None) -> int:
     return top + sum(len(r["record"].get("nested", [])) for r in found)
 
 
-@app.get("/api/v2/corrections", responses={422: {"description": "Validation error"}})
-def v2_corrections(status: str = ""):
-    """The review screen's list: every stored correction (optionally one status), newest first, each with its changes spelled out."""
-    if status and status not in corrections.STATUSES:
-        raise HTTPException(422, f"status must be one of {', '.join(corrections.STATUSES)}")
+@app.get("/api/v2/corrections")
+def v2_corrections():
+    """Everything the model has learned: every stored correction, newest first, each with its changes spelled out."""
     out = []
-    for row in db.list_corrections(status or None):
+    for row in db.list_corrections():
         shop = db.get_shop(row["shop_id"])
         out.append(corrections.summarize(row, shop["name"] if shop else None))
-    counts = {s: len(db.list_corrections(s)) for s in corrections.STATUSES}
-    return {"corrections": out, "counts": counts}
-
-
-class CorrectionStatusBody(BaseModel):
-    status: str
-
-
-@app.put("/api/v2/corrections/{shop_id}/status", responses={404: {"description": "Not found"}, 422: {"description": "Validation error"}})
-def v2_set_correction_status(shop_id: str, body: CorrectionStatusBody):
-    """Approve, reject or re-open one correction. Only approved ones are applied to later boards."""
-    if body.status not in corrections.STATUSES:
-        raise HTTPException(422, f"status must be one of {', '.join(corrections.STATUSES)}")
-    if not db.set_correction_status(shop_id, body.status):
-        raise HTTPException(404, "correction not found")
-    return {"id": shop_id, "status": body.status}
+    return {"corrections": out}
 
 
 @app.get("/api/v2/shops/{shop_id}/status", responses={404: {"description": "Not found"}})
@@ -2280,19 +2246,18 @@ def editor_put_ops(job_id: str, shop_id: str, body: EditorOps):
     return {"saved": len(body.ops)}
 
 
-def recapture_corrections(statuses: tuple[str, ...] = ("pending",)) -> dict:
-    """Re-derive stored editor corrections of the given statuses from the saved edit lists and the cached scenes, keeping each one's status.
+def recapture_corrections() -> dict:
+    """Re-derive every stored editor correction from the saved edit lists and the cached scenes.
     Used after the learner gained something new (nested objects, text style): records made earlier only hold what it could see then.
     Dataset seeds are left alone. Returns {"updated": n, "skipped": n}."""
     done = {"updated": 0, "skipped": 0}
     for row in db.list_corrections():
-        if row["status"] not in statuses or row["record"].get("source"):
+        if row["record"].get("source"):
             continue
         record = _recaptured_record(row)
         if record is None:
             done["skipped"] += 1
             continue
-        record["status"] = row["status"]
         db.save_correction(record)
         done["updated"] += 1
     return done
@@ -2317,8 +2282,6 @@ def _recaptured_record(row: dict) -> dict | None:
 def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> None:
     """Record what the designer changed (correction memory). Learning is never allowed to break saving: any failure is only logged."""
     try:
-        if db.get_setting(INTELLIGENCE_KEY, "1") != "1":
-            return                                              # Corel Intelligence is switched off: collect nothing
         shop = db.get_shop(shop_id)
         try:
             report = json.loads(shop["report_json"]) if shop.get("report_json") else {}

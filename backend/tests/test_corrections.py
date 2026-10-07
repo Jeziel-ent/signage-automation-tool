@@ -105,7 +105,7 @@ def test_build_record_carries_the_context():
     assert r["confidence"] == "GOOD"
 
 
-def test_saving_editor_ops_stores_a_pending_correction_and_clearing_them_removes_it(client):  # noqa: F811
+def test_saving_editor_ops_stores_a_correction_and_clearing_them_removes_it(client):  # noqa: F811
     import app.db as db
     job, shop = _converted_shop(client)
     scene = _scene(client, job, shop)
@@ -114,7 +114,6 @@ def test_saving_editor_ops_stores_a_pending_correction_and_clearing_them_removes
     move = {"op": "move", "ids": [top], "dx": 60, "dy": 0}
     assert client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [move]}).status_code == 200
     c = db.get_correction(shop)
-    assert c["status"] == "pending"
     assert c["brand"] == "dalmia"
     assert c["record"]["changes"][0]["id"] == top
     assert client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": []}).status_code == 200
@@ -194,23 +193,18 @@ def test_designers_who_agree_are_applied_as_their_median_and_ones_who_disagree_a
 def test_usable_records_need_the_same_brand_master_size_and_type():
     ok = _rec()
     rows = [ok, _rec("x", brand="other"), _rec("y", master_file="z.cdr"), _rec("w", page_w_mm=1500.0),
-            _rec("r", status="rejected"), _rec("p", status="pending"), _rec("t", board_type="GSB")]
+            _rec("r", status="rejected"), _rec("p", status="pending"), _rec("t", board_type="GSB")]   # status is ignored: every record is used
     got = corrections.usable_records(rows, "b", "M.CDR", 1002.0, 400.0, None)
-    assert {r["shop_id"] for r in got} == {"s1", "t"}      # brand, master (case-insensitive) and size (within 0.5 %) match; pending and rejected never apply
+    assert {r["shop_id"] for r in got} == {"s1", "r", "p", "t"}      # brand, master (case-insensitive) and size (within 0.5 %) match; no approval step
     only = corrections.usable_records(rows, "b", "m.cdr", 1000.0, 400.0, "Frontlit")
-    assert [r["shop_id"] for r in only] == ["s1"]          # a record for another board type is excluded; one without a type stays
+    assert {r["shop_id"] for r in only} == {"s1", "r", "p"}  # a record for another board type is excluded; one without a type stays
 
 
-def test_intelligence_toggle_defaults_on_and_off_stops_collection(client):  # noqa: F811
+def test_collection_is_always_on_and_there_is_no_switch(client):  # noqa: F811
     import app.db as db
-    assert client.get("/api/v2/intelligence").json() == {"enabled": True}
-    assert client.put("/api/v2/intelligence", json={"enabled": "yes"}).status_code == 422
-    assert client.put("/api/v2/intelligence", json={"enabled": False}).json() == {"enabled": False}
+    assert client.get("/api/v2/intelligence").status_code in (404, 405)
     job, shop = _converted_shop(client)
     top = _scene(client, job, shop)["layers"][0]["children"][0]["id"]
-    client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]})
-    assert db.get_correction(shop) is None
-    client.put("/api/v2/intelligence", json={"enabled": True})
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]})
     assert db.get_correction(shop) is not None
 
@@ -218,13 +212,11 @@ def test_intelligence_toggle_defaults_on_and_off_stops_collection(client):  # no
 def test_available_counts_corrections_and_convert_with_intelligence_sets_the_flag(client):  # noqa: F811
     import app.db as db
     job, shop = _converted_shop(client)
-    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {}, "pending": 0}
+    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {}}
     top = _scene(client, job, shop)["layers"][0]["children"][0]["id"]
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]})
-    # a freshly saved edit is PENDING: it waits for review and is not offered or applied until approved
-    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {}, "pending": 1}
-    assert client.put(f"/api/v2/corrections/{shop}/status", json={"status": "approved"}).status_code == 200
-    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {shop: 1}, "pending": 0}
+    # a saved edit is used at once: no approval step
+    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {shop: 1}}
     r = client.post(f"/api/v2/shops/{shop}/convert", json={"use_intelligence": True})
     assert r.json() == {"status": "queued", "use_intelligence": True}
     assert db.get_shop(shop)["use_intelligence"] == 1
@@ -238,13 +230,12 @@ def test_available_counts_corrections_and_convert_with_intelligence_sets_the_fla
     assert db.get_shop(shop)["use_intelligence"] == 0          # a plain Convert is the engine alone
 
 
-# ------------------------------------------------------------------ the review screen
+# ------------------------------------------------------------------ the learned-corrections list
 
 def test_summarize_spells_out_each_change_in_mm():
-    row = _rec(status="pending")
+    row = _rec()
     out = corrections.summarize(row, "SRI KAVI")
     assert out["title"] == "SRI KAVI"
-    assert out["status"] == "pending"
     assert out["source"] == "editor"
     assert out["applies"] == ["a"]
     assert out["changes"][0]["shift"] == {"dx_mm": 100.0, "dy_mm": -40.0, "dw_mm": 0.0, "dh_mm": 0.0}
@@ -260,31 +251,23 @@ def test_summarize_marks_dataset_seeds_and_skips_shift_for_hidden():
     assert out["applies"] == ["a"]                          # a hidden object is not re-applied
 
 
-def test_review_list_and_status_endpoints(client):  # noqa: F811
+def test_learned_list_endpoint(client):  # noqa: F811
     job, shop = _converted_shop(client)
     top = _scene(client, job, shop)["layers"][0]["children"][0]["id"]
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]})
     body = client.get("/api/v2/corrections").json()
-    assert body["counts"] == {"pending": 1, "approved": 0, "rejected": 0}
+    assert list(body) == ["corrections"]
     assert body["corrections"][0]["id"] == shop
     assert body["corrections"][0]["changes"][0]["shift"]["dx_mm"] == pytest.approx(60, abs=1)
-    assert client.put(f"/api/v2/corrections/{shop}/status", json={"status": "rejected"}).json() == {"id": shop, "status": "rejected"}
-    assert client.get("/api/v2/corrections?status=rejected").json()["corrections"][0]["status"] == "rejected"
-    assert client.get("/api/v2/corrections?status=pending").json()["corrections"] == []
+    assert client.put(f"/api/v2/corrections/{shop}/status", json={"status": "rejected"}).status_code in (404, 405)   # no approve / reject
 
 
-def test_status_endpoint_validates(client):  # noqa: F811
-    assert client.put("/api/v2/corrections/nope/status", json={"status": "approved"}).status_code == 404
-    assert client.put("/api/v2/corrections/nope/status", json={"status": "maybe"}).status_code == 422
-    assert client.get("/api/v2/corrections?status=maybe").status_code == 422
-
-
-def test_an_edit_saved_again_goes_back_to_pending(client):  # noqa: F811
+def test_an_edit_saved_again_replaces_the_record_and_stays_used(client):  # noqa: F811
     import app.db as db
     job, shop = _converted_shop(client)
     top = _scene(client, job, shop)["layers"][0]["children"][0]["id"]
     ops = [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": ops})
-    client.put(f"/api/v2/corrections/{shop}/status", json={"status": "approved"})
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": ops + [{"op": "move", "ids": [top], "dx": 10, "dy": 0}]})
-    assert db.get_correction(shop)["status"] == "pending"      # the edits it described changed: review again
+    assert len(db.list_corrections()) == 1
+    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {shop: 1}}

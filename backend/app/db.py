@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS editor_ops (
 );
 
 -- Correction memory (app/corrections.py): what the designer changed in the editor, one record per shop, replaced on every save.
--- `status` is pending until a person approves it on the review screen; only `approved` rows are applied when a board is generated.
+-- every stored correction is used when a board is generated (no approval step); `status` is a legacy column, always `approved`.
 CREATE TABLE IF NOT EXISTS corrections (
     shop_id TEXT PRIMARY KEY,
     brand TEXT,
@@ -501,10 +501,10 @@ def set_shop_intelligence(shop_id: str, on: bool) -> None:
 # ----------------------------------------------------------- corrections
 
 def save_correction(record: dict) -> None:
-    """Store (or replace) a correction record. A record from the editor goes back to `pending` when replaced (the edits it described
-    changed); one that names its own `status` (the dataset seeding tool stores `approved`) keeps it."""
+    """Store (or replace) a correction record. Every stored record is used - there is no approval step (`status` is a legacy column,
+    always written `approved`, never read)."""
     now = time.time()
-    status = record.get("status", "pending")
+    status = "approved"
     with _conn() as conn:
         conn.execute(
             """INSERT INTO corrections (shop_id, brand, master_file, page_w_mm, page_h_mm, board_type, record_json, status, created_at, updated_at)
@@ -521,13 +521,6 @@ def delete_correction(shop_id: str) -> None:
         conn.execute("DELETE FROM corrections WHERE shop_id = ?", (shop_id,))
 
 
-def set_correction_status(shop_id: str, status: str) -> bool:
-    """Approve / reject / re-open a correction (the review screen). False when there is no such record."""
-    with _conn() as conn:
-        cur = conn.execute("UPDATE corrections SET status = ?, updated_at = ? WHERE shop_id = ?", (status, time.time(), shop_id))
-    return cur.rowcount > 0
-
-
 def get_correction(shop_id: str) -> dict | None:
     with _conn() as conn:
         row = conn.execute("SELECT * FROM corrections WHERE shop_id = ?", (shop_id,)).fetchone()
@@ -536,10 +529,9 @@ def get_correction(shop_id: str) -> dict | None:
     return {**dict(row), "record": json.loads(row["record_json"])}
 
 
-def list_corrections(status: str | None = None) -> list[dict]:
+def list_corrections() -> list[dict]:
     with _conn() as conn:
-        rows = conn.execute("SELECT * FROM corrections WHERE (? IS NULL OR status = ?) ORDER BY updated_at DESC",
-                            (status, status)).fetchall()
+        rows = conn.execute("SELECT * FROM corrections ORDER BY updated_at DESC").fetchall()
     return [{**dict(r), "record": json.loads(r["record_json"])} for r in rows]
 
 

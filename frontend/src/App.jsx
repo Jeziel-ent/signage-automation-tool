@@ -44,7 +44,7 @@ const NAV = [
   { to: "/", end: true, label: "Automation", Icon: Workflow },
   { to: "/recent", end: false, label: "Recently generated", Icon: History },
   { to: "/print-file", end: false, label: "Create Print File", Icon: Printer },
-  { to: "/corrections", end: false, label: "Intelligence review", Icon: ShieldCheck },
+  { to: "/corrections", end: false, label: "Learned corrections", Icon: ShieldCheck },
 ];
 
 const COLLAPSE_KEY = "signage.sidebarCollapsed";

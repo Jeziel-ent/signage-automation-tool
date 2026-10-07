@@ -1,6 +1,5 @@
 // Pieces of the Automation page's Shops Queue, kept apart so the page component stays readable (same markup, same behaviour).
 import { AnimatePresence } from "framer-motion";
-import { Link } from "react-router-dom";
 import BrandSelect from "./BrandSelect.jsx";
 import AnimatedCount from "./AnimatedCount.jsx";
 import { Building2, Eye, Layers, Store, FileCode2, FileSpreadsheet, Plus, FolderArchive, Play, Printer, RectangleHorizontal, RectangleVertical, Sparkles, Trash2 } from "lucide-react";
@@ -227,9 +226,6 @@ export function QueueModals({ brand, masters, printable, job, show, close, galle
   );
 }
 
-const INTEL_ON = "Corel Intelligence is ON: corrections you make in the editor are collected to improve later boards. Click to turn off.";
-const INTEL_OFF = "Corel Intelligence is OFF: editor corrections are not collected. Click to turn on.";
-
 /** Left side of the brand bar: the brand picker, "+ New Brand" (or its input) and Manage Masters. */
 export function BrandControls({ brand, brands, setBrand, adding, setAdding, newBrand, setNewBrand, onAddBrand, nMasters, onManage }) {
   return (
@@ -258,20 +254,10 @@ export function BrandControls({ brand, brands, setBrand, adding, setAdding, newB
   );
 }
 
-/** Right side of the brand bar: the Corel Intelligence switch, "N to review", shops loaded and the masters badge. */
-export function StatusBadges({ intelOn, onToggle, intelPending, shopCount, bothMasters, masterBadge }) {
+/** Right side of the brand bar: shops loaded and the masters badge. */
+export function StatusBadges({ shopCount, bothMasters, masterBadge }) {
   return (
     <div className="ws-badges">
-      <button type="button" role="switch" aria-checked={intelOn} className={"ci-switch" + (intelOn ? " on" : "")} onClick={onToggle}
-        title={intelOn ? INTEL_ON : INTEL_OFF}>
-        <Sparkles size={13} /> Corel Intelligence
-        <span className="ci-track" aria-hidden="true"><span className="ci-knob" /></span>
-      </button>
-      {intelPending > 0 && (
-        <Link to="/corrections" className="ws-badge ci-review" title="Corrections saved from the editor are waiting for your approval before they are used">
-          <Sparkles size={13} /> {intelPending} to review
-        </Link>
-      )}
       <span className="ws-badge">
         <Store size={13} /> <AnimatedCount value={shopCount} /> Shop{plural(shopCount)} Loaded
       </span>

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeShift, describeStyle, diffRects, inTab, intelAllTitle, learnedCount, noApprovedNotice, pageLabel, pickSelection, sparkleTitle } from "./correctionsView.js";
+import { describeShift, describeStyle, diffRects, intelAllTitle, learnedCount, nothingLearnedNotice, pageLabel, pickSelection, sparkleTitle } from "./correctionsView.js";
 
 test("diffRects flips y (the scene's origin is bottom-left) and scales to the drawing", () => {
   const change = { before: { cx: 0.25, cy: 0.25, w: 0.2, h: 0.2 }, after: { cx: 0.5, cy: 0.75, w: 0.2, h: 0.2 } };
@@ -27,13 +27,11 @@ test("pageLabel shows inches", () => {
   assert.equal(pageLabel(3657.6, 1524), "144 x 60 in");
 });
 
-test("tabs and selection", () => {
-  const rs = [{ id: "a", status: "pending" }, { id: "b", status: "approved" }, { id: "c", status: "pending" }];
-  assert.equal(inTab(rs[0], "all"), true);
-  assert.equal(inTab(rs[1], "pending"), false);
-  assert.equal(pickSelection(rs, "pending", "c"), "c");
-  assert.equal(pickSelection(rs, "pending", "b"), "a");       // b is not in the tab: fall back to the first one shown
-  assert.equal(pickSelection(rs, "rejected", "a"), null);
+test("selection keeps the current record or falls back to the first", () => {
+  const rs = [{ id: "a" }, { id: "b" }];
+  assert.equal(pickSelection(rs, "b"), "b");
+  assert.equal(pickSelection(rs, "gone"), "a");
+  assert.equal(pickSelection([], "a"), null);
 });
 
 test("describeStyle reads the text style a designer set", () => {
@@ -49,9 +47,7 @@ test("learnedCount adds the top-level and the nested edits", () => {
 });
 
 test("the sparkle wording is singular / plural and says what is missing", () => {
-  assert.match(noApprovedNotice(0), /nothing learned/);
-  assert.match(noApprovedNotice(1), /1 correction is waiting/);
-  assert.match(noApprovedNotice(3), /3 corrections are waiting/);
+  assert.match(nothingLearnedNotice(), /nothing learned/);
   assert.match(intelAllTitle(0), /Nothing learned/);
   assert.match(intelAllTitle(1), /Re-run 1 converted board with/);
   assert.match(intelAllTitle(4), /Re-run 4 converted boards with/);

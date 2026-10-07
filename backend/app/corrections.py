@@ -7,7 +7,7 @@ that was moved, resized, hidden or deleted, where it was and where the designer 
 like the scene), so the record is independent of the page size and can later be matched against `library.json` boards.
 
 Text edits are not learned (Tamil spelling and names come from the sheet) - they are only counted. Nothing here changes how a board is
-generated; a correction is `pending` until a person approves it on the review screen - only `approved` records are ever applied.
+generated. Every stored correction is applied to later boards of the same size (there is no approval step).
 """
 from __future__ import annotations
 
@@ -257,7 +257,7 @@ APPLIED_ACTIONS = ("moved", "resized", "moved+resized")
 def usable_records(rows: list[dict], brand: str | None, master_file: str | None, w_mm: float, h_mm: float,
                    board_type: str | None) -> list[dict]:
     """The stored corrections that describe THIS board: same brand, same master file, same page size (within `SAME_SIZE_TOL`) and, when
-    both name one, the same TYPE OF BOARD. Only APPROVED records are used (pending ones wait for review, rejected ones never apply).
+    both name one, the same TYPE OF BOARD. Every stored record is used.
     Newest first, so a later correction wins a clash."""
     want = (board_type or "").strip().lower()
     out = [r for r in rows if _record_fits(r, brand, master_file, w_mm, h_mm, want)]
@@ -273,8 +273,8 @@ def _lower(v) -> str:
 
 
 def _record_fits(r: dict, brand: str | None, master_file: str | None, w_mm: float, h_mm: float, want_type: str) -> bool:
-    """One stored record describes this board: approved, same brand, same master file, same page size and (when both name one) board type."""
-    if r.get("status") != "approved" or (r.get("brand") or "") != (brand or ""):
+    """One stored record describes this board: same brand, same master file, same page size and (when both name one) board type."""
+    if (r.get("brand") or "") != (brand or ""):
         return False
     if _lower(r.get("master_file")) != _lower(master_file):
         return False
@@ -378,9 +378,6 @@ def build_record(shop: dict, job: dict | None, base: dict, edited: dict, layout:
     }
 
 
-STATUSES = ("pending", "approved", "rejected")
-
-
 def summarize(row: dict, shop_name: str | None = None) -> dict:
     """A stored correction as the review screen shows it: where it came from, the page, and every change as page fractions plus the
     shift in millimetres (x right, y UP like the scene) so a person can judge it without opening the board."""
@@ -397,7 +394,7 @@ def summarize(row: dict, shop_name: str | None = None) -> dict:
                         "before": b, "after": a, "shift": shift, "nested": bool(c.get("nested")), "style": c.get("style")})
     return {
         "id": row["shop_id"], "title": shop_name or rec.get("file") or row["shop_id"], "brand": row.get("brand"),
-        "master_file": row.get("master_file"), "board_type": row.get("board_type"), "status": row["status"],
+        "master_file": row.get("master_file"), "board_type": row.get("board_type"),
         "source": "designer-dataset" if rec.get("source") else "editor", "page_w_mm": pw, "page_h_mm": ph,
         "updated_at": row.get("updated_at"), "text_edits": rec.get("text_edits", 0),
         "applies": [c["id"] for c in changes if (c["action"] in APPLIED_ACTIONS and c["kind"] != "text") or c["nested"]],
@@ -487,7 +484,7 @@ def _replay(work: dict, ops: list[dict]) -> bool:
 
 
 def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
-    """Editor ops that reproduce the approved records' nested changes on a freshly converted board's `scene`.
+    """Editor ops that reproduce the stored records' nested changes on a freshly converted board's `scene`.
 
     Same consensus rule as the top-level ones: one record applies as is; several that name the same object must agree within
     CONSENSUS_TOL (then the median is used) or the object is left alone. An object is matched by id AND checked (kind, text or not,

@@ -1,6 +1,5 @@
-// Corel Intelligence review screen helpers: how a stored correction is drawn and described (the server sends page fractions + mm shifts).
+// Corel Intelligence "learned corrections" screen helpers: how a stored correction is drawn and described (the server sends page fractions + mm shifts).
 
-export const STATUS_LABEL = { pending: "Pending review", approved: "Approved", rejected: "Rejected" };
 export const ACTION_LABEL = {
   moved: "Moved", resized: "Resized", "moved+resized": "Moved and resized", hidden: "Hidden", deleted: "Deleted", styled: "Restyled",
 };
@@ -38,15 +37,9 @@ export function pageLabel(wMm, hMm) {
   return `${inch(wMm)} x ${inch(hMm)} in`;
 }
 
-/** Which of the review list's tabs a record belongs under ("all" shows everything). */
-export function inTab(record, tab) {
-  return tab === "all" || record.status === tab;
-}
-
-/** The first record to show after a list refresh: keep the selection if it is still in the tab, else the first one. */
-export function pickSelection(records, tab, currentId) {
-  const visible = records.filter((r) => inTab(r, tab));
-  return visible.find((r) => r.id === currentId)?.id ?? visible[0]?.id ?? null;
+/** The first record to show after a list refresh: keep the selection if it is still there, else the first one. */
+export function pickSelection(records, currentId) {
+  return records.find((r) => r.id === currentId)?.id ?? records[0]?.id ?? null;
 }
 
 const STYLE_LABEL = { bold: "bold", italic: "italic", underline: "underline" };
@@ -73,11 +66,9 @@ export function learnedCount(intelligence) {
 
 const plural = (n, one, many) => (n === 1 ? one : many);
 
-/** The queue notice when the sparkle is clicked but nothing APPROVED fits the board. */
-export function noApprovedNotice(pending) {
-  if (!pending) return "Corel Intelligence has nothing learned for this board size yet - correct a board of this size in the editor first.";
-  const are = plural(pending, "is", "are");
-  return `Corel Intelligence has nothing APPROVED for this board size yet - ${pending} correction${plural(pending, "", "s")} ${are} waiting for review (Intelligence review in the sidebar).`;
+/** The queue notice when the sparkle is clicked but nothing learned fits the board. */
+export function nothingLearnedNotice() {
+  return "Corel Intelligence has nothing learned for this board size yet - correct a board of this size in the editor first.";
 }
 
 /** Tooltip of the footer "Corel Intelligence (N)" button. */

@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { finishedNotice, savedNotice, waitForExport } from "../utils/publishEdits.js";
-import { learnedCount, noApprovedNotice, sparkleTitle } from "../utils/correctionsView.js";
+import { learnedCount, nothingLearnedNotice, sparkleTitle } from "../utils/correctionsView.js";
 import { CheckCircle2, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Play, Plus, Sparkles, Trash2 } from "lucide-react";
 import "../components/MasterPanels.css";
 import { useMasters } from "../context/MasterContext.jsx";
@@ -104,25 +104,10 @@ export default function Automation() {
     [],
   );
 
-  // ---- Corel Intelligence: while the switch is on, the designers' editor corrections are collected (server side, default ON);
+  // ---- Corel Intelligence: the designers' editor corrections are always collected and used (server side, no switch, no approval);
   // a converted row's sparkle icon re-runs that board with the learned corrections for its size, the footer button does it for every row.
   const hidden = useLocation().pathname !== "/"; // this page stays mounted (just hidden) while another page is open - see App.jsx
-  const [intelOn, setIntelOn] = useState(true);
   const [intelAvail, setIntelAvail] = useState({}); // done shop id -> number of learned corrections that fit its board
-  const [intelPending, setIntelPending] = useState(0); // corrections saved from the editor that still wait for approval
-  useEffect(() => {
-    fetch("/api/v2/intelligence").then((r) => r.json()).then((d) => setIntelOn(d.enabled !== false)).catch(() => {});
-  }, []);
-  async function toggleIntelligence() {
-    const next = !intelOn;
-    setIntelOn(next);
-    const r = await fetch("/api/v2/intelligence", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: next }),
-    }).catch(() => null);
-    if (!r?.ok) setIntelOn(!next); // not saved: show what the server still has
-  }
 
   async function addBrand() {
     const name = newBrand.trim();
@@ -412,7 +397,6 @@ export default function Automation() {
   const refreshIntel = () => {
     fetch(`/api/v2/intelligence/available?ids=${doneIds}`).then((r) => r.json()).then((d) => {
       setIntelAvail(d.available || {});
-      setIntelPending(d.pending || 0);
     }).catch(() => {});
   };
   const refreshIntelRef = useRef(refreshIntel);
@@ -422,7 +406,7 @@ export default function Automation() {
 
   function applyIntelligence(shopId) {
     if (!intelAvail[shopId]) {
-      setQueueNotice(noApprovedNotice(intelPending));
+      setQueueNotice(nothingLearnedNotice());
       return null;
     }
     return convertShop(shopId, { useIntelligence: true });
@@ -519,7 +503,7 @@ export default function Automation() {
       <header className="ws-bar">
         <BrandControls brand={brand} brands={brands} setBrand={setBrand} adding={addingBrand} setAdding={setAddingBrand} newBrand={newBrand}
           setNewBrand={setNewBrand} onAddBrand={addBrand} nMasters={nMasters} onManage={() => setShowManageMasters(true)} />
-        <StatusBadges intelOn={intelOn} onToggle={toggleIntelligence} intelPending={intelPending} shopCount={shops.length}
+        <StatusBadges shopCount={shops.length}
           bothMasters={bothMasters} masterBadge={masterBadge} />
       </header>
 

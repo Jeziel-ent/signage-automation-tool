@@ -914,19 +914,7 @@ a.btn { text-decoration: none; display: inline-block; }
 .master-cell .muted { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
 
 /* ---- Corel Intelligence: the top-bar switch, the per-row sparkle button */
-.ci-switch {
-  display: inline-flex; align-items: center; gap: 7px; padding: 6px 10px 6px 12px; border-radius: 999px; cursor: pointer;
-  border: 1px solid rgba(226, 232, 240, 0.8); background: rgba(241, 245, 249, 0.8); color: #475569; font-size: 12px; font-weight: 600;
-  transition: background 0.15s, border-color 0.15s, color 0.15s;
-}
-.ci-switch.on { background: #fef2f2; border-color: #fca5a5; color: #b91c1c; }
-.ci-track { position: relative; width: 28px; height: 16px; border-radius: 999px; background: #cbd5e1; transition: background 0.15s; flex: none; }
-.ci-switch.on .ci-track { background: #dc2626; }
-.ci-knob { position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: transform 0.15s; }
-.ci-switch.on .ci-knob { transform: translateX(12px); }
 .ci-row-btn { color: #94a3b8; }
 .ci-row-btn.ready { color: #dc2626; }
 .ci-row-btn.ready:hover { background: #fef2f2; }
 
-.ws-badge.ci-review { text-decoration: none; background: #422006; color: #fde68a; border-color: #92400e; }
-.ws-badge.ci-review:hover { background: #713f12; }
