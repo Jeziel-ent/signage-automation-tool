@@ -1,12 +1,13 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { ChevronLeft, ChevronRight, History, Printer, ShieldCheck, Sparkles, Workflow } from "lucide-react";
+import { ChevronLeft, ChevronRight, History, Layers, Printer, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 import Automation from "./pages/Automation.jsx";
 import { MasterProvider } from "./context/MasterContext.jsx";
 import RecentlyGenerated from "./pages/RecentlyGenerated.jsx";
 import CreatePrintFile from "./pages/CreatePrintFile.jsx";
 import Corrections from "./pages/Corrections.jsx";
+import Masters from "./pages/Masters.jsx";
 import { loadEditorPage } from "./utils/prefetchEditor.js";
 
 // The splash's title and button are light and render immediately; it lazy-loads its own 3D canvas (three.js, ~1 MB).
@@ -42,6 +43,7 @@ export default function App() {
 
 const NAV = [
   { to: "/", end: true, label: "Automation", Icon: Workflow },
+  { to: "/masters", end: false, label: "Masters", Icon: Layers },
   { to: "/recent", end: false, label: "Recently generated", Icon: History },
   { to: "/print-file", end: false, label: "Create Print File", Icon: Printer },
   { to: "/corrections", end: false, label: "Learned corrections", Icon: ShieldCheck },
@@ -119,6 +121,7 @@ function Shell() {
           <Automation />
           <Routes>
             <Route path="/" element={null} />
+            <Route path="/masters" element={<Masters />} />
             <Route path="/recent" element={<RecentlyGenerated />} />
             <Route path="/print-file" element={<CreatePrintFile />} />
             <Route path="/corrections" element={<Corrections />} />

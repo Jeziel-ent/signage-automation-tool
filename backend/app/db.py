@@ -251,6 +251,18 @@ def archive_registered_masters() -> int:
     return cur.rowcount
 
 
+_MASTER_FIELDS = ("master_name", "orientation", "default_width", "default_height", "default_unit", "master_filename")
+
+
+def update_master(job_id: str, fields: dict) -> None:
+    """Change the named columns of a master (only the whitelisted ones)."""
+    cols = [k for k in fields if k in _MASTER_FIELDS]
+    if not cols:
+        return
+    with _conn() as conn:
+        conn.execute(f"UPDATE jobs SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?", [fields[c] for c in cols] + [job_id])
+
+
 def count_registered_masters(brand: str, orientation: str) -> int:
     """Every master ever registered for this brand + orientation, deleted ones included - numbers default names so a
     name is never reused after a delete."""

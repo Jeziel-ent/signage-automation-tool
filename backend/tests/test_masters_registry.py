@@ -208,9 +208,9 @@ def test_a_name_the_designer_typed_is_never_renumbered_and_old_automatic_names_a
     assert names == {typed["id"]: "Master 9 - Promo", old["id"]: "Master 1"}
 
 
-def test_starting_the_server_hides_the_previous_runs_masters_but_keeps_their_files_and_boards(client, monkeypatch):
+def test_archive_on_start_hides_the_previous_runs_masters_but_keeps_their_files_and_boards(client, monkeypatch):
     import app.main as main
-    monkeypatch.delenv("SIGNAGE_KEEP_MASTERS", raising=False)
+    monkeypatch.setenv("SIGNAGE_ARCHIVE_MASTERS_ON_START", "1")
     a, b = _register(client, "landscape"), _register(client, "portrait")
     shop = _shop(client, a["id"], 30, 40)
     main._archive_previous_masters()                                   # what the startup handler runs
@@ -225,9 +225,44 @@ def test_starting_the_server_hides_the_previous_runs_masters_but_keeps_their_fil
     assert _register(client, "landscape")["name"] == "Master 1"        # and the next upload starts again at Master 1
 
 
-def test_keep_masters_env_leaves_them_listed(client, monkeypatch):
+def test_masters_stay_listed_across_a_restart_by_default(client, monkeypatch):
     import app.main as main
-    monkeypatch.setenv("SIGNAGE_KEEP_MASTERS", "1")
+    monkeypatch.delenv("SIGNAGE_ARCHIVE_MASTERS_ON_START", raising=False)
     _register(client, "landscape")
-    main._archive_previous_masters()
+    main._archive_previous_masters()                                   # what the startup handler runs
     assert len(client.get("/api/masters").json()["masters"]) == 1
+
+
+def test_update_master_renames_and_sets_the_default_size(client):
+    m = _register(client, "landscape")
+    r = client.patch(f"/api/masters/{m['id']}", json={"name": "Promo", "dimensions_default": {"width": 10, "height": 3, "unit": "ft"}})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["name"] == "Promo"
+    assert body["dimensions_default"] == {"width": 10, "height": 3, "unit": "ft"}
+    r = client.patch(f"/api/masters/{m['id']}", json={"name": "", "dimensions_default": None})
+    assert r.json()["name"] == "Master 1" and r.json()["dimensions_default"] is None
+
+
+def test_update_master_validates(client):
+    m = _register(client, "landscape")
+    assert client.patch(f"/api/masters/{m['id']}", json={"orientation": "diagonal"}).status_code == 400
+    assert client.patch(f"/api/masters/{m['id']}", json={"dimensions_default": {"width": 0, "height": 3, "unit": "ft"}}).status_code == 400
+    assert client.patch("/api/masters/nope", json={"name": "x"}).status_code == 404
+
+
+def test_update_master_changes_orientation(client):
+    m = _register(client, "landscape")
+    assert client.patch(f"/api/masters/{m['id']}", json={"orientation": "portrait"}).json()["orientation"] == "portrait"
+    assert [x["id"] for x in client.get("/api/masters").json()["portrait"]] == [m["id"]]
+
+
+def test_replace_master_file_keeps_the_entry_and_updates_the_file(client):
+    m = _register(client, "landscape")
+    r = client.put(f"/api/masters/{m['id']}/file", files={"master": ("new version.cdr", b"NEWDATA", "application/octet-stream")})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["id"] == m["id"] and body["file_name"] == "new version.cdr"
+    assert Path(m["file_path"]).read_bytes() == b"NEWDATA"
+    assert client.put(f"/api/masters/{m['id']}/file", files={"master": ("x.txt", b"x", "text/plain")}).status_code == 400
+    assert client.put("/api/masters/nope/file", files={"master": ("x.cdr", b"x", "application/octet-stream")}).status_code == 404

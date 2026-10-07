@@ -1,8 +1,9 @@
 // Pieces of the Automation page's Shops Queue, kept apart so the page component stays readable (same markup, same behaviour).
+import { useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import BrandSelect from "./BrandSelect.jsx";
 import AnimatedCount from "./AnimatedCount.jsx";
-import { Building2, Eye, Layers, Store, FileCode2, FileSpreadsheet, Plus, FolderArchive, Play, Printer, RectangleHorizontal, RectangleVertical, Sparkles, Trash2 } from "lucide-react";
+import { Building2, Eye, Layers, Store, FileCode2, FileSpreadsheet, Plus, FolderArchive, Play, Printer, RectangleHorizontal, Pencil, RectangleVertical, Sparkles, Trash2 } from "lucide-react";
 import UploadDropzone from "./UploadDropzone.jsx";
 import ExportModal from "./ExportModal.jsx";
 import PrintFileModal from "./PrintFileModal.jsx";
@@ -12,6 +13,7 @@ import DownloadAllModal from "./DownloadAllModal.jsx";
 import PreviewGalleryModal from "./PreviewGalleryModal.jsx";
 import QueueGalleryModal from "./QueueGalleryModal.jsx";
 import MasterManagementModal from "./MasterManagementModal.jsx";
+import MasterEditModal from "./MasterEditModal.jsx";
 import { intelAllTitle } from "../utils/correctionsView.js";
 import { mastersOf } from "../utils/masters.js";
 import { fmtBytes } from "../utils/fileSize.js";
@@ -128,7 +130,7 @@ function MasterThumb({ m }) {
   return <span className="mt-thumb empty" title={m.preview_error || "Preview not available"}>no preview</span>;
 }
 
-function MasterRow({ m, isDefault, onRemove }) {
+function MasterRow({ m, isDefault, onRemove, onEdit }) {
   return (
     <li className="mt-row" data-master-id={m.id}>
       <MasterThumb m={m} />
@@ -139,6 +141,11 @@ function MasterRow({ m, isDefault, onRemove }) {
         </div>
         <div className="mt-file" title={m.file_name}>{m.file_name || "master.cdr"} <span>{fmtBytes(m.file_size)}</span></div>
       </div>
+      {onEdit && (
+        <button className="icon-btn mt-edit" onClick={() => onEdit(m)} title={`Edit ${m.name}`} aria-label={`Edit ${m.name}`}>
+          <Pencil size={15} />
+        </button>
+      )}
       <button className="icon-btn mt-del" onClick={() => onRemove(m)} title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
         <Trash2 size={15} />
       </button>
@@ -148,8 +155,9 @@ function MasterRow({ m, isDefault, onRemove }) {
 
 /** One orientation's panel: a header (icon, name, size rule, count), one compact row per uploaded master, then a slim drop strip.
  *  Any number of masters per orientation; the first is that orientation's default. */
-export function MasterPanel({ orientation: o, masters, brand, onRemove, onAdded }) {
+export function MasterPanel({ orientation: o, masters, brand, onRemove, onAdded, onUpdated }) {
   const list = mastersOf(masters, o);
+  const [editing, setEditing] = useState(null); // the master whose "Edit master" dialog is open
   const land = o === "landscape";
   const Icon = land ? RectangleHorizontal : RectangleVertical;
   return (
@@ -164,7 +172,7 @@ export function MasterPanel({ orientation: o, masters, brand, onRemove, onAdded 
       </div>
       {list.length > 0 && (
         <ul className="mt-list">
-          {list.map((m, i) => <MasterRow key={m.id} m={m} isDefault={i === 0 && list.length > 1} onRemove={onRemove} />)}
+          {list.map((m, i) => <MasterRow key={m.id} m={m} isDefault={i === 0 && list.length > 1} onRemove={onRemove} onEdit={onUpdated && setEditing} />)}
         </ul>
       )}
       <div className="mt-slot" data-add={o}>
@@ -178,6 +186,9 @@ export function MasterPanel({ orientation: o, masters, brand, onRemove, onAdded 
           onUploaded={(body) => onAdded(body)}
         />
       </div>
+      <AnimatePresence>
+        {editing && <MasterEditModal key={editing.id} master={editing} onSaved={onUpdated} onClose={() => setEditing(null)} />}
+      </AnimatePresence>
     </div>
   );
 }

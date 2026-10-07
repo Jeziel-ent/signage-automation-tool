@@ -9,6 +9,8 @@ const MasterContext = createContext(null);
 
 export function MasterProvider({ children }) {
   const [masters, setMasters] = useState([]);
+  const [brands, setBrands] = useState([]);
+  const [mastersBrand, setMastersBrand] = useState(""); // the brand picked on the Masters page: kept while the app is open, empty after a reload
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -28,7 +30,27 @@ export function MasterProvider({ children }) {
 
   useEffect(() => {
     refresh();
+    fetch("/api/v2/brands")
+      .then((r) => r.json())
+      .then((list) => Array.isArray(list) && setBrands(list))
+      .catch(() => {});
   }, [refresh]);
+
+  // Brands are shared by the Automation and Masters pages: a brand created on one is in the other's dropdown straight away.
+  const addBrand = useCallback(async (name) => {
+    const r = await fetch("/api/v2/brands", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name }),
+    });
+    const list = await r.json();
+    if (!r.ok) throw new Error(list.detail || `Could not add the brand (HTTP ${r.status})`);
+    setBrands(list);
+    return list;
+  }, []);
+
+  // A master edited (renamed / re-sized / file replaced) on either page: take the server's version of it.
+  const update = useCallback((m) => setMasters((list) => list.map((x) => (x.id === m.id ? m : x))), []);
 
   const add = useCallback((m) => setMasters((list) => (list.some((x) => x.id === m.id) ? list : [...list, m])), []);
 
@@ -46,6 +68,11 @@ export function MasterProvider({ children }) {
     const all = groupMasters(masters);
     return {
       masters,
+      brands,
+      mastersBrand,
+      setMastersBrand,
+      addBrand,
+      update,
       landscapeMasters: all.landscape,
       portraitMasters: all.portrait,
       forBrand: (brand) => groupMasters(masters, brand || ""),
@@ -55,7 +82,7 @@ export function MasterProvider({ children }) {
       add,
       remove,
     };
-  }, [masters, loading, error, refresh, add, remove]);
+  }, [masters, brands, mastersBrand, addBrand, update, loading, error, refresh, add, remove]);
 
   return <MasterContext.Provider value={value}>{children}</MasterContext.Provider>;
 }

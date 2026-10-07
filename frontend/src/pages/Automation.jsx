@@ -46,9 +46,7 @@ export const CONVERT_STEPS = [
 ];
 
 export default function Automation() {
-  const [brands, setBrands] = useState([]);
   const [brand, setBrand] = useState("");
-  const defaultBrandApplied = useRef(false);
   const [addingBrand, setAddingBrand] = useState(false);
   const [newBrand, setNewBrand] = useState("");
 
@@ -75,19 +73,8 @@ export default function Automation() {
   const pollTimer = useRef(null);
   const taTimers = useRef(new Map()); // shop id -> pending auto-Tamil timer (debounced English typing)
 
+  const brands = registry.brands; // shared with the Masters page (context/MasterContext.jsx)
   useEffect(() => {
-    fetch("/api/v2/brands")
-      .then((r) => r.json())
-      .then((list) => {
-        setBrands(list);
-        // Default to Adinn when it exists (case-insensitive), so the workspace opens ready to use; only once, never overriding a choice.
-        const adinn = list.find((b) => b.toLowerCase() === "adinn");
-        if (adinn && !defaultBrandApplied.current) {
-          defaultBrandApplied.current = true;
-          setBrand((cur) => cur || adinn);
-        }
-      })
-      .catch(() => {});
     // Measured average step durations (seconds), used to pace the smoothed
     // per-row progress animation - see useSteppedProgress. Fetched once per
     // page load, not on every status poll.
@@ -112,13 +99,12 @@ export default function Automation() {
   async function addBrand() {
     const name = newBrand.trim();
     if (!name) return;
-    const r = await fetch("/api/v2/brands", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    });
-    const list = await r.json();
-    setBrands(list);
+    try {
+      await registry.addBrand(name);
+    } catch (e) {
+      setQueueNotice(e.message);
+      return;
+    }
     setBrand(name);
     setNewBrand("");
     setAddingBrand(false);
@@ -159,6 +145,13 @@ export default function Automation() {
   function onMasterAdded(m) {
     registry.add(m);
     resetShopsQueueStatus(`${orientLabel(m)} master "${m.name}" added`);
+  }
+
+  // A master edited in the "Edit master" dialog (renamed, re-sized, orientation changed or its file replaced): a new file or orientation
+  // invalidates the queue's conversions like an upload does; a rename or default size only refreshes the lists.
+  function onMasterUpdated(m, { fileReplaced, orientationChanged } = {}) {
+    registry.update(m);
+    if (fileReplaced || orientationChanged) resetShopsQueueStatus(`${orientLabel(m)} master "${m.name}" updated`);
   }
 
   // Deletes the master from the registry (soft delete on the server: boards already made from it keep working).
@@ -518,7 +511,7 @@ export default function Automation() {
           </div>
           <div className="ws-card-body">
             <div className="mt-grid">{["landscape", "portrait"].map((o) => (
-              <MasterPanel key={o} orientation={o} masters={masters} brand={brand} onRemove={removeMaster} onAdded={onMasterAdded} />
+              <MasterPanel key={o} orientation={o} masters={masters} brand={brand} onRemove={removeMaster} onAdded={onMasterAdded} onUpdated={onMasterUpdated} />
             ))}</div>
             {registry.error && <p className="err">{registry.error}</p>}
             {!brand && <p className="hint hero-note">Pick or create a brand above to enable uploads.</p>}

@@ -27,6 +27,15 @@ masters renumbered per brand + orientation, and `b9ce903` (batches no longer fai
 CorelDRAW pool and closes the kept-open master first). Backend 1067 passed. Everything below this paragraph is the 2026-10-05 handoff, still
 accurate for the rest of the project.
 
+**Masters page (2026-10-07, uncommitted until you commit).** Sidebar "Masters" (`pages/Masters.jsx`): pick / create a brand, then upload, edit and delete its
+landscape and portrait masters. It uses the SAME registry as the Automation page (`context/MasterContext.jsx` now also holds `brands`, `addBrand`, `update`),
+so a master or brand added on one page is on the other immediately. Every master row has a pencil -> `components/MasterEditModal.jsx` (rename, orientation,
+default size, replace the .cdr; replacing the file or the orientation resets the Automation queue like an upload does). Backend: `PATCH /api/masters/{id}`
+({name, orientation, dimensions_default}), `PUT /api/masters/{id}/file` (409 while a shop using it converts), `db.update_master`. **Masters are now stored across
+server restarts**; the old "hide on every start" behaviour is `SIGNAGE_ARCHIVE_MASTERS_ON_START=1` (the `SIGNAGE_KEEP_MASTERS` flag is gone). Checked in the
+browser pane against a scratch backend (edit on /masters showed on /, new brand shown on both). Backend 1033 passed / 37 skipped, frontend 301.
+**Deployment plan: `docs/deployment-plan.md`** (DigitalOcean droplet + Spaces + a Windows agent per PC; masters and corrections global, Recently generated per agent).
+
 **What is left (as of 2026-10-07), in the order I would take them.**
 1. Verify Corel Intelligence on real CorelDRAW beyond the one live run (Hangyo 4 X 8: name-block move + bold + line spacing replayed): resize,
    hide/delete and wide boards are only covered by unit tests; upload the master under its ORIGINAL file name - records match by it.
@@ -37,7 +46,7 @@ accurate for the rest of the project.
    NOT investigated - check the exported PNG of any Tamil-edited board.
 4. Decide the CorelDRAW 2019-vs-27 default (27 opens dalmia files in 130-340 s, 2019 in 43 s; pin per run with `SIGNAGE_COREL_PROGID=CorelDRAW.Application.21`).
    The batch/dump COM bug is fixed (`b9ce903`, verified with `validate_all dalmia --limit 3` on 27); re-check a full multi-board batch on 2019.
-5. Hosting plan (discussed, not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs `corel_worker`,
+5. Hosting plan (written down in `docs/deployment-plan.md`, not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs `corel_worker`,
    uploads results; needs login/per-user data, storage interface (local -> Spaces), Postgres if more than one writer. Hosting first, then the agent.
 6. Engine items still open from 2026-10-05 (below): Hangyo 10x4 ft GSB (one logo vs two), Hangyo 3x6 ft portrait (rules layout), the other 55 Agarpathi
    boards not re-run through the UI, Dalmia / Agni through the example library (dalmia keeps its rules), Tamil spelling only from the sheet's TA column.

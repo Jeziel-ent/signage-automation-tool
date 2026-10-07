@@ -83,14 +83,14 @@ def _recover_interrupted_work() -> None:
 
 
 def _archive_previous_masters() -> None:
-    """Every server start begins with an empty Master Templates list: masters uploaded in an earlier run are hidden (soft-deleted, so the
-    boards already made from them and their files stay) and a designer uploads again, starting at Master 1. Set SIGNAGE_KEEP_MASTERS=1 to
-    keep them listed across restarts (a hosted install, where masters are shared and long-lived)."""
-    if os.environ.get("SIGNAGE_KEEP_MASTERS", "").strip() in ("1", "true", "yes"):
+    """Masters are stored: they stay listed across server restarts (uploaded once per brand, shared by the Automation and Masters pages).
+    Set SIGNAGE_ARCHIVE_MASTERS_ON_START=1 to get the old session behaviour back - every start hides the previous run's masters (soft
+    delete: their files and the boards already made from them stay) so a designer begins again at Master 1."""
+    if os.environ.get("SIGNAGE_ARCHIVE_MASTERS_ON_START", "").strip() not in ("1", "true", "yes"):
         return
     hidden = db.archive_registered_masters()
     if hidden:
-        logger.info("startup: %d master template(s) from the previous run were hidden (SIGNAGE_KEEP_MASTERS=1 keeps them)", hidden)
+        logger.info("startup: %d master template(s) from the previous run were hidden (SIGNAGE_ARCHIVE_MASTERS_ON_START=1)", hidden)
 
 
 @asynccontextmanager
@@ -437,6 +437,58 @@ def delete_master(master_id: str):
         raise HTTPException(409, "a shop using this master is converting - try again when it has finished")
     db.delete_master(master_id)
     return {"deleted": master_id}
+
+
+def _live_master(master_id: str) -> dict:
+    row = db.get_job(master_id)
+    if not row or not row.get("registered") or row.get("deleted_at"):
+        raise HTTPException(404, "master not found")
+    if db.count_active_shops_using_master(master_id):
+        raise HTTPException(409, "a shop using this master is converting - try again when it has finished")
+    return row
+
+
+@app.patch("/api/masters/{master_id}", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
+def update_master(master_id: str, payload: dict):
+    """Edit a master's details: `name` (blank = automatic "Master N"), `orientation`, `dimensions_default`
+    ({width, height, unit} or null to clear). Only the keys sent change. The file itself is replaced with PUT .../file."""
+    _live_master(master_id)
+    fields: dict = {}
+    if "name" in payload:
+        name = str(payload["name"] or "").strip()
+        if len(name) > MASTER_NAME_MAX:
+            raise HTTPException(400, f"name must be at most {MASTER_NAME_MAX} characters")
+        fields["master_name"] = name or None
+    if "orientation" in payload:
+        orientation = str(payload["orientation"] or "").strip().lower()
+        if orientation not in MASTER_ORIENTATIONS:
+            raise HTTPException(400, "orientation must be 'landscape' or 'portrait'")
+        fields["orientation"] = orientation
+    if "dimensions_default" in payload:
+        d = payload["dimensions_default"]
+        size = _parse_default_size(json.dumps(d)) if d else None
+        fields["default_width"], fields["default_height"], fields["default_unit"] = size or (None, None, None)
+    if fields:
+        db.update_master(master_id, fields)
+    return _master_json(db.get_job(master_id))
+
+
+@app.put("/api/masters/{master_id}/file", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
+async def replace_master_file(master_id: str, master: UploadFile = File(...)):
+    """Replace a master's .cdr with a new version (same registry entry, name and orientation). Boards already made from it are untouched;
+    the preview is read again from the new file."""
+    row = _live_master(master_id)
+    if not (master.filename or "").lower().endswith(".cdr"):
+        raise HTTPException(400, "Master file must be a .cdr")
+    path = Path(row["master_path"])
+    tmp = path.with_name(path.name + ".new")
+    with open(tmp, "wb") as f:
+        shutil.copyfileobj(master.file, f)
+    tmp.replace(path)
+    db.update_master(master_id, {"master_filename": master.filename})
+    preview_path, preview_error = _extract_cdr_preview(path)
+    db.set_job_preview(master_id, str(preview_path) if preview_path else None, preview_error)
+    return _master_json(db.get_job(master_id))
 
 
 @app.patch("/api/v2/jobs/{job_id}/master-shop-name", responses={404: {"description": "Not found"}})
