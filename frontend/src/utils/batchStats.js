@@ -68,3 +68,8 @@ export function fmtEta(seconds) {
   const m = Math.floor(s / 60);
   return m > 0 ? `~${m}m ${s % 60}s remaining` : `~${s}s remaining`;
 }
+
+/** The line shown when Convert All has finished: how many converted and how many failed (or never started). */
+export function batchFinishedText(done, failed) {
+  return `Batch finished: ${done} converted${failed ? `, ${failed} failed` : ""}.`;
+}

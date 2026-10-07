@@ -1,30 +1,20 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence } from "framer-motion";
-import { Link, useLocation } from "react-router-dom";
+import { useLocation } from "react-router-dom";
 import { finishedNotice, savedNotice, waitForExport } from "../utils/publishEdits.js";
-import { intelAllTitle, learnedCount, noApprovedNotice, sparkleTitle } from "../utils/correctionsView.js";
-import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FolderOpen, Layers, Play, Plus, RectangleHorizontal, RectangleVertical, Sparkles, Store, Trash2 } from "lucide-react";
+import { learnedCount, noApprovedNotice, sparkleTitle } from "../utils/correctionsView.js";
+import { CheckCircle2, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Play, Plus, Sparkles, Trash2 } from "lucide-react";
 import "../components/MasterPanels.css";
-import UploadDropzone from "../components/UploadDropzone.jsx";
-import BrandSelect from "../components/BrandSelect.jsx";
-import AnimatedCount from "../components/AnimatedCount.jsx";
-import ExportModal from "../components/ExportModal.jsx";
-import PrintFileModal from "../components/PrintFileModal.jsx";
-import GenerateZipModal from "../components/GenerateZipModal.jsx";
-import ShopDownloadModal from "../components/ShopDownloadModal.jsx";
-import DownloadAllModal from "../components/DownloadAllModal.jsx";
-import PreviewGalleryModal from "../components/PreviewGalleryModal.jsx";
-import QueueGalleryModal from "../components/QueueGalleryModal.jsx";
-import MasterManagementModal from "../components/MasterManagementModal.jsx";
 import { useMasters } from "../context/MasterContext.jsx";
-import { boardOrientation, fallbackWarning, masterCount as countMasters, masterFallback, masterLabel, mastersOf, primaryMaster, pickedMasterId, resolveMasterId, rowMasterIdsAuto } from "../utils/masters.js";
+import { boardOrientation, fallbackWarning, masterCount as countMasters, masterFallback, masterLabel, mastersOf, primaryMaster, pickedMasterId, rowMasterIdsAuto } from "../utils/masters.js";
 import { useSteppedProgress } from "../hooks/useSteppedProgress.js";
 import { parseShopWorkbook } from "../utils/shopImport.js";
-import { BOARD_TYPES, DEFAULT_BOARD_TYPE, LANGUAGES, applyDefaultUnit, followsEnglish, isDraft, nameEditPatch, rowSno, resetForNewMaster, shopPayload, toDraftRow, withAutoTamil, withFreshAutoTamil } from "../utils/shopPayload.js";
+import { BOARD_TYPES, DEFAULT_BOARD_TYPE, LANGUAGES, applyDefaultUnit, followsEnglish, isDraft, nameEditPatch, rowSno, resetForNewMaster, shopPayload, toDraftRow, withFreshAutoTamil } from "../utils/shopPayload.js";
 import { toTamil } from "../utils/tamilTranslit.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
-import { batchStats, fmtEta, monotonicProgress, recordFinishes, smoothEta } from "../utils/batchStats.js";
-import { fmtBytes } from "../utils/fileSize.js";
+import { batchFinishedText, batchStats, fmtEta, monotonicProgress, recordFinishes, smoothEta } from "../utils/batchStats.js";
+import { importOutcome } from "../utils/importOutcome.js";
+import { BrandControls, ImportReport, MasterPanel, StatusBadges, QueueActions, QueueModals, masterBadgeText, QueueFooter, SheetTabs } from "../components/QueueParts.jsx";
+import { apiDetail, createShopFromDraft, fetchShopStatuses } from "../utils/shopApi.js";
 
 const UNITS = ["in", "ft"];
 // One shared unit per board (applies to both width and height); the server stores it on both dimensions.
@@ -256,44 +246,12 @@ export default function Automation() {
     setImporting(true);
     setImportReport(null);
     try {
-      // every sheet of the workbook: each becomes a tab in the Shops Queue (a CSV / one-sheet file has no tabs)
+      // every sheet of the workbook: each becomes a tab in the Shops Queue (a CSV / one-sheet file has no tabs). Browser only - no
+      // request is made here: rows become local drafts (fully editable); a draft is saved to the server the moment it is converted.
       const { sheets } = await parseShopWorkbook(file, { defaultUnit });
-      const withShops = sheets.filter((sh) => !sh.missing.length && sh.shops.length);
-      const missingText = (m) => `Could not find the ${m.map((k) => (k === "size" ? "size (a Size column like 10*4, or Width and Height columns)" : "shop name")).join(" or the ")}.`;
-      if (!withShops.length) {
-        const first = sheets.find((sh) => sh.missing.length) || sheets[0];
-        setImportReport({ file: file.name, added: 0, errors: [], note: first?.missing.length ? missingText(first.missing) : "No data rows found." });
-        return;
-      }
-      const multi = sheets.length > 1;
-      // Browser only - no request is made here. Rows become local drafts in the table (fully editable); a draft is
-      // saved to the server the moment it is converted. A row without a Tamil name gets one transliterated from its
-      // English name (editable; marked "auto" until typed over).
-      let masterMiss = 0;
-      const parsedShops = withShops.flatMap((sh) => sh.shops).map(withAutoTamil).map((x) => {
-        // the sheet's Master column -> an uploaded master of this brand; Convert = no -> Convert All skips the row
-        const { master, convert, ...rest } = x;
-        const id = master ? resolveMasterId(master, masters) : null;
-        if (master && !id) masterMiss += 1;
-        return { ...rest, ...(id ? { master_id: id } : {}), ...(convert === false ? { skip_convert: true } : {}) };
-      });
-      const errors = withShops
-        .flatMap((sh) => sh.errors.map((e) => ({ ...e, sheet: multi ? sh.name : undefined })))
-        .sort((a, b) => (a.sheet || "").localeCompare(b.sheet || "") || (a.row ?? 0) - (b.row ?? 0));
-      const skippedSheets = multi ? sheets.filter((sh) => !withShops.includes(sh)).map((sh) => sh.name) : [];
-      const added = parsedShops.length;
-      setShops((s) => [...s, ...parsedShops.map(toDraftRow)]);
-      const defaulted = parsedShops.filter((x) => x.unitSource === "default").length;
-      const translated = parsedShops.filter((x) => x.ta_auto).length;
-      setImportReport({
-        file: file.name, added, errors, defaulted, translated, unit: defaultUnit,
-        sheets: multi ? withShops.map((sh) => `${sh.name} (${sh.shops.length})`) : [],
-        note: [
-          skippedSheets.length ? `No shop list found on sheet${skippedSheets.length === 1 ? "" : "s"}: ${skippedSheets.join(", ")}` : "",
-          masterMiss ? `${masterMiss} row${masterMiss === 1 ? "" : "s"} named a master that is not uploaded for this brand - the default master is used.` : "",
-          parsedShops.some((x) => x.skip_convert) ? `${parsedShops.filter((x) => x.skip_convert).length} row(s) have Convert = No: Convert All skips them.` : "",
-        ].filter(Boolean).join(" "),
-      });
+      const { rows, report } = importOutcome(sheets, file.name, defaultUnit, masters);
+      if (rows.length) setShops((s) => [...s, ...rows.map(toDraftRow)]);
+      setImportReport(report);
     } catch (e) {
       setImportReport({ file: file.name, added: 0, errors: [], note: `Import failed: ${e.message}` });
     } finally {
@@ -312,14 +270,8 @@ export default function Automation() {
         pollTimer.current = null;
         return;
       }
-      let data;
-      try {
-        const r = await fetch(`/api/v2/shop-statuses?ids=${ids.map(encodeURIComponent).join(",")}`);
-        if (!r.ok) return;
-        data = await r.json();
-      } catch {
-        return; // a network blip: try again on the next tick
-      }
+      const data = await fetchShopStatuses(ids);
+      if (!data) return; // a failed request or a network blip: try again on the next tick
       for (const [id, st] of Object.entries(data)) {
         if (st.status === "done" || st.status === "failed") polling.current.delete(id);
       }
@@ -374,7 +326,7 @@ export default function Automation() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(shopPayload(x)),
     });
-    if (!r.ok) setShopError((await r.json().catch(() => ({}))).detail || "Could not save the change");
+    if (!r.ok) setShopError(await apiDetail(r, "Could not save the change"));
     else setShopError("");
   }
 
@@ -382,7 +334,7 @@ export default function Automation() {
     if (isDraft({ id: shopId })) return setShops((s) => s.filter((x) => x.id !== shopId));
     const r = await fetch(`/api/v2/shops/${shopId}`, { method: "DELETE" });
     if (r.ok) setShops((s) => s.filter((x) => x.id !== shopId));
-    else setShopError((await r.json().catch(() => ({}))).detail || "Could not remove the shop");
+    else setShopError(await apiDetail(r, "Could not remove the shop"));
   }
 
   async function convertShop(shopId, { useIntelligence = false } = {}) {
@@ -397,16 +349,11 @@ export default function Automation() {
     let id = shopId;
     if (isDraft(current)) {
       // First save: create the shop from the row's CURRENT (possibly edited) values, then convert that.
-      const c = await fetch(`/api/v2/jobs/${job.id}/shops`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...shopPayload(current), ...masterIds }),
-      });
-      if (!c.ok) {
-        setShopError(`${current.name || "Shop"}: ${(await c.json().catch(() => ({}))).detail || "could not save the shop"}`);
+      const { saved, error } = await createShopFromDraft(job.id, current, { ...shopPayload(current), ...masterIds });
+      if (error) {
+        setShopError(error);
         return null;
       }
-      const saved = await c.json();
       if (gen !== masterGen.current) return null; // the masters changed while saving: don't convert against the old one
       id = saved.id;
       current = { ...saved, ...shopPayload(current) };
@@ -427,7 +374,7 @@ export default function Automation() {
       return id;
     }
     setShops((s) => s.map((x) => (x.id === id ? { ...x, status: "new" } : x)));
-    setShopError(`${current.name || "Shop"}: ${(await r.json().catch(() => ({}))).detail || "could not start the conversion"}`);
+    setShopError(`${current.name || "Shop"}: ${await apiDetail(r, "could not start the conversion")}`);
     return null;
   }
 
@@ -535,7 +482,7 @@ export default function Automation() {
   useEffect(() => {
     if (isBatchConverting && stats.allSettled) {
       setIsBatchConverting(false);
-      setBatchSummary(`Batch finished: ${stats.done} converted${stats.failed + batch.notStarted ? ", " + (stats.failed + batch.notStarted) + " failed" : ""}.`);
+      setBatchSummary(batchFinishedText(stats.done, stats.failed + batch.notStarted));
     }
   }, [isBatchConverting, stats.allSettled, stats.done, stats.failed, batch]);
 
@@ -565,119 +512,15 @@ export default function Automation() {
 
   const bothMasters = !!(landscapeJob && portraitJob);
   const nMasters = countMasters(masters);
-  const masterBadge = bothMasters ? `${nMasters} Masters Ready (${masters.landscape.length} L / ${masters.portrait.length} P)`
-    : landscapeJob ? `Landscape only (${masters.landscape.length})` : portraitJob ? `Portrait only (${masters.portrait.length})` : "No master yet";
-  // one orientation's panel: a header (icon, name, size rule, count), one compact row per uploaded master, then a slim drop strip.
-  // Any number of masters per orientation; the first is that orientation's default. A queue row picks among them in its Master column.
-  const masterPanel = (o) => {
-    const list = mastersOf(masters, o);
-    const land = o === "landscape";
-    const Icon = land ? RectangleHorizontal : RectangleVertical;
-    return (
-      <div key={o} className={`mt-panel ${o}`} data-orientation={o}>
-        <div className="mt-head">
-          <span className="mt-icon"><Icon size={18} /></span>
-          <div className="mt-head-text">
-            <h3>{land ? "Landscape" : "Portrait"}</h3>
-            <span className="mt-rule">{land ? "wider than tall · W:H ≥ 1.25" : "taller or square · W:H < 1.25"}</span>
-          </div>
-          <span className="mt-count" title={`${list.length} ${o} master${list.length === 1 ? "" : "s"}`}>{list.length}</span>
-        </div>
-        {list.length > 0 && (
-          <ul className="mt-list">
-            {list.map((m, i) => (
-              <li key={m.id} className="mt-row" data-master-id={m.id}>
-                {m.preview_url ? (
-                  <a className="mt-thumb" href={m.preview_url} target="_blank" rel="noreferrer" title="Open the preview">
-                    <img src={m.preview_url} alt={`${m.name} preview`} />
-                  </a>
-                ) : (
-                  <span className="mt-thumb empty" title={m.preview_error || "Preview not available"}>no preview</span>
-                )}
-                <div className="mt-info">
-                  <div className="mt-name" title={m.name}>
-                    {m.name}
-                    {i === 0 && list.length > 1 && <span className="mt-default">default</span>}
-                  </div>
-                  <div className="mt-file" title={m.file_name}>{m.file_name || "master.cdr"} <span>{fmtBytes(m.file_size)}</span></div>
-                </div>
-                <button className="icon-btn mt-del" onClick={() => removeMaster(m)} title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
-                  <Trash2 size={15} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="mt-slot" data-add={o}>
-          <UploadDropzone
-            key={`${o}-${list.length}`}
-            strip={{ empty: list.length === 0, text: list.length ? `Add another ${o} master` : `Drop a ${o} master (.cdr) here` }}
-            disabled={!brand}
-            brand={brand}
-            orientation={o}
-            label={`${o} master`}
-            onUploaded={(body) => onMasterAdded(body)}
-          />
-        </div>
-      </div>
-    );
-  };
-
+  const masterBadge = masterBadgeText(masters, bothMasters, nMasters);
   return (
     <div className="ws-page" hidden={hidden}>
       {/* BAR 1 - brand selector + status badges */}
       <header className="ws-bar">
-        <div className="ws-bar-left">
-          <span className="ws-bar-title">
-            <Building2 size={14} /> Brand
-          </span>
-          <BrandSelect value={brand} options={brands} onChange={setBrand} />
-          {addingBrand ? (
-            <>
-              <input
-                className="ws-input"
-                autoFocus
-                placeholder="New brand name"
-                value={newBrand}
-                onChange={(e) => setNewBrand(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && addBrand()}
-              />
-              <button className="ws-cta" onClick={addBrand} disabled={!newBrand.trim()}>
-                Add
-              </button>
-              <button className="ws-cta-ghost" onClick={() => setAddingBrand(false)}>
-                Cancel
-              </button>
-            </>
-          ) : (
-            <button className="ws-cta" onClick={() => setAddingBrand(true)}>
-              <Plus size={14} /> New Brand
-            </button>
-          )}
-          <button className="ws-cta-ghost manage-masters-btn" onClick={() => setShowManageMasters(true)} disabled={!brand}
-            title={brand ? `View, upload and delete ${brand}'s master templates` : "Pick a brand first"}>
-            <Layers size={14} /> Manage Masters <span className="count-badge">{nMasters}</span>
-          </button>
-        </div>
-        <div className="ws-badges">
-          <button type="button" role="switch" aria-checked={intelOn} className={"ci-switch" + (intelOn ? " on" : "")} onClick={toggleIntelligence}
-            title={intelOn ? "Corel Intelligence is ON: corrections you make in the editor are collected to improve later boards. Click to turn off."
-              : "Corel Intelligence is OFF: editor corrections are not collected. Click to turn on."}>
-            <Sparkles size={13} /> Corel Intelligence
-            <span className="ci-track" aria-hidden="true"><span className="ci-knob" /></span>
-          </button>
-          {intelPending > 0 && (
-            <Link to="/corrections" className="ws-badge ci-review" title="Corrections saved from the editor are waiting for your approval before they are used">
-              <Sparkles size={13} /> {intelPending} to review
-            </Link>
-          )}
-          <span className="ws-badge">
-            <Store size={13} /> <AnimatedCount value={shops.length} /> Shop{shops.length === 1 ? "" : "s"} Loaded
-          </span>
-          <span className={"ws-badge" + (bothMasters ? " ok" : "")}>
-            <span className={"ws-dot" + (bothMasters ? " live" : "")} aria-hidden="true" /> {masterBadge}
-          </span>
-        </div>
+        <BrandControls brand={brand} brands={brands} setBrand={setBrand} adding={addingBrand} setAdding={setAddingBrand} newBrand={newBrand}
+          setNewBrand={setNewBrand} onAddBrand={addBrand} nMasters={nMasters} onManage={() => setShowManageMasters(true)} />
+        <StatusBadges intelOn={intelOn} onToggle={toggleIntelligence} intelPending={intelPending} shopCount={shops.length}
+          bothMasters={bothMasters} masterBadge={masterBadge} />
       </header>
 
       <div className="ws-stack">
@@ -690,7 +533,9 @@ export default function Automation() {
             </button>
           </div>
           <div className="ws-card-body">
-            <div className="mt-grid">{["landscape", "portrait"].map(masterPanel)}</div>
+            <div className="mt-grid">{["landscape", "portrait"].map((o) => (
+              <MasterPanel key={o} orientation={o} masters={masters} brand={brand} onRemove={removeMaster} onAdded={onMasterAdded} />
+            ))}</div>
             {registry.error && <p className="err">{registry.error}</p>}
             {!brand && <p className="hint hero-note">Pick or create a brand above to enable uploads.</p>}
           </div>
@@ -710,22 +555,11 @@ export default function Automation() {
                 data-testid="shop-import-input"
                 onChange={(e) => importFile(e.target.files[0])}
               />
-              {/* hidden until a sheet (or sample data) has put shops in the queue; the empty-state card is the way in until then.
-                  The file input above stays mounted - the empty-state "Import Excel File" button uses it. */}
+              {/* hidden until a sheet has put shops in the queue; the empty-state card is the way in until then. The file input above stays
+                  mounted - the empty-state "Import Excel File" button uses it. */}
               {shops.length > 0 && (
-                <>
-                  <button className="btn ghost gallery-btn" disabled={!printable.length} onClick={() => setShowGallery(true)}
-                    title={printable.length ? "See every converted board in one gallery" : "Convert at least one shop first"}
-                    aria-label={`Open the gallery of ${printable.length} converted boards`}>
-                    <Eye size={15} /> Gallery <span className="count-badge">{printable.length}</span>
-                  </button>
-                  <button className="btn-gradient" disabled={!job || importing} onClick={() => importInputRef.current?.click()}>
-                    <FileSpreadsheet size={16} /> {importing ? "Importing..." : "Import Excel (.xlsx / .csv)"}
-                  </button>
-                  <button className="btn ghost" disabled={!job} onClick={() => setShowAddRow((v) => !v)}>
-                    <Plus size={15} /> Add Shop
-                  </button>
-                </>
+                <QueueActions printableCount={printable.length} hasJob={!!job} importing={importing}
+                  onGallery={() => setShowGallery(true)} onImport={() => importInputRef.current?.click()} onAdd={() => setShowAddRow((v) => !v)} />
               )}
             </div>
           </div>
@@ -736,36 +570,7 @@ export default function Automation() {
               <button className="icon-btn" onClick={() => setQueueNotice("")} aria-label="Dismiss">×</button>
             </div>
           )}
-          {importReport && (
-                <div className="import-report" role="status">
-                  {importReport.added > 0 && (
-                    <div>Successfully imported {importReport.added} shop{importReport.added === 1 ? "" : "s"} from {importReport.file}</div>
-                  )}
-                  {importReport.errors.length > 0 && (
-                    <div>{importReport.errors.length} row{importReport.errors.length === 1 ? "" : "s"} skipped:</div>
-                  )}
-                  {importReport.sheets?.length > 0 && <div>Sheets: {importReport.sheets.join(", ")} - one tab each below.</div>}
-                  {importReport.translated > 0 && (
-                    <div>
-                      Tamil names were written automatically for {importReport.translated} shop{importReport.translated === 1 ? "" : "s"} (marked "auto") - please check them.
-                    </div>
-                  )}
-                  {importReport.defaulted > 0 && (
-                    <div>
-                      {importReport.defaulted === importReport.added ? "No unit found in the sheet" : `No unit found for ${importReport.defaulted} row${importReport.defaulted === 1 ? "" : "s"}`}
-                      {" - using the default unit ("}{defaultUnit}{"). The Unit dropdown in the table header changes them."}
-                    </div>
-                  )}
-                  {importReport.note && <div className="err">{importReport.note}</div>}
-                  {importReport.errors.length > 0 && (
-                    <ul className="err">
-                      {importReport.errors.map((e, i) => (
-                        <li key={i}>{e.sheet ? `${e.sheet}, row` : "Row"} {e.row}: {e.reason}</li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
+          {importReport && <ImportReport report={importReport} defaultUnit={defaultUnit} />}
           {shopError && <div className="err ws-error">{shopError}</div>}
           {!job || (shops.length === 0 && !showAddRow) ? (
             <div className="ws-card-body">
@@ -781,20 +586,7 @@ export default function Automation() {
             </div>
           ) : (
             <>
-              {showSheetTabs && (
-                <div className="sheet-tabs" role="tablist" aria-label="Excel sheets">
-                  <span className="sheet-tabs-label">{sheetTabs.filter((t) => t !== NO_SHEET).length} sheet{sheetTabs.filter((t) => t !== NO_SHEET).length === 1 ? "" : "s"}</span>
-                  {["", ...sheetTabs].map((t) => {
-                    const n = t ? shops.filter((x) => sheetOf(x) === t).length : shops.length;
-                    return (
-                      <button key={t || "all"} role="tab" aria-selected={currentSheet === t} className={"sheet-tab" + (currentSheet === t ? " active" : "")}
-                        onClick={() => setActiveSheet(t)} title={t && t !== NO_SHEET ? `Sheet "${t}" of the imported workbook` : undefined}>
-                        {t === "" ? "All sheets" : t === NO_SHEET ? "Added manually" : t} <span className="sheet-count">{n}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
+              {showSheetTabs && <SheetTabs tabs={sheetTabs} shops={shops} current={currentSheet} noSheet={NO_SHEET} sheetOf={sheetOf} onPick={setActiveSheet} />}
               <div className="ws-table-wrap">
               <div className="ws-table-scroll">
                 <table className="shops-table">
@@ -849,107 +641,34 @@ export default function Automation() {
                 </table>
               </div>
               </div>
-              <div className="ws-card-foot">
-                {isBatchConverting ? (
+              <QueueFooter
+                banner={isBatchConverting ? (
                   <BatchBanner
                     progress={monotonicProgress(batchView.peak, batchProgress)}
                     index={currentShopIndex}
                     total={batch?.total ?? 0}
                     remaining={batchView.eta ? batchView.eta.value : null}
                   />
-                ) : (
-                  <>
-                    {batchSummary && <span className="ws-summary">{batchSummary}</span>}
-                    <button
-                      className="btn-outline-red"
-                      onClick={() => setShowPrintFile(true)}
-                      disabled={!printable.length}
-                      title={printable.length ? "Create the Print Details summary sheet for converted shops" : "Convert at least one shop first"}
-                    >
-                      <Printer size={15} /> Create Print File
-                    </button>
-                    <button
-                      className="btn-outline-dark"
-                      onClick={() => setShowZip(true)}
-                      disabled={!printable.length}
-                      title={printable.length ? "JPG, CDR and PDF of every converted shop in one ZIP - download it or get a WeTransfer link" : "Convert at least one shop first"}
-                    >
-                      <FolderArchive size={15} /> Generate ZIP
-                    </button>
-                    <button
-                      className="btn-outline-dark foot-split"
-                      onClick={() => setShowDownloadAll(true)}
-                      disabled={!printable.length}
-                      title={printable.length ? "Every converted shop's CDR, PDF, JPG or PNG in one ZIP - choose the format" : "Convert at least one shop first"}
-                    >
-                      <FileCode2 size={15} /> Download All
-                    </button>
-                    <button
-                      className="btn-outline-red"
-                      onClick={applyIntelligenceAll}
-                      disabled={!intelRows.length}
-                      title={intelAllTitle(intelRows.length)}
-                    >
-                      <Sparkles size={15} /> Corel Intelligence{intelRows.length ? ` (${intelRows.length})` : ""}
-                    </button>
-                    {convertible.length > 0 && (
-                      <button className="btn-gradient" onClick={convertAll}>
-                        <Play size={15} /> Convert All ({convertible.length})
-                      </button>
-                    )}
-                  </>
-                )}
-              </div>
+                ) : null}
+                summary={batchSummary}
+                printableCount={printable.length}
+                intelCount={intelRows.length}
+                convertibleCount={convertible.length}
+                on={{ printFile: () => setShowPrintFile(true), zip: () => setShowZip(true), downloadAll: () => setShowDownloadAll(true), intelligence: applyIntelligenceAll, convertAll }}
+              />
             </>
           )}
         </section>
       </div>
-      {/* each modal in its own AnimatePresence: closing plays its exit animation before it unmounts */}
-      <AnimatePresence>
-        {showZip && <GenerateZipModal key="zip" shops={printable} onClose={() => setShowZip(false)} />}
-      </AnimatePresence>
-      <AnimatePresence>
-        {showManageMasters && (
-          <MasterManagementModal key="masters" brand={brand} masters={masters} onAdded={onMasterAdded} onDelete={removeMaster}
-            onClose={() => setShowManageMasters(false)} />
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {showPrintFile && <PrintFileModal key="print" shops={printable} brand={brand} onClose={() => setShowPrintFile(false)} />}
-      </AnimatePresence>
-      <AnimatePresence>
-        {showGallery && <QueueGalleryModal key="queue-gallery" shops={printable} onClose={() => setShowGallery(false)} />}
-      </AnimatePresence>
-      <AnimatePresence>
-        {galleryShop && <PreviewGalleryModal key={`pg-${galleryShop.id}`} shop={galleryShop} onClose={() => setGalleryShop(null)} />}
-      </AnimatePresence>
-      <AnimatePresence>
-        {showDownloadAll && <DownloadAllModal key="dl-all" shops={printable} onClose={() => setShowDownloadAll(false)} />}
-      </AnimatePresence>
-      <AnimatePresence>
-        {downloadShop && (
-          <ShopDownloadModal
-            key={`dl-${downloadShop.id}`}
-            shop={downloadShop}
-            onClose={() => setDownloadShop(null)}
-            onMoreOptions={() => {
-              setExportShop(downloadShop);
-              setDownloadShop(null);
-            }}
-          />
-        )}
-      </AnimatePresence>
-      <AnimatePresence>
-        {exportShop && (
-          <ExportModal
-            key={exportShop.id}
-            jobId={exportShop.job_id || (job?.id)}
-            shopId={exportShop.id}
-            shopName={exportShop.name}
-            onClose={() => setExportShop(null)}
-          />
-        )}
-      </AnimatePresence>
+      <QueueModals
+        brand={brand} masters={masters} printable={printable} job={job}
+        show={{ zip: showZip, manage: showManageMasters, print: showPrintFile, gallery: showGallery, downloadAll: showDownloadAll }}
+        galleryShop={galleryShop} downloadShop={downloadShop} exportShop={exportShop}
+        close={{ zip: () => setShowZip(false), manage: () => setShowManageMasters(false), print: () => setShowPrintFile(false), gallery: () => setShowGallery(false),
+          galleryShop: () => setGalleryShop(null), downloadAll: () => setShowDownloadAll(false), downloadShop: () => setDownloadShop(null), exportShop: () => setExportShop(null) }}
+        onAdded={onMasterAdded} onDelete={removeMaster}
+        onMoreOptions={() => { setExportShop(downloadShop); setDownloadShop(null); }}
+      />
     </div>
   );
 }

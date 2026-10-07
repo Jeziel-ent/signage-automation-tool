@@ -208,6 +208,27 @@ def _nested_motion(o: dict, n: dict, parent_before: dict, parent_after: dict, pw
     return shifted, resized
 
 
+def _content_of(n: dict):
+    return (n.get("text") or {}).get("content")
+
+
+def _nested_entry(nid: str, parent: str, old: dict, new: dict, pw: float, ph: float) -> dict | None:
+    """The recorded change for one nested object (box beyond its parent's own move / resize, and / or text style), or None."""
+    o, n = old[nid][0], new[nid][0]
+    shifted, resized = _nested_motion(o, n, old[parent][0], new[parent][0], pw, ph)
+    style = _style_changes(o, n) if o.get("text") and n.get("text") else {}
+    if not (shifted or resized or style):
+        return None
+    action = _action(shifted, resized) if shifted or resized else "styled"
+    entry = {"id": nid, "parent": parent, "path": _path(old, nid), "signature": _signature(o), "action": action,
+             "before": _frac_box(o, pw, ph), "after": _frac_box(n, pw, ph)}
+    if _text_block(o):
+        entry["text"] = True
+    if style:
+        entry["style"] = style
+    return entry
+
+
 def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
     """The designer's changes to objects INSIDE groups / PowerClips (the shop-name block and its text usually sit in the master's big group):
     for every nested object still in the same parent, its box compared with where its parent's own move / resize alone would leave it, plus
@@ -219,20 +240,10 @@ def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
         if parent is None or nid not in new or new[nid][1] != parent:
             continue                                         # top-level (handled elsewhere) or moved to another parent: not learned
         n = new[nid][0]
-        if (n.get("text") or {}).get("content") != (o.get("text") or {}).get("content"):
-            text_edits += 1
-        shifted, resized = _nested_motion(o, n, old[parent][0], new[parent][0], pw, ph)
-        style = _style_changes(o, n) if o.get("text") and n.get("text") else {}
-        if not (shifted or resized or style):
-            continue
-        action = _action(shifted, resized) if shifted or resized else "styled"
-        entry = {"id": nid, "parent": parent, "path": _path(old, nid), "signature": _signature(o), "action": action,
-                 "before": _frac_box(o, pw, ph), "after": _frac_box(n, pw, ph)}
-        if _text_block(o):
-            entry["text"] = True
-        if style:
-            entry["style"] = style
-        out.append(entry)
+        text_edits += _content_of(n) != _content_of(o)
+        entry = _nested_entry(nid, parent, old, new, pw, ph)
+        if entry:
+            out.append(entry)
     return out, text_edits
 
 
@@ -248,23 +259,29 @@ def usable_records(rows: list[dict], brand: str | None, master_file: str | None,
     """The stored corrections that describe THIS board: same brand, same master file, same page size (within `SAME_SIZE_TOL`) and, when
     both name one, the same TYPE OF BOARD. Only APPROVED records are used (pending ones wait for review, rejected ones never apply).
     Newest first, so a later correction wins a clash."""
-    def same(a, b):
-        return math.isclose(float(a), float(b), rel_tol=SAME_SIZE_TOL)
-
     want = (board_type or "").strip().lower()
-    out = []
-    for r in rows:
-        if r.get("status") != "approved" or (r.get("brand") or "") != (brand or ""):
-            continue
-        if (r.get("master_file") or "").strip().lower() != (master_file or "").strip().lower():
-            continue
-        if not (same(r["page_w_mm"], w_mm) and same(r["page_h_mm"], h_mm)):
-            continue
-        have = (r.get("board_type") or "").strip().lower()
-        if want and have and want != have:
-            continue
-        out.append(r)
+    out = [r for r in rows if _record_fits(r, brand, master_file, w_mm, h_mm, want)]
     return sorted(out, key=lambda r: r.get("updated_at") or 0, reverse=True)
+
+
+def _same_size(a, b) -> bool:
+    return math.isclose(float(a), float(b), rel_tol=SAME_SIZE_TOL)
+
+
+def _lower(v) -> str:
+    return (v or "").strip().lower()
+
+
+def _record_fits(r: dict, brand: str | None, master_file: str | None, w_mm: float, h_mm: float, want_type: str) -> bool:
+    """One stored record describes this board: approved, same brand, same master file, same page size and (when both name one) board type."""
+    if r.get("status") != "approved" or (r.get("brand") or "") != (brand or ""):
+        return False
+    if _lower(r.get("master_file")) != _lower(master_file):
+        return False
+    if not (_same_size(r["page_w_mm"], w_mm) and _same_size(r["page_h_mm"], h_mm)):
+        return False
+    have = _lower(r.get("board_type"))
+    return not (want_type and have and want_type != have)
 
 
 def _median(v: list[float]) -> float:
