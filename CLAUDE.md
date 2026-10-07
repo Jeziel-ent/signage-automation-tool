@@ -19,11 +19,30 @@ continues independently - none of it was touched building the new UI.
 
 ## Continue here (handoff, 2026-10-07) - read this first on another machine
 
-**Newest work: "Corel Intelligence" (learning from designer corrections) - branch `corel-intelligence`, NOT yet merged to `main`.** Full
-description in "Corel Intelligence" below. In one line: the editor's saved edits are captured as page-fraction records, a top-bar switch
-(default ON) gates collection, every converted queue row has a sparkle icon (+ a common footer button) that re-runs the board with the
-learned corrections, and `tools/seed_corrections.py` seeded 12 dalmia records from the designer files. Backend 1001 passed / 37 skipped.
-Everything below this paragraph is the 2026-10-05 handoff, still accurate for the rest of the project.
+**Newest work (2026-10-07, all on `main`, branch `corel-intelligence` is merged and gone from the remote): "Corel Intelligence"** (learning from designer
+corrections) - full description in "Corel Intelligence" below. Latest commit `5be1b23`: the top-bar switch and the approve/reject step were REMOVED -
+corrections are always collected when an editor edit is saved and EVERY stored record is used for later boards of the same size; the
+Intelligence page is now a plain list of what was learned. Also landed: nested (inside-group) learning, Save Changes publishes the edited files,
+masters renumbered per brand + orientation, and `b9ce903` (batches no longer fail after the first board: `dump_objects.dump` uses the shared
+CorelDRAW pool and closes the kept-open master first). Backend 1067 passed. Everything below this paragraph is the 2026-10-05 handoff, still
+accurate for the rest of the project.
+
+**What is left (as of 2026-10-07), in the order I would take them.**
+1. Verify Corel Intelligence on real CorelDRAW beyond the one live run (Hangyo 4 X 8: name-block move + bold + line spacing replayed): resize,
+   hide/delete and wide boards are only covered by unit tests; upload the master under its ORIGINAL file name - records match by it.
+2. No safety net now that approval is gone: one bad editor save applies to the next board of that size. Cheap guard if it bites: a delete/disable
+   button per record on the Intelligence page (rejected records are still never used by `usable_records`, check the code before relying on it).
+3. Tamil text is measured differently by CorelDRAW between sessions (name text 1234x75 vs 1118x136 mm on one Hangyo board): the export's scene check
+   skips group boxes holding text and `verification` can show the name block 12-58 mm off the editor. Root cause (font fallback / shaping timing?)
+   NOT investigated - check the exported PNG of any Tamil-edited board.
+4. Decide the CorelDRAW 2019-vs-27 default (27 opens dalmia files in 130-340 s, 2019 in 43 s; pin per run with `SIGNAGE_COREL_PROGID=CorelDRAW.Application.21`).
+   The batch/dump COM bug is fixed (`b9ce903`, verified with `validate_all dalmia --limit 3` on 27); re-check a full multi-board batch on 2019.
+5. Hosting plan (discussed, not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs `corel_worker`,
+   uploads results; needs login/per-user data, storage interface (local -> Spaces), Postgres if more than one writer. Hosting first, then the agent.
+6. Engine items still open from 2026-10-05 (below): Hangyo 10x4 ft GSB (one logo vs two), Hangyo 3x6 ft portrait (rules layout), the other 55 Agarpathi
+   boards not re-run through the UI, Dalmia / Agni through the example library (dalmia keeps its rules), Tamil spelling only from the sheet's TA column.
+7. Consider learning for Agarpathi/Hangyo only if designers keep correcting boards (their libraries already reproduce known sizes ~exactly).
+8. Not verified after the last pulls: frontend `npm test` and the SonarQube quality gate (several fix commits landed, last Jenkins result unknown).
 
 **State (2026-10-05).** `main` holds everything: the example-library layout engine, master routing ("Auto (best match)"), Excel MASTER / CONVERT / (TA)
 columns, the masters registry UI, tests (backend 902 passed / 37 skipped, frontend 269) and the decks in `presentations/` (`presentations/final/` =
@@ -86,7 +105,12 @@ image, app PNG, name, similarity); Agarpathi designer pictures are in `dataset_a
 5. Not yet tested: Dalmia / Agni through the example library (dalmia keeps its rules: `"example_library": false`), "approve and add to library".
 6. The browser pane is small (800x450) and screenshots time out when the Claude window is behind another window; prefer `read_page`/`javascript_tool`.
 
-## Corel Intelligence - correction memory (2026-10-07, branch `corel-intelligence`)
+## Corel Intelligence - correction memory (2026-10-07, merged to `main`)
+
+**SUPERSEDED by `5be1b23` (read this first):** the "Corel Intelligence" top-bar switch, the `pending|approved|rejected` review flow and the
+"N to review" badge described below no longer exist. Collection is always on, every stored record is used (`usable_records`), and the Intelligence
+page only lists what was learned. The capture, apply, consensus, nested-learning and seeding mechanics below are unchanged. Treat any sentence
+below about the switch, `pending` records or Approve / Reject as history.
 
 **Idea.** The engine copies the nearest designer board; when a designer then fixes a board in the editor, that fix is knowledge for the next
 board of the same size. No neural model: the "model" is DATA - approved corrections stored as JSON in SQLite (moves to Spaces/Postgres when
@@ -221,14 +245,7 @@ asks for 720 (card 340 px tall, enlarge = 1000 px then the full file); the Eye m
 (`.pg-view`): the image is bounded by `grid-template: minmax(0,1fr)` - a first version let a tall portrait image overflow its box and be CROPPED,
 found by measuring (1775 px image in a 632 px box), fixed (337 x 590 px, fully inside, aspect kept). Backend 1063 passed, frontend 295.
 
-**Open items, in order.**
-1. (done 2026-10-07: review/approve screen.)
-2. (done 2026-10-07: apply step verified on real CorelDRAW for a move - see above.)
-3. Decide the CorelDRAW 2019-vs-27 default; fix the dump/COM bug in `corel_worker`/`dump_objects` so batches work.
-4. Hosting plan (discussed, not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs
-   `corel_worker`, uploads results (browsers cannot call COM); needs login/per-user data, storage interface (local -> Spaces), Postgres if
-   more than one writer. Build hosting first, then the agent.
-5. Consider learning for Agarpathi/Hangyo only if designers keep correcting boards (their libraries already reproduce known sizes ~exactly).
+**Open items:** see "What is left" in the handoff at the top of this file (the old list here is folded into it).
 
 ## New UI (in progress, phased - `frontend/src/pages/`, `backend/app/db.py`)
 
