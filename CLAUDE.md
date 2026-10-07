@@ -17,7 +17,7 @@ is being built alongside it, not as a replacement yet. Engine-side work
 (layout rules, validation, tiling) is unaffected by either UI and
 continues independently - none of it was touched building the new UI.
 
-## Continue here (handoff, 2026-10-07) - read this first on another machine
+## Continue here (handoff, 2026-10-08) - read this first on another machine
 
 **Newest work (2026-10-07, all on `main`, branch `corel-intelligence` is merged and gone from the remote): "Corel Intelligence"** (learning from designer
 corrections) - full description in "Corel Intelligence" below. Latest commit `5be1b23`: the top-bar switch and the approve/reject step were REMOVED -
@@ -27,16 +27,33 @@ masters renumbered per brand + orientation, and `b9ce903` (batches no longer fai
 CorelDRAW pool and closes the kept-open master first). Backend 1067 passed. Everything below this paragraph is the 2026-10-05 handoff, still
 accurate for the rest of the project.
 
-**Masters page (2026-10-07, uncommitted until you commit).** Sidebar "Masters" (`pages/Masters.jsx`): pick / create a brand, then upload, edit and delete its
+**Masters page (2026-10-07, committed and pushed: `ff7df2d`).** Sidebar "Masters" (`pages/Masters.jsx`): pick / create a brand, then upload, edit and delete its
 landscape and portrait masters. It uses the SAME registry as the Automation page (`context/MasterContext.jsx` now also holds `brands`, `addBrand`, `update`),
 so a master or brand added on one page is on the other immediately. Every master row has a pencil -> `components/MasterEditModal.jsx` (rename, orientation,
 default size, replace the .cdr; replacing the file or the orientation resets the Automation queue like an upload does). Backend: `PATCH /api/masters/{id}`
 ({name, orientation, dimensions_default}), `PUT /api/masters/{id}/file` (409 while a shop using it converts), `db.update_master`. **Masters are now stored across
 server restarts**; the old "hide on every start" behaviour is `SIGNAGE_ARCHIVE_MASTERS_ON_START=1` (the `SIGNAGE_KEEP_MASTERS` flag is gone). Checked in the
 browser pane against a scratch backend (edit on /masters showed on /, new brand shown on both). Backend 1033 passed / 37 skipped, frontend 301.
+**Fresh start (same day):** Automation AND Masters now start with NO brand selected (no Adinn default); picking a brand shows the masters already stored for it
+(they survive a backend restart - checked). The Masters page keeps its brand while you move between pages (`mastersBrand` in `MasterContext`), forgets it on reload;
+Automation keeps its own brand choice (open question: should both follow one selection?).
 **Deployment plan: `docs/deployment-plan.md`** (DigitalOcean droplet + Spaces + a Windows agent per PC; masters and corrections global, Recently generated per agent).
 
-**What is left (as of 2026-10-07), in the order I would take them.**
+**NEXT: deployment (plan written, nothing built yet) - start here tomorrow.** Full plan in `docs/deployment-plan.md` (English) and `docs/deployment-plan.tanglish.md`
+(commit `db0a31e`). Decisions: DigitalOcean droplet (2 vCPU / 4 GB, ~$24) + Spaces (~$5) + a Windows agent on every designer PC (5+ PCs, several offices);
+SQLite on the droplet first; email + password login (admin / designer); masters, brands and Corel Intelligence corrections are GLOBAL; Recently generated is
+PER AGENT (PC). CorelDRAW is only ever called from `main.py` in `_v2_convert_worker`, `_scene_build_worker`, `_export_worker` (all via `corel_supervisor.run_batch`).
+Milestones, each verified before the next (rough dev time): **M0** local prep: storage interface local|spaces, env/config layer, `/healthz`, Dockerfile,
+`SIGNAGE_ENGINE=remote` (2-3 d) - **I can start this with no input from the owner**; **M1** droplet + login + roles + Caddy HTTPS + nightly SQLite backup,
+mock engine (3-4 d); **M2** Spaces presigned uploads/downloads, `master_hash`, master version history (2-3 d); **M3** `agent_jobs` queue + agent API
+(register / claim / heartbeat / result), tested with a FAKE agent (3-4 d); **M4** real Windows agent on one PC, convert first then scene/export (5-7 d);
+**M5** per-agent Recently generated, async editor, shared corrections + admin disable (3-4 d); **M6** one-office pilot then rollout; **M7** hardening
+(rate limits, audit log, alerts, restore test, Jenkins deploy step). Total about 4-6 weeks for one developer.
+Owner still has to decide / do: DigitalOcean account + billing, a domain name, who is admin and who is designer, a Spaces bucket + keys (M2), one designer PC for the
+agent test (M4), and whether Automation and Masters should share one brand selection. Remember when touching masters code: delete / replace should become
+admin-only once logins exist; the "409 while a shop converts" check must use the shared queue once agents exist.
+
+**What is left (as of 2026-10-08), in the order I would take them.**
 1. Verify Corel Intelligence on real CorelDRAW beyond the one live run (Hangyo 4 X 8: name-block move + bold + line spacing replayed): resize,
    hide/delete and wide boards are only covered by unit tests; upload the master under its ORIGINAL file name - records match by it.
 2. No safety net now that approval is gone: one bad editor save applies to the next board of that size. Cheap guard if it bites: a delete/disable
@@ -46,7 +63,7 @@ browser pane against a scratch backend (edit on /masters showed on /, new brand 
    NOT investigated - check the exported PNG of any Tamil-edited board.
 4. Decide the CorelDRAW 2019-vs-27 default (27 opens dalmia files in 130-340 s, 2019 in 43 s; pin per run with `SIGNAGE_COREL_PROGID=CorelDRAW.Application.21`).
    The batch/dump COM bug is fixed (`b9ce903`, verified with `validate_all dalmia --limit 3` on 27); re-check a full multi-board batch on 2019.
-5. Hosting plan (written down in `docs/deployment-plan.md`, not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs `corel_worker`,
+5. Hosting plan (the NEXT block above, `docs/deployment-plan.md`; not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs `corel_worker`,
    uploads results; needs login/per-user data, storage interface (local -> Spaces), Postgres if more than one writer. Hosting first, then the agent.
 6. Engine items still open from 2026-10-05 (below): Hangyo 10x4 ft GSB (one logo vs two), Hangyo 3x6 ft portrait (rules layout), the other 55 Agarpathi
    boards not re-run through the UI, Dalmia / Agni through the example library (dalmia keeps its rules), Tamil spelling only from the sheet's TA column.
