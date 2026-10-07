@@ -54,6 +54,34 @@ def _all_nodes(scene: dict) -> dict[str, dict]:
     return out
 
 
+MOVED_RESIZED = "moved+resized"
+
+
+def _action(moved: bool, resized: bool) -> str:
+    if moved and resized:
+        return MOVED_RESIZED
+    return "moved" if moved else "resized"
+
+
+def _top_change(nid: str, o: dict, n: dict | None, bw: float, bh: float) -> dict | None:
+    """What the designer did to ONE top-level object (`n` is its edited twin, None when it is gone), or None when nothing worth learning."""
+    before = _frac_box(o, bw, bh)
+
+    def entry(after, action):
+        return {"id": nid, "signature": _signature(o), "before": before, "after": after, "action": action}
+
+    if n is None:
+        return entry(None, "deleted")
+    if o.get("visible", True) and not n.get("visible", True):
+        return entry(None, "hidden")
+    if o.get("children") and _group_refresh(o, n, bw, bh):
+        return None                                          # only its box followed a child that was edited (see diff_nested)
+    after = _frac_box(n, bw, bh)
+    moved = max(abs(before["cx"] - after["cx"]), abs(before["cy"] - after["cy"])) >= MIN_SHIFT_FRAC
+    resized = max(abs(before["w"] - after["w"]), abs(before["h"] - after["h"])) >= MIN_SHIFT_FRAC
+    return entry(after, _action(moved, resized)) if moved or resized else None
+
+
 def diff_scenes(base: dict, edited: dict) -> dict:
     """The designer's corrections between the engine's scene and the edited one.
 
@@ -69,23 +97,11 @@ def diff_scenes(base: dict, edited: dict) -> dict:
     changes, text_edits = [], 0
     for nid, o in old.items():
         n = new.get(nid)
-        before = _frac_box(o, bw, bh)
-        if n is None:
-            changes.append({"id": nid, "signature": _signature(o), "before": before, "after": None, "action": "deleted"})
-            continue
-        if n.get("text") != o.get("text"):
+        if n is not None and n.get("text") != o.get("text"):
             text_edits += 1
-        if o.get("visible", True) and not n.get("visible", True):
-            changes.append({"id": nid, "signature": _signature(o), "before": before, "after": None, "action": "hidden"})
-            continue
-        if o.get("children") and _group_refresh(o, n, bw, bh):
-            continue                                         # only its box followed a child that was edited (see diff_nested)
-        after = _frac_box(n, bw, bh)
-        moved = max(abs(before["cx"] - after["cx"]), abs(before["cy"] - after["cy"])) >= MIN_SHIFT_FRAC
-        resized = max(abs(before["w"] - after["w"]), abs(before["h"] - after["h"])) >= MIN_SHIFT_FRAC
-        if moved or resized:
-            action = "moved+resized" if moved and resized else "moved" if moved else "resized"
-            changes.append({"id": nid, "signature": _signature(o), "before": before, "after": after, "action": action})
+        ch = _top_change(nid, o, n, bw, bh)
+        if ch:
+            changes.append(ch)
     nested, nested_text_edits = diff_nested(base, edited)
     return {"page_changed": False, "changes": changes, "nested": nested, "text_edits": text_edits + nested_text_edits}
 
@@ -179,6 +195,19 @@ def _style_changes(old: dict, new: dict) -> dict:
     return out
 
 
+def _nested_motion(o: dict, n: dict, parent_before: dict, parent_after: dict, pw: float, ph: float) -> tuple[bool, bool]:
+    """(moved, resized) for a nested object beyond what its parent's own move / resize explains."""
+    got = _box(n)
+    along, here = _carried(o, _box(parent_before), _box(parent_after)), _box(o)
+    refreshed = bool(o.get("children")) and _group_refresh(o, n, pw, ph)
+    if _same(got, along, pw, ph) or _same(got, here, pw, ph) or refreshed:
+        return False, False                                  # explained by the parent (carried along, or the parent's box merely refreshed)
+    shifted = max(abs(got["x"] + got["w"] / 2 - along["x"] - along["w"] / 2) / pw,
+                  abs(got["y"] + got["h"] / 2 - along["y"] - along["h"] / 2) / ph) >= MIN_SHIFT_FRAC
+    resized = max(abs(got["w"] - along["w"]) / pw, abs(got["h"] - along["h"]) / ph) >= MIN_SHIFT_FRAC
+    return shifted, resized
+
+
 def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
     """The designer's changes to objects INSIDE groups / PowerClips (the shop-name block and its text usually sit in the master's big group):
     for every nested object still in the same parent, its box compared with where its parent's own move / resize alone would leave it, plus
@@ -192,19 +221,11 @@ def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
         n = new[nid][0]
         if (n.get("text") or {}).get("content") != (o.get("text") or {}).get("content"):
             text_edits += 1
-        got = _box(n)
-        along, here = _carried(o, _box(old[parent][0]), _box(new[parent][0])), _box(o)
-        refreshed = bool(o.get("children")) and _group_refresh(o, n, pw, ph)
-        if _same(got, along, pw, ph) or _same(got, here, pw, ph) or refreshed:
-            shifted = resized = False                        # explained by the parent (carried along, or the parent's box merely refreshed)
-        else:
-            shifted = max(abs(got["x"] + got["w"] / 2 - along["x"] - along["w"] / 2) / pw,
-                          abs(got["y"] + got["h"] / 2 - along["y"] - along["h"] / 2) / ph) >= MIN_SHIFT_FRAC
-            resized = max(abs(got["w"] - along["w"]) / pw, abs(got["h"] - along["h"]) / ph) >= MIN_SHIFT_FRAC
+        shifted, resized = _nested_motion(o, n, old[parent][0], new[parent][0], pw, ph)
         style = _style_changes(o, n) if o.get("text") and n.get("text") else {}
         if not (shifted or resized or style):
             continue
-        action = ("moved+resized" if shifted and resized else "moved" if shifted else "resized" if resized else "styled")
+        action = _action(shifted, resized) if shifted or resized else "styled"
         entry = {"id": nid, "parent": parent, "path": _path(old, nid), "signature": _signature(o), "action": action,
                  "before": _frac_box(o, pw, ph), "after": _frac_box(n, pw, ph)}
         if _text_block(o):
@@ -251,6 +272,49 @@ def _median(v: list[float]) -> float:
     return v[len(v) // 2] if len(v) % 2 else (v[len(v) // 2 - 1] + v[len(v) // 2]) / 2
 
 
+BOX_KEYS = ("cx", "cy", "w", "h")
+
+
+def _nearest_placed(placed: list, taken: set[str], b: dict, new_w: float, new_h: float):
+    """The not yet used, non-text placed object whose box is nearest the recorded `b` (within MATCH_TOL), or None."""
+    best = None
+    for p in placed:
+        if p.id in taken or p.role in TEXT_ROLES or p.w <= 0 or p.h <= 0:
+            continue
+        d = max(abs((p.x + p.w / 2) / new_w - b["cx"]), abs((p.y + p.h / 2) / new_h - b["cy"]),
+                abs(p.w / new_w - b["w"]), abs(p.h / new_h - b["h"]))
+        if d <= MATCH_TOL and (best is None or d < best[0]):
+            best = (d, p)
+    return best
+
+
+def _collect_votes(placed: list, new_w: float, new_h: float, records: list[dict]) -> tuple[dict, int]:
+    """({placed id: [(recorded "after" box, shop id)]}, number of recorded changes that matched nothing or are not re-applied)."""
+    votes: dict[str, list[tuple[dict, str]]] = {}
+    skipped = 0
+    for rec in records:
+        sid = rec.get("shop_id") or (rec.get("record") or {}).get("shop_id")
+        taken: set[str] = set()                                   # within one record an object answers one change only
+        for ch in (rec.get("record") or rec).get("changes", []):
+            if ch["action"] not in APPLIED_ACTIONS or (ch.get("signature") or {}).get("kind") == "text":
+                skipped += 1
+                continue
+            best = _nearest_placed(placed, taken, ch["before"], new_w, new_h)
+            if best is None:
+                skipped += 1
+                continue
+            taken.add(best[1].id)
+            votes.setdefault(best[1].id, []).append((ch["after"], sid))
+    return votes, skipped
+
+
+def _agreed_box(boxes: list[dict]) -> dict | None:
+    """One answer from the designers' boxes for an object: the box itself, or the median when they agree within CONSENSUS_TOL; None when not."""
+    if len(boxes) > 1 and any(max(a[k] for a in boxes) - min(a[k] for a in boxes) > CONSENSUS_TOL for k in BOX_KEYS):
+        return None
+    return {k: _median([x[k] for x in boxes]) for k in BOX_KEYS}
+
+
 def apply_to_placed(placed: list, new_w: float, new_h: float, records: list[dict]) -> dict:
     """Move/resize the engine's placed objects to where designers put them on a board of this size.
 
@@ -261,37 +325,15 @@ def apply_to_placed(placed: list, new_w: float, new_h: float, records: list[dict
     Text objects are never touched, and hidden / deleted objects are not re-applied (counted as skipped).
     Returns {"applied", "skipped", "conflicting", "records": [shop ids that contributed]}.
     """
-    votes: dict[str, list[tuple[dict, str]]] = {}
-    skipped = 0
-    for rec in records:
-        sid = rec.get("shop_id") or (rec.get("record") or {}).get("shop_id")
-        taken: set[str] = set()                                   # within one record an object answers one change only
-        for ch in (rec.get("record") or rec).get("changes", []):
-            if ch["action"] not in APPLIED_ACTIONS or (ch.get("signature") or {}).get("kind") == "text":
-                skipped += 1
-                continue
-            b, best = ch["before"], None
-            for p in placed:
-                if p.id in taken or p.role in TEXT_ROLES or p.w <= 0 or p.h <= 0:
-                    continue
-                d = max(abs((p.x + p.w / 2) / new_w - b["cx"]), abs((p.y + p.h / 2) / new_h - b["cy"]),
-                        abs(p.w / new_w - b["w"]), abs(p.h / new_h - b["h"]))
-                if d <= MATCH_TOL and (best is None or d < best[0]):
-                    best = (d, p)
-            if best is None:
-                skipped += 1
-                continue
-            taken.add(best[1].id)
-            votes.setdefault(best[1].id, []).append((ch["after"], sid))
+    votes, skipped = _collect_votes(placed, new_w, new_h, records)
     by_id = {p.id: p for p in placed}
     applied = conflicting = 0
     used: list[str] = []
     for pid, vs in votes.items():
-        keys = ("cx", "cy", "w", "h")
-        if len(vs) > 1 and any(max(a[k] for a, _ in vs) - min(a[k] for a, _ in vs) > CONSENSUS_TOL for k in keys):
+        a = _agreed_box([x for x, _ in vs])
+        if a is None:
             conflicting += 1
             continue
-        a = {k: _median([x[k] for x, _ in vs]) for k in keys}
         p = by_id[pid]
         p.w, p.h = a["w"] * new_w, a["h"] * new_h
         p.x, p.y = a["cx"] * new_w - p.w / 2, a["cy"] * new_h - p.h / 2
@@ -364,6 +406,69 @@ def _nested_target(node: dict, box: dict, pw: float, ph: float, is_text: bool) -
     return {"x": t["x"] + t["w"] / 2 - w / 2, "y": t["y"], "w": w, "h": t["h"]}
 
 
+def _nested_requests(records: list[dict]) -> dict[str, list[dict]]:
+    asked: dict[str, list[dict]] = {}
+    for r in records:
+        for c in (r.get("record") or {}).get("nested", []):
+            asked.setdefault(c["id"], []).append(c)
+    return asked
+
+
+def _by_depth(asked: dict, nodes: dict) -> list[str]:
+    """The asked-for ids that exist on the board, parents before children."""
+    return sorted((i for i in asked if i in nodes), key=lambda i: _depth(nodes, i))
+
+
+def _agreed_change(group: list[dict]) -> dict | None:
+    """One change for an object from every record that names it (same boxes within CONSENSUS_TOL and the same style), None when they clash."""
+    first = group[0]
+    if len(group) == 1:
+        return first
+    for c in group[1:]:
+        if max(abs(c["after"][k] - first["after"][k]) for k in BOX_KEYS) > CONSENSUS_TOL or c.get("style") != first.get("style"):
+            return None
+    return {**first, "after": {k: _median([c["after"][k] for c in group]) for k in BOX_KEYS}}
+
+
+def _fits_node(ch: dict, node: dict) -> bool:
+    """The recorded object is the same kind of thing as the board's node (kind, text or not, number of nested shapes)."""
+    sig = ch.get("signature") or {}
+    if sig.get("kind") != (node.get("kind") or node.get("type")):
+        return False
+    if bool(ch.get("text")) != _text_block(node):
+        return False
+    return not (node.get("kind") == "group" and sig.get("n_desc") != _count_nested(node))
+
+
+def _nested_edits(ch: dict, node: dict, nid: str, pw: float, ph: float) -> list[dict]:
+    """The editor ops that bring one node to the recorded box and style (none when it is already there)."""
+    made = []
+    if ch["action"] != "styled":
+        target = _nested_target(node, ch["after"], pw, ph, _text_block(node))
+        cur = _box(node)
+        if max(abs(target["x"] - cur["x"]), abs(target["y"] - cur["y"])) / max(pw, ph) >= MIN_SHIFT_FRAC \
+                or max(abs(target["w"] - cur["w"]), abs(target["h"] - cur["h"])) / max(pw, ph) >= MIN_SHIFT_FRAC:
+            made.append({"op": "resize", "ids": [nid], "from": cur, "to": target})
+    if ch.get("style"):
+        have = node.get("text") or {}
+        style = {k: v for k, v in ch["style"].items() if have.get(k) != v}
+        if style:
+            made.append({"op": "text", "id": nid, **style})
+    return made
+
+
+def _replay(work: dict, ops: list[dict]) -> bool:
+    """Apply the ops to the working copy; False when one of them cannot be applied."""
+    from . import scene_ops
+
+    try:
+        for op in ops:
+            scene_ops.apply_op(work, op)
+    except scene_ops.OpError:
+        return False
+    return True
+
+
 def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
     """Editor ops that reproduce the approved records' nested changes on a freshly converted board's `scene`.
 
@@ -373,51 +478,23 @@ def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
     working copy first, so a child's op starts from where its parent's op left it. Returns (ops, {applied, skipped, conflicting})."""
     import copy
 
-    from . import scene_ops
-
     pw, ph = _page(scene)
     work = copy.deepcopy(scene)
     nodes = _nodes_with_parents(work)
-    asked: dict[str, list[dict]] = {}
-    for r in records:
-        for c in (r.get("record") or {}).get("nested", []):
-            asked.setdefault(c["id"], []).append(c)
+    asked = _nested_requests(records)
     ops: list[dict] = []
-    summary = {"applied": 0, "skipped": 0, "conflicting": 0}
-    for nid in sorted((i for i in asked if i in nodes), key=lambda i: _depth(nodes, i)) + [i for i in asked if i not in nodes]:
-        group = asked[nid]
-        if nid not in nodes:
-            summary["skipped"] += 1
-            continue
-        if len(group) > 1 and not all(max(abs(c["after"][k] - group[0]["after"][k]) for k in ("cx", "cy", "w", "h")) <= CONSENSUS_TOL
-                                      and c.get("style") == group[0].get("style") for c in group[1:]):
+    summary = {"applied": 0, "skipped": sum(1 for i in asked if i not in nodes), "conflicting": 0}
+    for nid in _by_depth(asked, nodes):
+        ch = _agreed_change(asked[nid])
+        if ch is None:
             summary["conflicting"] += 1
             continue
-        ch = group[0] if len(group) == 1 else {**group[0], "after": {k: _median([c["after"][k] for c in group]) for k in ("cx", "cy", "w", "h")}}
         node = nodes[nid][0]
-        sig = ch.get("signature") or {}
-        if sig.get("kind") != (node.get("kind") or node.get("type")):
+        if not _fits_node(ch, node):
             summary["skipped"] += 1
             continue
-        if bool(ch.get("text")) != _text_block(node) or (node.get("kind") == "group" and sig.get("n_desc") != _count_nested(node)):
-            summary["skipped"] += 1
-            continue
-        made = []
-        if ch["action"] != "styled":
-            target = _nested_target(node, ch["after"], pw, ph, _text_block(node))
-            cur = _box(node)
-            if max(abs(target["x"] - cur["x"]), abs(target["y"] - cur["y"])) / max(pw, ph) >= MIN_SHIFT_FRAC \
-                    or max(abs(target["w"] - cur["w"]), abs(target["h"] - cur["h"])) / max(pw, ph) >= MIN_SHIFT_FRAC:
-                made.append({"op": "resize", "ids": [nid], "from": cur, "to": target})
-        if ch.get("style"):
-            have = node.get("text") or {}
-            style = {k: v for k, v in ch["style"].items() if have.get(k) != v}
-            if style:
-                made.append({"op": "text", "id": nid, **style})
-        try:
-            for op in made:
-                scene_ops.apply_op(work, op)
-        except scene_ops.OpError:
+        made = _nested_edits(ch, node, nid, pw, ph)
+        if not _replay(work, made):
             summary["skipped"] += 1
             continue
         nodes = _nodes_with_parents(work)

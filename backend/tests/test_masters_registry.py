@@ -215,8 +215,11 @@ def test_starting_the_server_hides_the_previous_runs_masters_but_keeps_their_fil
     shop = _shop(client, a["id"], 30, 40)
     main._archive_previous_masters()                                   # what the startup handler runs
     body = client.get("/api/masters").json()
-    assert body["masters"] == [] and body["landscape"] == [] and body["portrait"] == []
-    assert Path(a["file_path"]).is_file() and Path(b["file_path"]).is_file()
+    assert body["masters"] == []
+    assert body["landscape"] == []
+    assert body["portrait"] == []
+    assert Path(a["file_path"]).is_file()
+    assert Path(b["file_path"]).is_file()
     import app.db as db
     assert db.get_shop(shop["id"]) is not None                          # boards made from them are still there
     assert _register(client, "landscape")["name"] == "Master 1"        # and the next upload starts again at Master 1

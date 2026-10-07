@@ -1,6 +1,6 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { NavLink, Route, Routes } from "react-router-dom";
 import { ChevronLeft, ChevronRight, History, Printer, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 import Automation from "./pages/Automation.jsx";
 import { MasterProvider } from "./context/MasterContext.jsx";
@@ -58,7 +58,6 @@ function readCollapsed() {
 
 // Full-viewport workspace: the sidebar is pinned (never scrolls) and only the main pane scrolls.
 function Shell() {
-  const onHome = useLocation().pathname === "/";
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [showSplash, setShowSplash] = useState(true); // always: no storage check, so it appears on every page load
   useEffect(clearLegacySplashFlags, []);
@@ -117,7 +116,7 @@ function Shell() {
         <MasterProvider>
           {/* Automation is never unmounted: leaving it for another page only hides it, so its queue, uploads and scroll are still
               there when you come back (a route element would be rebuilt from scratch every visit). */}
-          <Automation hidden={!onHome} />
+          <Automation />
           <Routes>
             <Route path="/" element={null} />
             <Route path="/recent" element={<RecentlyGenerated />} />

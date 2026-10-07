@@ -5,6 +5,10 @@ import { BACKDROP_MOTION, CARD_MOTION } from "./modalMotion.js";
 import { galleryImages } from "../utils/gallery.js";
 import "./ExportModal.css";
 
+function thumbTitle(img) {
+  return img.detail ? `${img.label} - ${img.detail}` : img.label;
+}
+
 /** The whole board, as large as the window allows (contain: never cropped, tall portrait boards included), with a strip of the other renders. */
 function Viewer({ shop, images, sel, onSel }) {
   const cur = images[sel];
@@ -19,14 +23,16 @@ function Viewer({ shop, images, sel, onSel }) {
         {cur.detail && <span>{cur.detail}</span>}
       </div>
       {images.length > 1 && (
-        <div className="pg-strip" role="list">
+        <ul className="pg-strip">
           {images.map((img, i) => (
-            <button key={img.key} type="button" role="listitem" className={"pg-thumb" + (i === sel ? " on" : "")} onClick={() => onSel(i)}
-              title={`${img.label}${img.detail ? ` - ${img.detail}` : ""}`} aria-label={`Show ${img.label}`} aria-current={i === sel}>
-              <img src={img.url} alt="" loading="lazy" />
-            </button>
+            <li key={img.key}>
+              <button type="button" className={"pg-thumb" + (i === sel ? " on" : "")} onClick={() => onSel(i)}
+                title={thumbTitle(img)} aria-label={`Show ${img.label}`} aria-current={i === sel}>
+                <img src={img.url} alt="" loading="lazy" />
+              </button>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
     </div>
   );

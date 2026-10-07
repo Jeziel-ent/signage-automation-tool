@@ -337,24 +337,29 @@ class Replayer:
         """
         bad: list[str] = []
         for node in scene_ops.iter_nodes(scene):
-            shape = self.shapes.get(node["id"])
-            if shape is None:
-                bad.append(f"{node['id']} is not in the document")
-            elif node.get("type") == "text":
-                if int(shape.Type) != 6:
-                    bad.append(f"{node['id']} is a text object in the scene but not in CorelDRAW")
-            elif node.get("kind") == "group" and _holds_text(node):
-                continue                               # a group's box follows its text's measured extent (see above)
-            else:
-                got = [float(shape.LeftX), float(shape.BottomY), float(shape.SizeWidth), float(shape.SizeHeight)]
-                want = [node["x"], node["y"], node["w"], node["h"]]
-                if any(abs(g - w) > max(POS_TOL_MM, 0.001 * max(want[2], want[3])) for g, w in zip(got, want)):
-                    bad.append(f"{node['id']} is at {[round(v, 1) for v in got]} in CorelDRAW but {[round(v, 1) for v in want]} in the scene")
+            problem = self._node_mismatch(node)
+            if problem:
+                bad.append(problem)
             if len(bad) >= 5:
                 break
         if bad:
             raise ReplayError("the editor's scene does not match the CorelDRAW document (was the board re-converted "
                               "after the scene was built?): " + "; ".join(bad))
+
+    def _node_mismatch(self, node: dict) -> str | None:
+        """Why one scene node does not line up with the document (None when it does)."""
+        shape = self.shapes.get(node["id"])
+        if shape is None:
+            return f"{node['id']} is not in the document"
+        if node.get("type") == "text":
+            return None if int(shape.Type) == 6 else f"{node['id']} is a text object in the scene but not in CorelDRAW"
+        if node.get("kind") == "group" and _holds_text(node):
+            return None                                  # a group's box follows its text's measured extent (see above)
+        got = [float(shape.LeftX), float(shape.BottomY), float(shape.SizeWidth), float(shape.SizeHeight)]
+        want = [node["x"], node["y"], node["w"], node["h"]]
+        if any(abs(g - w) > max(POS_TOL_MM, 0.001 * max(want[2], want[3])) for g, w in zip(got, want)):
+            return f"{node['id']} is at {[round(v, 1) for v in got]} in CorelDRAW but {[round(v, 1) for v in want]} in the scene"
+        return None
 
     def _shape(self, node_id: str):
         s = self.shapes.get(node_id) or self.ghosts.get(node_id)

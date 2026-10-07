@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { describeShift, describeStyle, diffRects, inTab, learnedCount, pageLabel, pickSelection } from "./correctionsView.js";
+import { describeShift, describeStyle, diffRects, inTab, intelAllTitle, learnedCount, noApprovedNotice, pageLabel, pickSelection, sparkleTitle } from "./correctionsView.js";
 
 test("diffRects flips y (the scene's origin is bottom-left) and scales to the drawing", () => {
   const change = { before: { cx: 0.25, cy: 0.25, w: 0.2, h: 0.2 }, after: { cx: 0.5, cy: 0.75, w: 0.2, h: 0.2 } };
@@ -46,4 +46,16 @@ test("learnedCount adds the top-level and the nested edits", () => {
   assert.equal(learnedCount({ applied: 2, nested: { applied: 3 } }), 5);
   assert.equal(learnedCount({ applied: 2 }), 2);
   assert.equal(learnedCount(undefined), 0);
+});
+
+test("the sparkle wording is singular / plural and says what is missing", () => {
+  assert.match(noApprovedNotice(0), /nothing learned/);
+  assert.match(noApprovedNotice(1), /1 correction is waiting/);
+  assert.match(noApprovedNotice(3), /3 corrections are waiting/);
+  assert.match(intelAllTitle(0), /Nothing learned/);
+  assert.match(intelAllTitle(1), /Re-run 1 converted board with/);
+  assert.match(intelAllTitle(4), /Re-run 4 converted boards with/);
+  assert.match(sparkleTitle(0), /nothing learned/);
+  assert.match(sparkleTitle(1), /1 learned designer correction$/);
+  assert.match(sparkleTitle(2), /2 learned designer corrections$/);
 });

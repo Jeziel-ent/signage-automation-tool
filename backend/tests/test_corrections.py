@@ -37,8 +37,10 @@ def test_a_move_is_recorded_as_page_fractions_with_the_objects_signature():
     edited["layers"][0]["children"][0]["x"] += 100            # 10 % of the page width
     d = corrections.diff_scenes(_base(), edited)
     (c,) = d["changes"]
-    assert c["id"] == "a" and c["action"] == "moved"
-    assert c["before"]["cx"] == 0.2 and c["after"]["cx"] == 0.3
+    assert c["id"] == "a"
+    assert c["action"] == "moved"
+    assert c["before"]["cx"] == 0.2
+    assert c["after"]["cx"] == 0.3
     assert (c["before"]["w"], c["before"]["h"]) == (c["after"]["w"], c["after"]["h"])
     assert c["signature"] == {"kind": "shape", "aspect": 2.0, "n_desc": 0}
 
@@ -51,8 +53,11 @@ def test_a_resize_and_a_group_signature():
     d = corrections.diff_scenes(_base(), edited)
     assert d["nested"] == []                                   # the child just came along with its group
     (c,) = d["changes"]
-    assert c["action"] == "resized" and c["signature"]["kind"] == "group" and c["signature"]["n_desc"] == 1
-    assert c["after"]["w"] == 0.2 and c["after"]["h"] == 0.5
+    assert c["action"] == "resized"
+    assert c["signature"]["kind"] == "group"
+    assert c["signature"]["n_desc"] == 1
+    assert c["after"]["w"] == 0.2
+    assert c["after"]["h"] == 0.5
 
 
 def test_nudges_below_the_threshold_are_ignored():
@@ -74,7 +79,8 @@ def test_text_edits_are_counted_not_learned():
     edited = copy.deepcopy(base)
     edited["layers"][0]["children"][0]["text"] = {"content": "NEW"}
     d = corrections.diff_scenes(base, edited)
-    assert d["changes"] == [] and d["text_edits"] == 1
+    assert d["changes"] == []
+    assert d["text_edits"] == 1
 
 
 def test_a_page_size_edit_records_nothing():
@@ -82,7 +88,8 @@ def test_a_page_size_edit_records_nothing():
     edited["page"]["width"] = 2000.0
     edited["layers"][0]["children"][0]["x"] += 100
     d = corrections.diff_scenes(_base(), edited)
-    assert d["page_changed"] and d["changes"] == []
+    assert d["page_changed"]
+    assert d["changes"] == []
     assert corrections.build_record({"id": "s"}, None, _base(), edited, None) is None
 
 
@@ -94,7 +101,8 @@ def test_build_record_carries_the_context():
                                  _base(), edited, layout)
     assert (r["shop_id"], r["brand"], r["master_file"], r["board_type"]) == ("s1", "agarpathi", "m.cdr", "GSB")
     assert (r["page_w_mm"], r["page_h_mm"]) == (1000.0, 400.0)
-    assert r["template"]["file"] == "x.cdr" and r["confidence"] == "GOOD"
+    assert r["template"]["file"] == "x.cdr"
+    assert r["confidence"] == "GOOD"
 
 
 def test_saving_editor_ops_stores_a_pending_correction_and_clearing_them_removes_it(client):  # noqa: F811
@@ -106,7 +114,8 @@ def test_saving_editor_ops_stores_a_pending_correction_and_clearing_them_removes
     move = {"op": "move", "ids": [top], "dx": 60, "dy": 0}
     assert client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [move]}).status_code == 200
     c = db.get_correction(shop)
-    assert c["status"] == "pending" and c["brand"] == "dalmia"
+    assert c["status"] == "pending"
+    assert c["brand"] == "dalmia"
     assert c["record"]["changes"][0]["id"] == top
     assert client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": []}).status_code == 200
     assert db.get_correction(shop) is None
@@ -119,7 +128,8 @@ def test_a_failure_while_recording_never_breaks_saving(client, monkeypatch):  # 
     monkeypatch.setattr(main.corrections, "build_record", lambda *a, **k: 1 / 0)
     top = scene["layers"][0]["children"][0]["id"]
     r = client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]})
-    assert r.status_code == 200 and r.json()["saved"] == 1
+    assert r.status_code == 200
+    assert r.json()["saved"] == 1
 
 
 # ------------------------------------------------------------------ applying learned corrections
@@ -147,13 +157,16 @@ def test_apply_moves_the_matching_object_to_the_designers_box():
     s = corrections.apply_to_placed([logo, other], 1000.0, 400.0, [_rec()])
     assert s == {"applied": 1, "skipped": 0, "conflicting": 0, "records": ["s1"]}
     assert (logo.x, logo.y, logo.w, logo.h) == (200.0, 110.0, 200.0, 100.0)
-    assert (other.x, other.y) == (600, 50) and logo.warnings
+    assert (other.x, other.y) == (600, 50)
+    assert logo.warnings
 
 
 def test_apply_ignores_text_unmatched_and_non_geometry_changes():
     t = _placed("t", 100, 150, 200, 100, role="shopname")        # same box, but a shop name is never moved
     s = corrections.apply_to_placed([t], 1000.0, 400.0, [_rec()])
-    assert s["applied"] == 0 and s["skipped"] == 1 and (t.x, t.y) == (100, 150)
+    assert s["applied"] == 0
+    assert s["skipped"] == 1
+    assert (t.x, t.y) == (100, 150)
     rec = _rec()
     rec["record"]["changes"][0]["action"] = "deleted"
     assert corrections.apply_to_placed([_placed("0", 100, 150, 200, 100)], 1000.0, 400.0, [rec])["applied"] == 0
@@ -165,13 +178,17 @@ def test_designers_who_agree_are_applied_as_their_median_and_ones_who_disagree_a
     agree[2]["record"]["changes"][0]["after"] = {"cx": 0.295, "cy": 0.4, "w": 0.2, "h": 0.25}
     logo = _placed("0", 100, 150, 200, 100)
     s = corrections.apply_to_placed([logo], 1000.0, 400.0, agree)
-    assert s["applied"] == 1 and s["conflicting"] == 0 and sorted(s["records"]) == ["a", "b", "c"]
+    assert s["applied"] == 1
+    assert s["conflicting"] == 0
+    assert sorted(s["records"]) == ["a", "b", "c"]
     assert round(logo.x + logo.w / 2) == 300                       # the median centre (0.30 of 1000 mm)
     split = [_rec("x"), _rec("y")]
     split[1]["record"]["changes"][0]["after"] = {"cx": 0.9, "cy": 0.9, "w": 0.2, "h": 0.25}
     logo2 = _placed("0", 100, 150, 200, 100)
     s = corrections.apply_to_placed([logo2], 1000.0, 400.0, split)
-    assert s["applied"] == 0 and s["conflicting"] == 1 and (logo2.x, logo2.y) == (100, 150)
+    assert s["applied"] == 0
+    assert s["conflicting"] == 1
+    assert (logo2.x, logo2.y) == (100, 150)
 
 
 def test_usable_records_need_the_same_brand_master_size_and_type():

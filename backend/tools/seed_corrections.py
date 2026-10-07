@@ -236,34 +236,40 @@ def main():
     from app import db  # noqa: E402
 
     boards = _load_boards_from_cache(a.brand) if a.from_cache else _load_boards(a.brand)
+    _derive_records(a.brand, boards, KNOWN_OUTLIERS)
+    if not a.dry_run:
+        db.init_db()
+        stored = [b["record"] for b in boards if b["record"]]
+        for rec in stored:
+            db.save_correction(rec)
+        print(f"stored {len(stored)} correction record(s) for {a.brand} in {db.DB_PATH}")
+    if not a.no_eval:
+        _print_eval(evaluate(boards))
+
+
+def _derive_records(brand: str, boards: list[dict], outliers) -> None:
+    """Fill each board's `record` (None for a known outlier or when there is nothing to learn) and print one line per board."""
     for b in boards:
-        if any(k in b["stem"] for k in KNOWN_OUTLIERS):
+        if any(k in b["stem"] for k in outliers):
             print(f"skip (known outlier, a one-off recomposition): {b['stem']}")
             b["record"] = None
             continue
-        rec, stats = board_record(a.brand, b["master_file"], b["stem"], b["board_type"], b["ours_dump"], b["real_dump"], b["pw"], b["ph"])
+        rec, stats = board_record(brand, b["master_file"], b["stem"], b["board_type"], b["ours_dump"], b["real_dump"], b["pw"], b["ph"])
         b["record"] = rec
         print(f"{b['stem'][:70]:70} units {stats['matched']}/{stats['engine_units']} matched, {stats['units_changed']} changed, "
               f"{stats['changes']} objects" + ("" if rec else " - nothing to learn"))
-    if not a.dry_run:
-        db.init_db()
-        n = 0
-        for b in boards:
-            if b["record"]:
-                db.save_correction(b["record"])
-                n += 1
-        print(f"stored {n} correction record(s) for {a.brand} in {db.DB_PATH}")
-    if not a.no_eval:
-        rows = evaluate(boards)
-        print("\nleave-one-out (held-out designer board vs the engine alone), mean centre error in mm:")
-        for r in rows:
-            print(f"  {r['file'][:60]:60} peers={r['peers']} applied={r['applied']:4}/{r['objects']:4}  "
-                  f"engine {r['engine_mean_mm']:7.1f}  learned {r['learned_mean_mm']:7.1f}")
-        if rows:
-            print(f"  overall mean: engine {statistics.mean(r['engine_mean_mm'] for r in rows):.1f} mm, "
-                  f"learned {statistics.mean(r['learned_mean_mm'] for r in rows):.1f} mm")
-        else:
-            print("  (no board size has two designer files)")
+
+
+def _print_eval(rows: list[dict]) -> None:
+    print("\nleave-one-out (held-out designer board vs the engine alone), mean centre error in mm:")
+    for r in rows:
+        print(f"  {r['file'][:60]:60} peers={r['peers']} applied={r['applied']:4}/{r['objects']:4}  "
+              f"engine {r['engine_mean_mm']:7.1f}  learned {r['learned_mean_mm']:7.1f}")
+    if not rows:
+        print("  (no board size has two designer files)")
+        return
+    print(f"  overall mean: engine {statistics.mean(r['engine_mean_mm'] for r in rows):.1f} mm, "
+          f"learned {statistics.mean(r['learned_mean_mm'] for r in rows):.1f} mm")
 
 
 if __name__ == "__main__":

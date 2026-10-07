@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { Link } from "react-router-dom";
+import { Link, useLocation } from "react-router-dom";
 import { finishedNotice, savedNotice, waitForExport } from "../utils/publishEdits.js";
-import { learnedCount } from "../utils/correctionsView.js";
+import { intelAllTitle, learnedCount, noApprovedNotice, sparkleTitle } from "../utils/correctionsView.js";
 import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FolderOpen, Layers, Play, Plus, RectangleHorizontal, RectangleVertical, Sparkles, Store, Trash2 } from "lucide-react";
 import "../components/MasterPanels.css";
 import UploadDropzone from "../components/UploadDropzone.jsx";
@@ -55,7 +55,7 @@ export const CONVERT_STEPS = [
   { key: "png", endPct: 97 },
 ];
 
-export default function Automation({ hidden = false }) {
+export default function Automation() {
   const [brands, setBrands] = useState([]);
   const [brand, setBrand] = useState("");
   const defaultBrandApplied = useRef(false);
@@ -116,6 +116,7 @@ export default function Automation({ hidden = false }) {
 
   // ---- Corel Intelligence: while the switch is on, the designers' editor corrections are collected (server side, default ON);
   // a converted row's sparkle icon re-runs that board with the learned corrections for its size, the footer button does it for every row.
+  const hidden = useLocation().pathname !== "/"; // this page stays mounted (just hidden) while another page is open - see App.jsx
   const [intelOn, setIntelOn] = useState(true);
   const [intelAvail, setIntelAvail] = useState({}); // done shop id -> number of learned corrections that fit its board
   const [intelPending, setIntelPending] = useState(0); // corrections saved from the editor that still wait for approval
@@ -130,7 +131,7 @@ export default function Automation({ hidden = false }) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ enabled: next }),
     }).catch(() => null);
-    if (!r || !r.ok) setIntelOn(!next); // not saved: show what the server still has
+    if (!r?.ok) setIntelOn(!next); // not saved: show what the server still has
   }
 
   async function addBrand() {
@@ -474,9 +475,7 @@ export default function Automation({ hidden = false }) {
 
   function applyIntelligence(shopId) {
     if (!intelAvail[shopId]) {
-      setQueueNotice(intelPending
-        ? `Corel Intelligence has nothing APPROVED for this board size yet - ${intelPending} correction${intelPending === 1 ? " is" : "s are"} waiting for review (Intelligence review in the sidebar).`
-        : "Corel Intelligence has nothing learned for this board size yet - correct a board of this size in the editor first.");
+      setQueueNotice(noApprovedNotice(intelPending));
       return null;
     }
     return convertShop(shopId, { useIntelligence: true });
@@ -889,8 +888,7 @@ export default function Automation({ hidden = false }) {
                       className="btn-outline-red"
                       onClick={applyIntelligenceAll}
                       disabled={!intelRows.length}
-                      title={intelRows.length ? `Re-run ${intelRows.length} converted board${intelRows.length === 1 ? "" : "s"} with what designers corrected on the same size`
-                        : "Nothing learned yet for the converted boards - correct a board in the editor first"}
+                      title={intelAllTitle(intelRows.length)}
                     >
                       <Sparkles size={15} /> Corel Intelligence{intelRows.length ? ` (${intelRows.length})` : ""}
                     </button>
@@ -1293,8 +1291,7 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, int
           </span>
         )}
         <button className={"icon-btn row-dl-btn ci-row-btn" + (intelCount ? " ready" : "")} onClick={onIntelligence} aria-label={`Use Corel Intelligence on ${shop.name}`}
-          title={intelCount ? `Use Corel Intelligence: re-run this board with ${intelCount} learned designer correction${intelCount === 1 ? "" : "s"}`
-            : "Corel Intelligence: nothing learned for this board size yet"}>
+          title={sparkleTitle(intelCount)}>
           <Sparkles size={16} />
         </button>
         <button className="icon-btn row-dl-btn" onClick={onPreview} title="Preview the converted output" aria-label={`Preview the output of ${shop.name}`}>

@@ -62,6 +62,7 @@ CONVERT_RUNS.mkdir(parents=True, exist_ok=True)
 db.init_db()
 
 logger = logging.getLogger("signage.convert")
+_CORR_LOG = logging.getLogger("signage.corrections")
 
 INTERRUPTED_ERROR = "Interrupted: the server was restarted while this was queued or running - convert it again."
 
@@ -819,6 +820,15 @@ _convert_queue_lock = threading.Lock()
 _batch_slots: dict[str, tuple[Path, int]] = {}  # shop id -> (its batch's heartbeat file, its index in that batch)
 
 
+def _learned_records(shop_row: dict, job_row: dict, master_used: dict, w_mm: float, h_mm: float) -> list[dict]:
+    """The approved corrections Corel Intelligence applies to this conversion: none unless the sparkle asked for them (use_intelligence)."""
+    if not shop_row.get("use_intelligence"):
+        return []
+    chosen = db.get_job(master_used["job_id"]) or job_row
+    return corrections.usable_records(db.list_corrections(), job_row["brand"], chosen.get("master_filename"), w_mm, h_mm,
+                                      shop_row.get("board_type"))
+
+
 def _convert_job(shop_id: str) -> tuple[dict, dict]:
     """(corel_worker job, master_used record) for one shop, from its current database row."""
     shop_row = db.get_shop(shop_id)
@@ -859,12 +869,9 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
     # No font_en / font_ta from the queue: conversions keep the master's own fonts (fonts are changed in the Signage Editor).
     # Values a row may still carry from the old queue font pickers are deliberately NOT forwarded.
     master_path, master_used = _select_shop_master(shop_row, job_row, shop_dict["width"], shop_dict["height"])
-    if shop_row.get("use_intelligence"):
-        chosen = db.get_job(master_used["job_id"]) or job_row
-        found = corrections.usable_records(db.list_corrections(), job_row["brand"], chosen.get("master_filename"),
-                                           shop_dict["width"], shop_dict["height"], shop_row.get("board_type"))
-        if found:
-            shop_dict["intelligence"] = found
+    learned = _learned_records(shop_row, job_row, master_used, shop_dict["width"], shop_dict["height"])
+    if learned:
+        shop_dict["intelligence"] = learned
     # What the CHOSEN master currently shows as its shop name - how the engine finds the text shape to overwrite on an
     # untagged master (layout.find_shopname_ids); a `shopname`-tagged shape is used regardless.
     mrow = db.get_job(master_used["job_id"]) or job_row
@@ -1028,7 +1035,7 @@ def _apply_learned_nested(shop_id: str) -> None:
         _scene_build_worker(shop["job_id"], shop_id)
         scene = _load_scene(shop["job_id"], shop_id)
         if scene is None:
-            logging.getLogger("signage.corrections").warning("shop %s: scene could not be built for the learned nested edits", shop_id)
+            _CORR_LOG.warning("shop %s: scene could not be built for the learned nested edits", shop_id)
             return
         ops, summary = corrections.nested_ops(scene, found)
         layout = report.setdefault("layout", {})
@@ -1040,9 +1047,9 @@ def _apply_learned_nested(shop_id: str) -> None:
             try:
                 editor_publish(shop["job_id"], shop_id)
             except HTTPException as e:
-                logging.getLogger("signage.corrections").warning("shop %s: learned edits saved, files not rebuilt: %s", shop_id, e.detail)
+                _CORR_LOG.warning("shop %s: learned edits saved, files not rebuilt: %s", shop_id, e.detail)
     except Exception:
-        logging.getLogger("signage.corrections").exception("could not apply the learned nested edits for shop %s", shop_id)
+        _CORR_LOG.exception("could not apply the learned nested edits for shop %s", shop_id)
 
 
 def _apply_sno(shop_id: str, payload: dict | None) -> None:
@@ -1129,24 +1136,28 @@ def v2_intelligence_available(ids: str = ""):
     rows = db.list_corrections()
     out: dict[str, int] = {}
     for sid in [s for s in ids.split(",") if s]:
-        shop = db.get_shop(sid)
-        job = db.get_job(shop["job_id"]) if shop else None
-        if not shop or not job or shop["status"] != "done":
-            continue
-        used = ((json.loads(shop["report_json"]) if shop.get("report_json") else {}).get("master_used") or {})
-        chosen = db.get_job(used.get("job_id")) if used.get("job_id") else job
-        found = corrections.usable_records(rows, job["brand"], (chosen or job).get("master_filename"),
-                                           to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
-                                           shop.get("board_type"))
-        n = sum(1 for r in found for c in r["record"]["changes"]
-                if c["action"] in corrections.APPLIED_ACTIONS and (c.get("signature") or {}).get("kind") != "text")
-        n += sum(len(r["record"].get("nested", [])) for r in found)
+        n = _learned_for(rows, db.get_shop(sid))
         if n:
             out[sid] = n
     return {"available": out, "pending": len(db.list_corrections("pending"))}
 
 
-@app.get("/api/v2/corrections")
+def _learned_for(rows: list[dict], shop: dict | None) -> int:
+    """Learned changes (top-level moves / resizes plus nested ones) that fit one CONVERTED board; 0 for any other shop."""
+    job = db.get_job(shop["job_id"]) if shop else None
+    if not shop or not job or shop["status"] != "done":
+        return 0
+    used = ((json.loads(shop["report_json"]) if shop.get("report_json") else {}).get("master_used") or {})
+    chosen = db.get_job(used.get("job_id")) if used.get("job_id") else job
+    found = corrections.usable_records(rows, job["brand"], (chosen or job).get("master_filename"),
+                                       to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
+                                       shop.get("board_type"))
+    top = sum(1 for r in found for c in r["record"]["changes"]
+              if c["action"] in corrections.APPLIED_ACTIONS and (c.get("signature") or {}).get("kind") != "text")
+    return top + sum(len(r["record"].get("nested", [])) for r in found)
+
+
+@app.get("/api/v2/corrections", responses={422: {"description": "Validation error"}})
 def v2_corrections(status: str = ""):
     """The review screen's list: every stored correction (optionally one status), newest first, each with its changes spelled out."""
     if status and status not in corrections.STATUSES:
@@ -1319,6 +1330,26 @@ def _thumb_format() -> tuple[str, str]:
     return ("WEBP", _WEBP_SUFFIX) if features.check("webp") else ("PNG", ".png")
 
 
+def _write_thumb(src: Path, thumb: Path, fmt: str, ext: str, long_side: int) -> None:
+    """Build one cached thumbnail with Pillow (a 404 for an unreadable preview)."""
+    from PIL import Image
+    thumb.parent.mkdir(parents=True, exist_ok=True)
+    tmp = thumb.with_name(f"{thumb.stem}.{os.getpid()}.tmp{ext}")
+    try:
+        with Image.open(src) as im:
+            im.thumbnail((long_side, long_side), Image.BILINEAR, reducing_gap=2.0)
+            if im.mode in ("LA", "P"):  # palette / grey+alpha: RGBA so WebP and PNG both keep any transparency
+                im = im.convert("RGBA")
+            im.save(tmp, fmt, **({"quality": 82, "method": 4} if fmt == "WEBP" else {"optimize": True}))
+    except OSError:  # an empty/corrupt preview (seen live: a 0-byte PNG; PIL's UnidentifiedImageError is an OSError) - no thumbnail
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(404, "preview is not a readable image")
+    try:
+        tmp.replace(thumb)
+    except OSError:  # another request replaced it at the same moment (Windows): serve that one
+        tmp.unlink(missing_ok=True)
+
+
 @app.get("/api/v2/shops/{shop_id}/thumb", responses={404: {"description": "Not found"}})
 def v2_shop_thumb(shop_id: str, size: int | None = None):
     """A small copy of a converted shop's preview for list thumbnails. The full preview is CorelDRAW's 1600 px PNG
@@ -1343,22 +1374,7 @@ def v2_shop_thumb(shop_id: str, size: int | None = None):
     if not thumb.is_file() or thumb.stat().st_mtime < src.stat().st_mtime:
         if src.suffix.lower() not in (".png", ".jpg", _JPEG_SUFFIX, _WEBP_SUFFIX):
             return FileResponse(src)  # e.g. MockEngine's SVG preview: already tiny, and vector
-        from PIL import Image
-        thumb.parent.mkdir(parents=True, exist_ok=True)
-        tmp = thumb.with_name(f"{thumb.stem}.{os.getpid()}.tmp{ext}")
-        try:
-            with Image.open(src) as im:
-                im.thumbnail((long_side, long_side), Image.BILINEAR, reducing_gap=2.0)
-                if im.mode in ("LA", "P"):  # palette / grey+alpha: RGBA so WebP and PNG both keep any transparency
-                    im = im.convert("RGBA")
-                im.save(tmp, fmt, **({"quality": 82, "method": 4} if fmt == "WEBP" else {"optimize": True}))
-        except OSError:  # an empty/corrupt preview (seen live: a 0-byte PNG; PIL's UnidentifiedImageError is an OSError) - no thumbnail
-            tmp.unlink(missing_ok=True)
-            raise HTTPException(404, "preview is not a readable image")
-        try:
-            tmp.replace(thumb)
-        except OSError:  # another request replaced it at the same moment (Windows): serve that one
-            tmp.unlink(missing_ok=True)
+        _write_thumb(src, thumb, fmt, ext, long_side)
     return FileResponse(thumb, headers={"Cache-Control": "no-cache"})  # revalidated by ETag, rebuilt when the board is
 
 
@@ -2272,27 +2288,30 @@ def recapture_corrections(statuses: tuple[str, ...] = ("pending",)) -> dict:
     for row in db.list_corrections():
         if row["status"] not in statuses or row["record"].get("source"):
             continue
-        shop = db.get_shop(row["shop_id"])
-        scene = _load_scene(shop["job_id"], shop["id"]) if shop else None
-        ops = db.get_editor_ops(row["shop_id"]) if shop else []
-        if scene is None or not ops:
-            done["skipped"] += 1
-            continue
-        try:
-            edited = scene_ops.apply_ops(scene, ops)
-        except scene_ops.OpError:
-            done["skipped"] += 1
-            continue
-        report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
-        made_from = db.get_job((report.get("master_used") or {}).get("job_id") or shop["job_id"]) or db.get_job(shop["job_id"])
-        record = corrections.build_record(shop, made_from, scene, edited, report.get("layout"))
-        if not record:
+        record = _recaptured_record(row)
+        if record is None:
             done["skipped"] += 1
             continue
         record["status"] = row["status"]
         db.save_correction(record)
         done["updated"] += 1
     return done
+
+
+def _recaptured_record(row: dict) -> dict | None:
+    """The correction record re-derived from a stored one's shop (its cached scene + saved edits), or None when that cannot be done."""
+    shop = db.get_shop(row["shop_id"])
+    scene = _load_scene(shop["job_id"], shop["id"]) if shop else None
+    ops = db.get_editor_ops(row["shop_id"]) if shop else []
+    if scene is None or not ops:
+        return None
+    try:
+        edited = scene_ops.apply_ops(scene, ops)
+    except scene_ops.OpError:
+        return None
+    report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
+    made_from = db.get_job((report.get("master_used") or {}).get("job_id") or shop["job_id"]) or db.get_job(shop["job_id"])
+    return corrections.build_record(shop, made_from, scene, edited, report.get("layout"))
 
 
 def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> None:
@@ -2313,7 +2332,7 @@ def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> 
         else:
             db.delete_correction(shop_id)
     except Exception:
-        logging.getLogger("signage.corrections").exception("could not record the correction for shop %s", shop_id)
+        _CORR_LOG.exception("could not record the correction for shop %s", shop_id)
 
 
 @app.get("/api/editor/{job_id}/{shop_id}/replayed", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})

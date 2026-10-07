@@ -23,7 +23,9 @@ def test_a_unit_that_the_designer_moved_is_recorded_for_every_member_with_the_sa
     ours = _dump(*_logo(100, 100))
     real = _dump(*_logo(160, 90))                                # same logo, 60 mm right and 10 mm down
     changes, stats = sc.build_changes(ours, real, PW, PH)
-    assert stats["matched"] == 1 and stats["units_changed"] == 1 and len(changes) == 3
+    assert stats["matched"] == 1
+    assert stats["units_changed"] == 1
+    assert len(changes) == 3
     for c in changes:
         assert round((c["after"]["cx"] - c["before"]["cx"]) * PW, 1) == 60.0
         assert round((c["after"]["cy"] - c["before"]["cy"]) * PH, 1) == -10.0
@@ -43,7 +45,8 @@ def test_a_unit_already_in_place_and_text_and_background_record_nothing():
     ours = _dump(*_logo(100, 100), _shape(0, 0, 1000, 400, "rectangle"), _shape(300, 20, 200, 30, "text"))
     real = _dump(*_logo(100.5, 100), _shape(0, 0, 1000, 400, "rectangle"), _shape(350, 20, 200, 30, "text"))
     changes, stats = sc.build_changes(ours, real, PW, PH)
-    assert changes == [] and stats["units_changed"] == 0
+    assert changes == []
+    assert stats["units_changed"] == 0
 
 
 def test_units_are_not_matched_across_very_different_sizes_or_far_apart():
@@ -64,10 +67,13 @@ def test_the_record_applies_back_to_the_engines_own_placement():
     ours = _dump(*_logo(100, 100))
     real = _dump(*_logo(160, 90))
     rec, _ = sc.board_record("b", "m.cdr", "02 - board", "GSB", ours, real, PW, PH)
-    assert rec["status"] == "approved" and rec["source"] == sc.SOURCE and rec["shop_id"] == "seed:b:02 - board"
+    assert rec["status"] == "approved"
+    assert rec["source"] == sc.SOURCE
+    assert rec["shop_id"] == "seed:b:02 - board"
     placed = [sc._P(i, "logo", s["x"], s["y"], s["w"], s["h"]) for i, s in enumerate(ours["shapes"])]
     out = corrections.apply_to_placed(placed, PW, PH, [{"record": rec, "shop_id": rec["shop_id"]}])
-    assert out["applied"] == 3 and (placed[0].x, placed[0].y) == (160, 90)
+    assert out["applied"] == 3
+    assert (placed[0].x, placed[0].y) == (160, 90)
 
 
 def test_evaluate_shows_a_gain_when_two_designers_agree_and_none_when_there_is_nothing_to_apply():
@@ -79,5 +85,6 @@ def test_evaluate_shows_a_gain_when_two_designers_agree_and_none_when_there_is_n
         boards.append({"stem": stem, "brand": "b", "master_file": "m.cdr", "pw": PW, "ph": PH, "board_type": None,
                        "ours_dump": ours, "real_dump": real, "record": rec})
     rows = sc.evaluate(boards)
-    assert len(rows) == 2 and all(r["engine_mean_mm"] > 50 and r["learned_mean_mm"] < 1 for r in rows)
+    assert len(rows) == 2
+    assert all(r["engine_mean_mm"] > 50 and r["learned_mean_mm"] < 1 for r in rows)
     assert sc.evaluate(boards[:1]) == []                          # one board of a size: nothing to hold out against
