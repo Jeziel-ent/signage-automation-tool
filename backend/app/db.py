@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS editor_ops (
 );
 
 -- Correction memory (app/corrections.py): what the designer changed in the editor, one record per shop, replaced on every save.
--- `status` is pending until a later step approves it for reuse; nothing reads these rows when a board is generated yet.
+-- `status` is pending until a person approves it on the review screen; only `approved` rows are applied when a board is generated.
 CREATE TABLE IF NOT EXISTS corrections (
     shop_id TEXT PRIMARY KEY,
     brand TEXT,
@@ -241,6 +241,14 @@ def list_masters(brand: str | None = None, orientation: str | None = None) -> li
     with _conn() as conn:
         rows = conn.execute(sql + " ORDER BY created_at, rowid", args).fetchall()
     return [dict(r) for r in rows]
+
+
+def archive_registered_masters() -> int:
+    """Soft-delete (the same `deleted_at` the Delete button sets) every registered master that is still listed. Their files and the boards
+    already made from them stay. Returns how many were hidden."""
+    with _conn() as conn:
+        cur = conn.execute("UPDATE jobs SET deleted_at = ? WHERE registered = 1 AND deleted_at IS NULL", (time.time(),))
+    return cur.rowcount
 
 
 def count_registered_masters(brand: str, orientation: str) -> int:
@@ -511,6 +519,13 @@ def save_correction(record: dict) -> None:
 def delete_correction(shop_id: str) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM corrections WHERE shop_id = ?", (shop_id,))
+
+
+def set_correction_status(shop_id: str, status: str) -> bool:
+    """Approve / reject / re-open a correction (the review screen). False when there is no such record."""
+    with _conn() as conn:
+        cur = conn.execute("UPDATE corrections SET status = ?, updated_at = ? WHERE shop_id = ?", (status, time.time(), shop_id))
+    return cur.rowcount > 0
 
 
 def get_correction(shop_id: str) -> dict | None:

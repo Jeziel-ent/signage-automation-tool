@@ -1,11 +1,12 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { NavLink, Route, Routes } from "react-router-dom";
-import { ChevronLeft, ChevronRight, History, Printer, Sparkles, Workflow } from "lucide-react";
+import { NavLink, Route, Routes, useLocation } from "react-router-dom";
+import { ChevronLeft, ChevronRight, History, Printer, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 import Automation from "./pages/Automation.jsx";
 import { MasterProvider } from "./context/MasterContext.jsx";
 import RecentlyGenerated from "./pages/RecentlyGenerated.jsx";
 import CreatePrintFile from "./pages/CreatePrintFile.jsx";
+import Corrections from "./pages/Corrections.jsx";
 import { loadEditorPage } from "./utils/prefetchEditor.js";
 
 // The splash's title and button are light and render immediately; it lazy-loads its own 3D canvas (three.js, ~1 MB).
@@ -43,6 +44,7 @@ const NAV = [
   { to: "/", end: true, label: "Automation", Icon: Workflow },
   { to: "/recent", end: false, label: "Recently generated", Icon: History },
   { to: "/print-file", end: false, label: "Create Print File", Icon: Printer },
+  { to: "/corrections", end: false, label: "Intelligence review", Icon: ShieldCheck },
 ];
 
 const COLLAPSE_KEY = "signage.sidebarCollapsed";
@@ -56,6 +58,7 @@ function readCollapsed() {
 
 // Full-viewport workspace: the sidebar is pinned (never scrolls) and only the main pane scrolls.
 function Shell() {
+  const onHome = useLocation().pathname === "/";
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [showSplash, setShowSplash] = useState(true); // always: no storage check, so it appears on every page load
   useEffect(clearLegacySplashFlags, []);
@@ -112,10 +115,14 @@ function Shell() {
       <main className="app-main">
         {/* the master template registry, loaded once for the workspace (context/MasterContext.jsx) */}
         <MasterProvider>
+          {/* Automation is never unmounted: leaving it for another page only hides it, so its queue, uploads and scroll are still
+              there when you come back (a route element would be rebuilt from scratch every visit). */}
+          <Automation hidden={!onHome} />
           <Routes>
-            <Route path="/" element={<Automation />} />
+            <Route path="/" element={null} />
             <Route path="/recent" element={<RecentlyGenerated />} />
             <Route path="/print-file" element={<CreatePrintFile />} />
+            <Route path="/corrections" element={<Corrections />} />
           </Routes>
         </MasterProvider>
       </main>

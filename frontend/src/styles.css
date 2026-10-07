@@ -241,6 +241,7 @@ a.btn { text-decoration: none; display: inline-block; }
 
 /* ---- Automation workspace */
 .ws-page { display: flex; flex-direction: column; gap: 16px; }
+.ws-page[hidden] { display: none; }
 .ws-bar {
   display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-wrap: wrap;
   background: #fff; border: 1px solid rgba(226, 232, 240, 0.8); border-radius: 16px; padding: 10px 16px;
@@ -926,3 +927,6 @@ a.btn { text-decoration: none; display: inline-block; }
 .ci-row-btn { color: #94a3b8; }
 .ci-row-btn.ready { color: #dc2626; }
 .ci-row-btn.ready:hover { background: #fef2f2; }
+
+.ws-badge.ci-review { text-decoration: none; background: #422006; color: #fde68a; border-color: #92400e; }
+.ws-badge.ci-review:hover { background: #713f12; }

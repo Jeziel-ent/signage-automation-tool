@@ -101,8 +101,12 @@ def pick_sources(out_dir: Path, conversion_files: dict | None, exports: list[dic
     if current_ops:
         stale = [k for k in ("cdr", "pdf", "image") if picked[k] is not None and "exports" not in picked[k].parts]
         if stale:
-            notes.append(f"has editor edits that were not exported, so its {', '.join('jpg' if k == 'image' else k for k in stale)} "
-                         "is the conversion without them")
+            names = ", ".join("jpg" if k == "image" else k for k in stale)
+            if any(e.get("status") in ("queued", "running") and e.get("ops") == current_ops for e in exports):
+                notes.append(f"its edited files are still being built, so its {names} is the conversion without the edits - "
+                             "generate the ZIP again when it finishes")
+            else:
+                notes.append(f"has editor edits that were not exported, so its {names} is the conversion without them")
     return {**picked, "notes": notes}
 
 

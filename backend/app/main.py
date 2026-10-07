@@ -81,9 +81,21 @@ def _recover_interrupted_work() -> None:
                        shops, exports)
 
 
+def _archive_previous_masters() -> None:
+    """Every server start begins with an empty Master Templates list: masters uploaded in an earlier run are hidden (soft-deleted, so the
+    boards already made from them and their files stay) and a designer uploads again, starting at Master 1. Set SIGNAGE_KEEP_MASTERS=1 to
+    keep them listed across restarts (a hosted install, where masters are shared and long-lived)."""
+    if os.environ.get("SIGNAGE_KEEP_MASTERS", "").strip() in ("1", "true", "yes"):
+        return
+    hidden = db.archive_registered_masters()
+    if hidden:
+        logger.info("startup: %d master template(s) from the previous run were hidden (SIGNAGE_KEEP_MASTERS=1 keeps them)", hidden)
+
+
 @asynccontextmanager
 async def _lifespan(_app):
     _recover_interrupted_work()
+    _archive_previous_masters()
     yield
 
 
@@ -310,8 +322,8 @@ def _save_master_upload(master: UploadFile, brand: str, orientation: str, master
     name = name.strip()
     if len(name) > MASTER_NAME_MAX:
         raise HTTPException(400, f"name must be at most {MASTER_NAME_MAX} characters")
-    # default display name "Master N", N counting every master ever registered for this brand + orientation
-    name = name or f"Master {db.count_registered_masters(brand, orientation) + 1}"
+    # a blank name stays blank: it is shown as "Master 1", "Master 2" ... by position among this brand's live masters of this
+    # orientation (_master_label), so every brand + orientation starts at Master 1 and deleting one renumbers the rest
 
     job_id = uuid.uuid4().hex[:12]
     jdir = JOBS_V2 / job_id
@@ -325,11 +337,29 @@ def _save_master_upload(master: UploadFile, brand: str, orientation: str, master
 
     db.create_job(job_id, brand, master.filename, str(master_path), orientation,
                   master_shop_name.strip() or shop_name_from_filename(master.filename),
-                  master_shop_name_local.strip() or None, master_name=name, default_size=default_size,
+                  master_shop_name_local.strip() or None, master_name=name or None, default_size=default_size,
                   registered=True)
     preview_path, preview_error = _extract_cdr_preview(master_path)
     db.set_job_preview(job_id, str(preview_path) if preview_path else None, preview_error)
     return job_id
+
+
+_AUTO_MASTER_NAME = re.compile(r"^Master \d+$")
+
+
+def _master_label(row: dict) -> str:
+    """A master's display name. A name the designer typed is shown as typed; a blank one - or an automatic "Master 7" stored by an
+    earlier version - is numbered by position among the brand's live (not deleted) automatically named masters of the same orientation,
+    oldest first: Master 1, Master 2 ... Every brand + orientation starts at 1, and deleting one renumbers the ones after it."""
+    stored = (row.get("master_name") or "").strip()
+    if stored and not _AUTO_MASTER_NAME.match(stored):
+        return stored
+    if not row.get("registered"):
+        return stored or row.get("master_filename") or ""
+    live = [m for m in db.list_masters(row["brand"], row.get("orientation") or "landscape")
+            if not (m.get("master_name") or "").strip() or _AUTO_MASTER_NAME.match(m["master_name"].strip())]
+    ids = [m["id"] for m in live]
+    return f"Master {ids.index(row['id']) + 1 if row['id'] in ids else len(ids) + 1}"
 
 
 def _master_json(row: dict) -> dict:
@@ -340,7 +370,7 @@ def _master_json(row: dict) -> dict:
         dims = {"width": row["default_width"], "height": row["default_height"], "unit": row.get("default_unit") or "in"}
     return {
         "id": row["id"],
-        "name": row.get("master_name") or row["master_filename"],
+        "name": _master_label(row),
         "orientation": row.get("orientation") or "landscape",
         "brand": row["brand"],
         "file_name": row["master_filename"],
@@ -680,7 +710,7 @@ _progress_lock = threading.Lock()
 
 
 def _master_record(mrow: dict, orientation: str, reason: str, fallback: bool = False, selected: bool = False) -> dict:
-    return {"job_id": mrow["id"], "name": mrow.get("master_name") or mrow.get("master_filename"),
+    return {"job_id": mrow["id"], "name": _master_label(mrow) or mrow.get("master_filename"),
             "orientation": orientation, "reason": reason, "fallback": fallback, "selected": selected}
 
 
@@ -737,7 +767,7 @@ def _select_shop_master(shop_row: dict, job_row: dict, target_w_mm: float, targe
         m = db.get_job(chosen)
         m_orient = (m.get("orientation") or "landscape") if m else None
         if m and not m.get("deleted_at") and m["brand"] == brand and m_orient == want:
-            name = m.get("master_name") or m.get("master_filename")
+            name = _master_label(m) or m.get("master_filename")
             return Path(m["master_path"]), _master_record(m, want, f"selected master '{name}' ({want})", selected=True)
         why = ("no longer exists" if not m else "was deleted" if m.get("deleted_at")
                else f"belongs to brand {m['brand']!r}" if m["brand"] != brand
@@ -913,6 +943,8 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
             db.set_shop_result(shop_id, out["files"], out["report"])
         except Exception as e:
             db.set_shop_status(shop_id, "failed", error=str(e))
+            return
+        _apply_learned_nested(shop_id)
         return
 
     ids = _take_queued_batch(shop_id)
@@ -972,6 +1004,45 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
             for p in (single, single.with_suffix(_HEARTBEAT_SUFFIX), single.with_suffix(_DONE_SUFFIX)):
                 p.unlink(missing_ok=True)
         _store_convert_result(sid, retry, master_used)
+    for sid, _, _ in prepared:
+        _apply_learned_nested(sid)
+
+
+def _apply_learned_nested(shop_id: str) -> None:
+    """After a Corel Intelligence conversion: the approved corrections that touch objects INSIDE groups (the shop-name block and its text)
+    cannot be placed during the conversion, so they are replayed on the new board as ordinary editor edits - build its scene, work out the
+    ops (corrections.nested_ops), save them as the board's edits (the designer sees and can undo them in the editor) and publish the files.
+    Never raises: a failure only means the board keeps the top-level learning."""
+    try:
+        shop = db.get_shop(shop_id)
+        if not shop or shop["status"] != "done" or not shop.get("use_intelligence"):
+            return
+        job = db.get_job(shop["job_id"])
+        report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
+        chosen = db.get_job((report.get("master_used") or {}).get("job_id")) or job
+        found = corrections.usable_records(db.list_corrections(), job["brand"], chosen.get("master_filename"),
+                                           to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
+                                           shop.get("board_type"))
+        if not any(r["record"].get("nested") for r in found):
+            return
+        _scene_build_worker(shop["job_id"], shop_id)
+        scene = _load_scene(shop["job_id"], shop_id)
+        if scene is None:
+            logging.getLogger("signage.corrections").warning("shop %s: scene could not be built for the learned nested edits", shop_id)
+            return
+        ops, summary = corrections.nested_ops(scene, found)
+        layout = report.setdefault("layout", {})
+        if isinstance(layout, dict):
+            layout.setdefault("intelligence", {})["nested"] = summary
+        db.set_shop_result(shop_id, json.loads(shop["files_json"]) if shop.get("files_json") else {}, report)
+        if ops:
+            db.set_editor_ops(shop_id, ops)
+            try:
+                editor_publish(shop["job_id"], shop_id)
+            except HTTPException as e:
+                logging.getLogger("signage.corrections").warning("shop %s: learned edits saved, files not rebuilt: %s", shop_id, e.detail)
+    except Exception:
+        logging.getLogger("signage.corrections").exception("could not apply the learned nested edits for shop %s", shop_id)
 
 
 def _apply_sno(shop_id: str, payload: dict | None) -> None:
@@ -1069,9 +1140,37 @@ def v2_intelligence_available(ids: str = ""):
                                            shop.get("board_type"))
         n = sum(1 for r in found for c in r["record"]["changes"]
                 if c["action"] in corrections.APPLIED_ACTIONS and (c.get("signature") or {}).get("kind") != "text")
+        n += sum(len(r["record"].get("nested", [])) for r in found)
         if n:
             out[sid] = n
-    return {"available": out}
+    return {"available": out, "pending": len(db.list_corrections("pending"))}
+
+
+@app.get("/api/v2/corrections")
+def v2_corrections(status: str = ""):
+    """The review screen's list: every stored correction (optionally one status), newest first, each with its changes spelled out."""
+    if status and status not in corrections.STATUSES:
+        raise HTTPException(422, f"status must be one of {', '.join(corrections.STATUSES)}")
+    out = []
+    for row in db.list_corrections(status or None):
+        shop = db.get_shop(row["shop_id"])
+        out.append(corrections.summarize(row, shop["name"] if shop else None))
+    counts = {s: len(db.list_corrections(s)) for s in corrections.STATUSES}
+    return {"corrections": out, "counts": counts}
+
+
+class CorrectionStatusBody(BaseModel):
+    status: str
+
+
+@app.put("/api/v2/corrections/{shop_id}/status", responses={404: {"description": "Not found"}, 422: {"description": "Validation error"}})
+def v2_set_correction_status(shop_id: str, body: CorrectionStatusBody):
+    """Approve, reject or re-open one correction. Only approved ones are applied to later boards."""
+    if body.status not in corrections.STATUSES:
+        raise HTTPException(422, f"status must be one of {', '.join(corrections.STATUSES)}")
+    if not db.set_correction_status(shop_id, body.status):
+        raise HTTPException(404, "correction not found")
+    return {"id": shop_id, "status": body.status}
 
 
 @app.get("/api/v2/shops/{shop_id}/status", responses={404: {"description": "Not found"}})
@@ -1221,12 +1320,14 @@ def _thumb_format() -> tuple[str, str]:
 
 
 @app.get("/api/v2/shops/{shop_id}/thumb", responses={404: {"description": "Not found"}})
-def v2_shop_thumb(shop_id: str):
+def v2_shop_thumb(shop_id: str, size: int | None = None):
     """A small copy of a converted shop's preview for list thumbnails. The full preview is CorelDRAW's 1600 px PNG
     (~1-1.3 MB for a real board), which the Recently generated table used to download and decode for every row just to
     draw it 56 px wide - 17.8 MB for 17 rows, measured. Built once with Pillow (bilinear with a reducing gap: fast, and
     clean at this scale; export-quality rasters stay CorelDRAW's), cached under the job's thumbs/ folder - never in the
-    shop's out/ folder, which the ZIP export reads - and rebuilt only when the preview is newer than the thumbnail."""
+    shop's out/ folder, which the ZIP export reads - and rebuilt only when the preview is newer than the thumbnail.
+    `size` (long side in px, 120-1400) asks for a bigger copy - the queue gallery uses 720 so a tall portrait board is not a blurry
+    sliver; each size is cached separately and the default stays the small list thumbnail."""
     row = db.get_shop(shop_id)
     if not row:
         raise HTTPException(404, _SHOP_NOT_FOUND)
@@ -1237,7 +1338,8 @@ def v2_shop_thumb(shop_id: str):
     if not src or out_dir not in src.parents or not src.is_file():
         raise HTTPException(404, "no preview for this shop")
     fmt, ext = _thumb_format()
-    thumb = JOBS_V2 / row["job_id"] / "thumbs" / f"{shop_id}{ext}"
+    long_side = THUMB_MAX_PX if size is None else max(120, min(int(size), 1400))
+    thumb = JOBS_V2 / row["job_id"] / "thumbs" / (f"{shop_id}{ext}" if long_side == THUMB_MAX_PX else f"{shop_id}-{long_side}{ext}")
     if not thumb.is_file() or thumb.stat().st_mtime < src.stat().st_mtime:
         if src.suffix.lower() not in (".png", ".jpg", _JPEG_SUFFIX, _WEBP_SUFFIX):
             return FileResponse(src)  # e.g. MockEngine's SVG preview: already tiny, and vector
@@ -1246,7 +1348,7 @@ def v2_shop_thumb(shop_id: str):
         tmp = thumb.with_name(f"{thumb.stem}.{os.getpid()}.tmp{ext}")
         try:
             with Image.open(src) as im:
-                im.thumbnail((THUMB_MAX_PX, THUMB_MAX_PX), Image.BILINEAR, reducing_gap=2.0)
+                im.thumbnail((long_side, long_side), Image.BILINEAR, reducing_gap=2.0)
                 if im.mode in ("LA", "P"):  # palette / grey+alpha: RGBA so WebP and PNG both keep any transparency
                     im = im.convert("RGBA")
                 im.save(tmp, fmt, **({"quality": 82, "method": 4} if fmt == "WEBP" else {"optimize": True}))
@@ -2162,6 +2264,37 @@ def editor_put_ops(job_id: str, shop_id: str, body: EditorOps):
     return {"saved": len(body.ops)}
 
 
+def recapture_corrections(statuses: tuple[str, ...] = ("pending",)) -> dict:
+    """Re-derive stored editor corrections of the given statuses from the saved edit lists and the cached scenes, keeping each one's status.
+    Used after the learner gained something new (nested objects, text style): records made earlier only hold what it could see then.
+    Dataset seeds are left alone. Returns {"updated": n, "skipped": n}."""
+    done = {"updated": 0, "skipped": 0}
+    for row in db.list_corrections():
+        if row["status"] not in statuses or row["record"].get("source"):
+            continue
+        shop = db.get_shop(row["shop_id"])
+        scene = _load_scene(shop["job_id"], shop["id"]) if shop else None
+        ops = db.get_editor_ops(row["shop_id"]) if shop else []
+        if scene is None or not ops:
+            done["skipped"] += 1
+            continue
+        try:
+            edited = scene_ops.apply_ops(scene, ops)
+        except scene_ops.OpError:
+            done["skipped"] += 1
+            continue
+        report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
+        made_from = db.get_job((report.get("master_used") or {}).get("job_id") or shop["job_id"]) or db.get_job(shop["job_id"])
+        record = corrections.build_record(shop, made_from, scene, edited, report.get("layout"))
+        if not record:
+            done["skipped"] += 1
+            continue
+        record["status"] = row["status"]
+        db.save_correction(record)
+        done["updated"] += 1
+    return done
+
+
 def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> None:
     """Record what the designer changed (correction memory). Learning is never allowed to break saving: any failure is only logged."""
     try:
@@ -2492,6 +2625,24 @@ def editor_export(job_id: str, shop_id: str, body: ExportRequest):
     db.create_export(export_id, shop_id, formats, opts, ops, plan)
     _pool.submit(_export_worker, job_id, shop_id, export_id)
     return {"export_id": export_id, "plan": plan, "raster": size, "sizes": sizes, "ops": len(ops)}
+
+
+@app.post("/api/editor/{job_id}/{shop_id}/publish", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
+def editor_publish(job_id: str, shop_id: str):
+    """"Save Changes" makes the saved edits the board's NEW files: queues one export (cdr, pdf, png, jpeg with the default options) of
+    the shop's current edit list, so the ZIP, the print sheet and the row's downloads pick up the edited version without a manual export.
+    Nothing is queued when there are no edits, or when an export of exactly these edits is already queued / running / done."""
+    _editor_shop(job_id, shop_id)
+    ops = db.get_editor_ops(shop_id)
+    if not ops:
+        return {"status": "unchanged", "export_id": None}
+    for listed in db.list_exports(shop_id, limit=20):
+        e = db.get_export(listed["id"])
+        same = json.loads(e["ops_json"]) == ops and set(export_replay.ALL_FORMATS) <= set(json.loads(e["formats_json"]))
+        if same and e["status"] in ("queued", "running", "done"):
+            return {"status": "ready" if e["status"] == "done" else "building", "export_id": e["id"]}
+    queued = editor_export(job_id, shop_id, ExportRequest(formats=list(export_replay.ALL_FORMATS), options=None))
+    return {"status": "building", "export_id": queued["export_id"]}
 
 
 def _export_row(job_id: str, shop_id: str, export_id: str) -> dict:

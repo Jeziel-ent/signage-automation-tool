@@ -1,5 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence } from "framer-motion";
+import { Link } from "react-router-dom";
+import { finishedNotice, savedNotice, waitForExport } from "../utils/publishEdits.js";
+import { learnedCount } from "../utils/correctionsView.js";
 import { Building2, CheckCircle2, Download, ExternalLink, Eye, FileCode2, FolderArchive, Printer, FileSpreadsheet, FolderOpen, Layers, Play, Plus, RectangleHorizontal, RectangleVertical, Sparkles, Store, Trash2 } from "lucide-react";
 import "../components/MasterPanels.css";
 import UploadDropzone from "../components/UploadDropzone.jsx";
@@ -52,7 +55,7 @@ export const CONVERT_STEPS = [
   { key: "png", endPct: 97 },
 ];
 
-export default function Automation() {
+export default function Automation({ hidden = false }) {
   const [brands, setBrands] = useState([]);
   const [brand, setBrand] = useState("");
   const defaultBrandApplied = useRef(false);
@@ -115,6 +118,7 @@ export default function Automation() {
   // a converted row's sparkle icon re-runs that board with the learned corrections for its size, the footer button does it for every row.
   const [intelOn, setIntelOn] = useState(true);
   const [intelAvail, setIntelAvail] = useState({}); // done shop id -> number of learned corrections that fit its board
+  const [intelPending, setIntelPending] = useState(0); // corrections saved from the editor that still wait for approval
   useEffect(() => {
     fetch("/api/v2/intelligence").then((r) => r.json()).then((d) => setIntelOn(d.enabled !== false)).catch(() => {});
   }, []);
@@ -458,8 +462,10 @@ export default function Automation() {
   // whenever an editor tab reports a save (that save may have just taught the model something)
   const doneIds = shops.filter((x) => x.status === "done" && !isDraft(x)).map((x) => x.id).join(",");
   const refreshIntel = () => {
-    if (!doneIds) return setIntelAvail({});
-    fetch(`/api/v2/intelligence/available?ids=${doneIds}`).then((r) => r.json()).then((d) => setIntelAvail(d.available || {})).catch(() => {});
+    fetch(`/api/v2/intelligence/available?ids=${doneIds}`).then((r) => r.json()).then((d) => {
+      setIntelAvail(d.available || {});
+      setIntelPending(d.pending || 0);
+    }).catch(() => {});
   };
   const refreshIntelRef = useRef(refreshIntel);
   refreshIntelRef.current = refreshIntel; // the editor-save listener below is set up once and must call the latest version
@@ -468,7 +474,9 @@ export default function Automation() {
 
   function applyIntelligence(shopId) {
     if (!intelAvail[shopId]) {
-      setQueueNotice("Corel Intelligence has nothing learned for this board size yet - correct a board of this size in the editor first.");
+      setQueueNotice(intelPending
+        ? `Corel Intelligence has nothing APPROVED for this board size yet - ${intelPending} correction${intelPending === 1 ? " is" : "s are"} waiting for review (Intelligence review in the sidebar).`
+        : "Corel Intelligence has nothing learned for this board size yet - correct a board of this size in the editor first.");
       return null;
     }
     return convertShop(shopId, { useIntelligence: true });
@@ -546,8 +554,12 @@ export default function Automation() {
       const m = e.data || {};
       if (m.type !== "saved") return;
       const shop = shopsRef.current.find((x) => x.id === m.shopId);
-      if (shop) setQueueNotice(`Edits to "${shop.name}" saved. Use the download button on its row to export the files.`);
+      if (shop) setQueueNotice(savedNotice(shop.name, m.publish));
       refreshIntelRef.current();
+      if (shop && m.publish?.status === "building") {
+        // tell the designer when the rebuild with the edits is finished
+        waitForExport(m.jobId, m.shopId, m.publish.export_id).then((st) => setQueueNotice(finishedNotice(shop.name, st.status, st.error)));
+      }
     };
     return () => ch.close();
   }, []);
@@ -613,7 +625,7 @@ export default function Automation() {
   };
 
   return (
-    <div className="ws-page">
+    <div className="ws-page" hidden={hidden}>
       {/* BAR 1 - brand selector + status badges */}
       <header className="ws-bar">
         <div className="ws-bar-left">
@@ -655,6 +667,11 @@ export default function Automation() {
             <Sparkles size={13} /> Corel Intelligence
             <span className="ci-track" aria-hidden="true"><span className="ci-knob" /></span>
           </button>
+          {intelPending > 0 && (
+            <Link to="/corrections" className="ws-badge ci-review" title="Corrections saved from the editor are waiting for your approval before they are used">
+              <Sparkles size={13} /> {intelPending} to review
+            </Link>
+          )}
           <span className="ws-badge">
             <Store size={13} /> <AnimatedCount value={shops.length} /> Shop{shops.length === 1 ? "" : "s"} Loaded
           </span>
@@ -1270,9 +1287,9 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, int
             {shop.confidence.label === "GOOD" ? "Exact size" : shop.confidence.label === "REVIEW" ? "Check" : "Draft"}
           </span>
         )}
-        {shop.report?.layout?.intelligence?.applied > 0 && (
+        {learnedCount(shop.report?.layout?.intelligence) > 0 && (
           <span className="badge conf-badge conf-GOOD" title="Made with what designers corrected on this board size">
-            Learned ({shop.report.layout.intelligence.applied})
+            Learned ({learnedCount(shop.report.layout.intelligence)})
           </span>
         )}
         <button className={"icon-btn row-dl-btn ci-row-btn" + (intelCount ? " ready" : "")} onClick={onIntelligence} aria-label={`Use Corel Intelligence on ${shop.name}`}

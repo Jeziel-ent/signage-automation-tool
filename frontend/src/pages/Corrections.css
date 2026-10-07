@@ -1,0 +1,68 @@
+/* Corel Intelligence review: a list on the left, the selected correction on the right; the page is exactly the viewport tall. */
+.app-shell .cr-page { height: 100vh; box-sizing: border-box; padding: 16px 22px 18px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+.app-shell .cr-top { display: flex; align-items: center; gap: 12px; flex: none; }
+.app-shell .cr-top h1 { margin: 0; font-size: 20px; line-height: 1.1; }
+.app-shell .cr-top p { margin: 2px 0 0; font-size: 12px; opacity: .75; }
+.app-shell .cr-top-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 11px; color: #fff; background: linear-gradient(135deg, #b91c1c, #be123c); }
+.app-shell .cr-error { flex: none; padding: 9px 11px; border-radius: 8px; background: #3b0d0d; color: #fecaca; font-size: 13px; }
+
+.app-shell .cr-layout { flex: 1; min-height: 0; display: grid; grid-template-columns: 340px minmax(0, 1fr); gap: 14px; }
+.app-shell .cr-list, .app-shell .cr-main { min-height: 0; display: flex; flex-direction: column; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px; overflow: hidden; }
+.app-shell .cr-tabs { flex: none; display: flex; gap: 4px; padding: 8px; border-bottom: 1px solid #1e293b; }
+.app-shell .cr-tabs button { flex: 1; display: inline-flex; justify-content: center; align-items: center; gap: 6px; border: 0; border-radius: 8px; padding: 7px 6px; background: none; color: #cbd5e1; font: inherit; font-size: 13px; cursor: pointer; }
+.app-shell .cr-tabs button.on { background: #b91c1c; color: #fff; }
+.app-shell .cr-count { font-size: 11px; padding: 1px 7px; border-radius: 99px; background: #1e293b; color: #e2e8f0; }
+.app-shell .cr-tabs button.on .cr-count { background: #7f1d1d; color: #fff; }
+.app-shell .cr-items { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+.app-shell .cr-item { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; text-align: left; border: 1px solid #1e293b; border-radius: 10px; padding: 9px 11px; background: #111c33; color: #e2e8f0; font: inherit; cursor: pointer; }
+.app-shell .cr-item:hover { border-color: #64748b; }
+.app-shell .cr-item.active { border-color: #ef4444; background: #1c1226; }
+.app-shell .cr-item-title { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-shell .cr-item-sub { grid-column: 1; font-size: 12px; color: #94a3b8; }
+.app-shell .cr-item .cr-pill { grid-column: 2; grid-row: 1 / span 2; align-self: center; }
+.app-shell .cr-pill { font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 99px; white-space: nowrap; }
+.app-shell .cr-pill.pending { background: #422006; color: #fde68a; }
+.app-shell .cr-pill.approved { background: #052e1f; color: #a7f3d0; }
+.app-shell .cr-pill.rejected { background: #3b0d0d; color: #fecaca; }
+.app-shell .cr-empty { margin: 14px; font-size: 13px; color: #94a3b8; display: flex; align-items: center; gap: 8px; }
+
+.app-shell .cr-detail { flex: 1; min-height: 0; display: flex; flex-direction: column; color: #e2e8f0; }
+.app-shell .cr-detail > header { flex: none; display: flex; justify-content: space-between; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #1e293b; }
+.app-shell .cr-detail h2 { margin: 0 0 4px; font-size: 16px; }
+.app-shell .cr-detail header p { margin: 0; font-size: 12px; color: #94a3b8; }
+.app-shell .cr-body { flex: 1; min-height: 0; overflow-y: auto; padding: 14px 18px; display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 6px 18px; align-content: start; }
+.app-shell .cr-draw { width: 100%; height: auto; max-height: 100%; }
+.app-shell .cr-page-rect, .app-shell .cr-page { fill: #1e293b; stroke: #64748b; stroke-width: 1; }
+.app-shell .cr-before { fill: none; stroke: #94a3b8; stroke-width: 1.5; stroke-dasharray: 5 3; }
+.app-shell .cr-after { fill: #7f1d1d; fill-opacity: .55; stroke: #ef4444; stroke-width: 1.5; }
+.app-shell .cr-arrow { stroke: #fca5a5; stroke-width: 1; }
+.app-shell .cr-gone { stroke: #fbbf24; stroke-width: 2; fill: none; }
+.app-shell .cr-num { fill: #f8fafc; font-size: 12px; font-weight: 700; }
+.app-shell .cr-changes { margin: 0; padding-left: 20px; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+.app-shell .cr-shift { color: #fecaca; }
+.app-shell .cr-changes em { color: #94a3b8; font-size: 12px; }
+.app-shell .cr-legend { grid-column: 1 / -1; margin: 0; font-size: 12px; color: #94a3b8; display: flex; align-items: center; gap: 8px; }
+.app-shell .cr-key { display: inline-block; width: 18px; height: 10px; border: 1.5px dashed #94a3b8; }
+.app-shell .cr-key.after { border: 1.5px solid #ef4444; background: #7f1d1d; }
+.app-shell .cr-detail > footer { flex: none; display: flex; align-items: center; gap: 10px; padding: 12px 18px; border-top: 1px solid #1e293b; flex-wrap: wrap; }
+.app-shell .cr-btn { display: inline-flex; align-items: center; gap: 6px; border: 0; border-radius: 9px; padding: 9px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+.app-shell .cr-btn:disabled { opacity: .5; cursor: not-allowed; }
+.app-shell .cr-btn.ok { background: #047857; color: #fff; }
+.app-shell .cr-btn.no { background: #b91c1c; color: #fff; }
+.app-shell .cr-btn.plain { background: #1e293b; color: #e2e8f0; }
+.app-shell .cr-note { margin-left: auto; font-size: 12px; color: #94a3b8; }
+.app-shell .cr-spin { animation: cr-spin 1s linear infinite; }
+@keyframes cr-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .app-shell .cr-spin { animation: none; } }
+.app-main:has(> .cr-page) { padding: 0; }
+
+@media (max-width: 1000px) {
+  .app-shell .cr-page { height: auto; overflow: visible; }
+  .app-shell .cr-layout { display: flex; flex-direction: column; }
+  .app-shell .cr-body { grid-template-columns: 1fr; }
+}
+.app-shell .cr-detail > header .cr-pill { align-self: flex-start; }
+
+.app-shell .cr-inside { font-size: 11px; color: #cbd5e1; background: #1e293b; border-radius: 99px; padding: 1px 8px; }
+.app-shell .cr-style { margin-top: 2px; font-size: 12px; color: #e2e8f0; }
+.app-shell .cr-skip { list-style: none; margin-left: -20px; font-size: 12px; color: #94a3b8; }

@@ -1,6 +1,7 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { collectImageUrls, mapBuild, mapPreload, preloadImages } from "../utils/loadStages.js";
 import { useParams } from "react-router-dom";
+import { publishEdits } from "../utils/publishEdits.js";
 import "../editor/editor.css";
 import "../editor/editor-dark.css"; // dark studio theme, layered over editor.css
 import Canvas from "../editor/Canvas.jsx";
@@ -403,8 +404,8 @@ export default function EditorPage() {
     }
   }, [ops, cursor, jobId, shopId, say]);
 
-  // "Save Changes": save the edit list now, tell the Automation tab (which opened this one), then close this tab. Exporting
-  // happens from the shop's row there (the download button), with the edits saved here.
+  // "Save Changes": save the edit list, make it the board's NEW files (the server queues one export of the saved edits, so the ZIP,
+  // the print sheet and the row's downloads carry the edited version), tell the Automation tab (which opened this one), then close this tab.
   const saveChanges = useCallback(async () => {
     if (closing) return;
     setClosing(true);
@@ -412,9 +413,10 @@ export default function EditorPage() {
       setClosing(false); // flush() already showed why
       return;
     }
+    const publish = await publishEdits(jobId, shopId);
     try {
       const ch = new BroadcastChannel("signage-editor");
-      ch.postMessage({ type: "saved", jobId, shopId, ops: cursor });
+      ch.postMessage({ type: "saved", jobId, shopId, ops: cursor, publish });
       ch.close();
     } catch {
       /* no BroadcastChannel: the main tab just is not told */
@@ -674,7 +676,7 @@ export default function EditorPage() {
           <input type="checkbox" checked={showRender} onChange={(e) => setShowRender(e.target.checked)} /> Corel page render
         </label>
         <span className="ed-top-spacer" />
-        <button className="btn" onClick={saveChanges} disabled={closing} title="Save your edits and close the editor (export from the shop's row)">
+        <button className="btn" onClick={saveChanges} disabled={closing} title="Save your edits, rebuild the board's files with them, and close the editor">
           {closing ? "Saving..." : "Save Changes"}
         </button>
       </div>

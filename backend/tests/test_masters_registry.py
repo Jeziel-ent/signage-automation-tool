@@ -31,8 +31,8 @@ def test_three_landscape_and_three_portrait_masters_are_all_listed_with_their_or
     assert [m["id"] for m in body["portrait"]] == [m["id"] for m in port]
     assert all(m["orientation"] == "landscape" for m in body["landscape"])
     assert all(m["orientation"] == "portrait" for m in body["portrait"])
-    # given names are kept, a blank one becomes "Master N" for its brand + orientation
-    assert [m["name"] for m in body["landscape"]] == ["Master 1 - Standard", "Master 2 - Promotional", "Master 3"]
+    # given names are kept, a blank one is numbered among its brand + orientation's automatic names (this is the first: Master 1)
+    assert [m["name"] for m in body["landscape"]] == ["Master 1 - Standard", "Master 2 - Promotional", "Master 1"]
     assert [m["name"] for m in body["portrait"]] == ["Master 1", "Master 2 - High Density", "Master 3 - Vertical Banner"]
     m = body["portrait"][0]
     assert m["dimensions_default"] == {"width": 3.0, "height": 6.0, "unit": "ft"}
@@ -77,14 +77,15 @@ def test_the_old_upload_route_registers_too(client):
     assert listed[0]["name"] == "Master 1"
 
 
-def test_delete_hides_the_master_keeps_its_file_and_never_reuses_its_name(client):
+def test_delete_hides_the_master_keeps_its_file_and_renumbers_the_rest(client):
     a, b = _register(client, "landscape"), _register(client, "landscape")
     assert client.delete(f"/api/masters/{a['id']}").json() == {"deleted": a["id"]}
     assert [m["id"] for m in client.get("/api/masters").json()["masters"]] == [b["id"]]
     assert Path(a["file_path"]).is_file()                      # soft delete: its boards live in its folder
     assert client.delete(f"/api/masters/{a['id']}").status_code == 404
     assert client.delete("/api/masters/nope").status_code == 404
-    assert _register(client, "landscape")["name"] == "Master 3"
+    assert client.get("/api/masters").json()["landscape"][0]["name"] == "Master 1"       # b took a's number
+    assert _register(client, "landscape")["name"] == "Master 2"
 
 
 def test_delete_is_refused_while_a_shop_using_it_converts(client):
@@ -179,3 +180,51 @@ def test_master_id_validation(client):
     shop = _shop(client, m["id"], 3, 6)
     assert client.post(f"/api/v2/shops/{shop['id']}/convert", json={"master_id": other["id"]}).status_code == 400
     assert db.get_shop(shop["id"])["status"] == "new"     # nothing queued on a refused pick
+
+
+def test_every_brand_and_orientation_starts_at_master_1_and_deleting_renumbers(client):
+    def reg(brand, orientation):
+        r = client.post("/api/masters/upload", data={"brand": brand, "orientation": orientation},
+                        files={"master": ("m.cdr", _fake_cdr_bytes(), "application/octet-stream")})
+        return r.json()
+    a1, a2, a3 = (reg("dalmia", "landscape") for _ in range(3))
+    assert [a1["name"], a2["name"], a3["name"]] == ["Master 1", "Master 2", "Master 3"]
+    assert reg("dalmia", "portrait")["name"] == "Master 1"            # the portrait list has its own count
+    assert reg("hangyo", "landscape")["name"] == "Master 1"           # and so does every other brand
+    assert client.delete(f"/api/masters/{a2['id']}").status_code == 200
+    names = {m["id"]: m["name"] for m in client.get("/api/masters?brand=dalmia&orientation=landscape").json()["masters"]}
+    assert names == {a1["id"]: "Master 1", a3["id"]: "Master 2"}      # Master 3 became Master 2
+
+
+def test_a_name_the_designer_typed_is_never_renumbered_and_old_automatic_names_are(client):
+    import app.db as db
+    typed = client.post("/api/masters/upload", data={"brand": "x", "orientation": "landscape", "name": "Master 9 - Promo"},
+                        files={"master": ("m.cdr", _fake_cdr_bytes(), "application/octet-stream")}).json()
+    old = client.post("/api/masters/upload", data={"brand": "x", "orientation": "landscape"},
+                      files={"master": ("m.cdr", _fake_cdr_bytes(), "application/octet-stream")}).json()
+    with db._conn() as conn:                                             # what an earlier version stored for an automatic name
+        conn.execute("UPDATE jobs SET master_name = 'Master 7' WHERE id = ?", (old["id"],))
+    names = {m["id"]: m["name"] for m in client.get("/api/masters?brand=x").json()["masters"]}
+    assert names == {typed["id"]: "Master 9 - Promo", old["id"]: "Master 1"}
+
+
+def test_starting_the_server_hides_the_previous_runs_masters_but_keeps_their_files_and_boards(client, monkeypatch):
+    import app.main as main
+    monkeypatch.delenv("SIGNAGE_KEEP_MASTERS", raising=False)
+    a, b = _register(client, "landscape"), _register(client, "portrait")
+    shop = _shop(client, a["id"], 30, 40)
+    main._archive_previous_masters()                                   # what the startup handler runs
+    body = client.get("/api/masters").json()
+    assert body["masters"] == [] and body["landscape"] == [] and body["portrait"] == []
+    assert Path(a["file_path"]).is_file() and Path(b["file_path"]).is_file()
+    import app.db as db
+    assert db.get_shop(shop["id"]) is not None                          # boards made from them are still there
+    assert _register(client, "landscape")["name"] == "Master 1"        # and the next upload starts again at Master 1
+
+
+def test_keep_masters_env_leaves_them_listed(client, monkeypatch):
+    import app.main as main
+    monkeypatch.setenv("SIGNAGE_KEEP_MASTERS", "1")
+    _register(client, "landscape")
+    main._archive_previous_masters()
+    assert len(client.get("/api/masters").json()["masters"]) == 1

@@ -362,7 +362,7 @@
    It used to be a floating rounded glass card sticky inside the 24 px padding of .app-main, so the cards scrolled through the gap above
    it and showed through the translucent glass. Now the page has no top padding, the bar is opaque, spans the scroll area's full width
    (negative side margins undo the side padding) and pins at the very top; content passes cleanly underneath. */
-.app-main:has(> .ws-page) { padding-top: 0; }
+.app-main:has(> .ws-page:not([hidden])) { padding-top: 0; }
 .app-shell .ws-page > .ws-bar {
   position: sticky; top: 0; z-index: 40;
   margin: 0 -24px; width: auto; padding: 14px 24px;

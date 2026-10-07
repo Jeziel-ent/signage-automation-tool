@@ -423,3 +423,17 @@ def test_v2_thumb_of_an_empty_preview_is_a_404_not_a_500(client):
     _job, shop_id, out, _main = _shop_with_png_preview(client)
     (out / "board.png").write_bytes(b"")  # seen live: a conversion left a 0-byte preview
     assert client.get(f"/api/v2/shops/{shop_id}/thumb").status_code == 404
+
+
+def test_v2_thumb_size_gives_a_bigger_copy_cached_separately_and_clamped(client):
+    import io as _io
+    from PIL import Image
+    job_id, shop_id, out, main = _shop_with_png_preview(client, size=(1600, 640))
+    small = Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb").content))
+    big = Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb?size=720").content))
+    assert max(small.size) == main.THUMB_MAX_PX
+    assert max(big.size) == 720
+    assert big.size[0] / big.size[1] == 2.5
+    assert max(Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb?size=99999").content)).size) == 1400
+    assert max(Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb?size=5").content)).size) == 120
+    assert len(list((main.JOBS_V2 / job_id / "thumbs").iterdir())) == 4          # default, 720, 1400, 120

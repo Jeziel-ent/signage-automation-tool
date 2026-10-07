@@ -12,8 +12,8 @@ export function MasterProvider({ children }) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
+  const refresh = useCallback(async ({ quiet = false } = {}) => {
+    if (!quiet) setLoading(true);
     try {
       const r = await fetch("/api/masters");
       if (!r.ok) throw new Error(`Could not load master templates (HTTP ${r.status})`);
@@ -39,7 +39,8 @@ export function MasterProvider({ children }) {
       throw new Error(body.detail || `Could not delete the master (HTTP ${r.status})`);
     }
     setMasters((list) => list.filter((x) => x.id !== id));
-  }, []);
+    await refresh({ quiet: true });   // the automatic names ("Master 1", "Master 2" ...) are numbered by the server: renumber after a delete
+  }, [refresh]);
 
   const value = useMemo(() => {
     const all = groupMasters(masters);

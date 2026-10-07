@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 
+import pytest
+
 from tests.test_editor_api import _converted_shop, _scene, client  # noqa: F401  (client is a fixture)
 
 from app import corrections
@@ -42,10 +44,13 @@ def test_a_move_is_recorded_as_page_fractions_with_the_objects_signature():
 
 
 def test_a_resize_and_a_group_signature():
-    edited = copy.deepcopy(_base())
-    g = edited["layers"][0]["children"][1]
-    g["x"], g["y"], g["w"], g["h"] = 550, 0, 200, 200         # same centre, twice the size
-    (c,) = corrections.diff_scenes(_base(), edited)["changes"]
+    from app import scene_ops
+    # a real group resize (its children are carried along): same centre, twice the size
+    edited = scene_ops.apply_ops(copy.deepcopy(_base()), [{"op": "resize", "ids": ["b"], "from": {"x": 600, "y": 50, "w": 100, "h": 100},
+                                                            "to": {"x": 550, "y": 0, "w": 200, "h": 200}}])
+    d = corrections.diff_scenes(_base(), edited)
+    assert d["nested"] == []                                   # the child just came along with its group
+    (c,) = d["changes"]
     assert c["action"] == "resized" and c["signature"]["kind"] == "group" and c["signature"]["n_desc"] == 1
     assert c["after"]["w"] == 0.2 and c["after"]["h"] == 0.5
 
@@ -128,7 +133,7 @@ def _placed(pid, x, y, w, h, role="logo"):
 
 def _rec(shop_id="s1", **over):
     base = {"shop_id": shop_id, "brand": "b", "master_file": "m.cdr", "page_w_mm": 1000.0, "page_h_mm": 400.0, "board_type": None,
-            "status": "pending", "updated_at": 1.0,
+            "status": "approved", "updated_at": 1.0,
             "record": {"shop_id": shop_id, "changes": [
                 {"id": "a", "signature": {"kind": "shape", "aspect": 2.0, "n_desc": 0}, "action": "moved",
                  "before": {"cx": 0.2, "cy": 0.5, "w": 0.2, "h": 0.25}, "after": {"cx": 0.3, "cy": 0.4, "w": 0.2, "h": 0.25}}]}}
@@ -172,9 +177,9 @@ def test_designers_who_agree_are_applied_as_their_median_and_ones_who_disagree_a
 def test_usable_records_need_the_same_brand_master_size_and_type():
     ok = _rec()
     rows = [ok, _rec("x", brand="other"), _rec("y", master_file="z.cdr"), _rec("w", page_w_mm=1500.0),
-            _rec("r", status="rejected"), _rec("t", board_type="GSB")]
+            _rec("r", status="rejected"), _rec("p", status="pending"), _rec("t", board_type="GSB")]
     got = corrections.usable_records(rows, "b", "M.CDR", 1002.0, 400.0, None)
-    assert {r["shop_id"] for r in got} == {"s1", "t"}      # brand, master (case-insensitive) and size (within 0.5 %) match
+    assert {r["shop_id"] for r in got} == {"s1", "t"}      # brand, master (case-insensitive) and size (within 0.5 %) match; pending and rejected never apply
     only = corrections.usable_records(rows, "b", "m.cdr", 1000.0, 400.0, "Frontlit")
     assert [r["shop_id"] for r in only] == ["s1"]          # a record for another board type is excluded; one without a type stays
 
@@ -196,10 +201,13 @@ def test_intelligence_toggle_defaults_on_and_off_stops_collection(client):  # no
 def test_available_counts_corrections_and_convert_with_intelligence_sets_the_flag(client):  # noqa: F811
     import app.db as db
     job, shop = _converted_shop(client)
-    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {}}
+    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {}, "pending": 0}
     top = _scene(client, job, shop)["layers"][0]["children"][0]["id"]
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]})
-    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {shop: 1}}
+    # a freshly saved edit is PENDING: it waits for review and is not offered or applied until approved
+    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {}, "pending": 1}
+    assert client.put(f"/api/v2/corrections/{shop}/status", json={"status": "approved"}).status_code == 200
+    assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {shop: 1}, "pending": 0}
     r = client.post(f"/api/v2/shops/{shop}/convert", json={"use_intelligence": True})
     assert r.json() == {"status": "queued", "use_intelligence": True}
     assert db.get_shop(shop)["use_intelligence"] == 1
@@ -211,3 +219,55 @@ def test_available_counts_corrections_and_convert_with_intelligence_sets_the_fla
         time.sleep(0.05)
     client.post(f"/api/v2/shops/{shop}/convert")
     assert db.get_shop(shop)["use_intelligence"] == 0          # a plain Convert is the engine alone
+
+
+# ------------------------------------------------------------------ the review screen
+
+def test_summarize_spells_out_each_change_in_mm():
+    row = _rec(status="pending")
+    out = corrections.summarize(row, "SRI KAVI")
+    assert out["title"] == "SRI KAVI"
+    assert out["status"] == "pending"
+    assert out["source"] == "editor"
+    assert out["applies"] == ["a"]
+    assert out["changes"][0]["shift"] == {"dx_mm": 100.0, "dy_mm": -40.0, "dw_mm": 0.0, "dh_mm": 0.0}
+
+
+def test_summarize_marks_dataset_seeds_and_skips_shift_for_hidden():
+    row = _rec(shop_id="seed:b:x")
+    row["record"]["source"] = "designer-dataset"
+    row["record"]["changes"].append({"id": "h", "signature": {"kind": "shape"}, "action": "hidden", "before": {"cx": 0.5, "cy": 0.5, "w": 0.1, "h": 0.1}, "after": None})
+    out = corrections.summarize(row)
+    assert out["source"] == "designer-dataset"
+    assert out["changes"][1]["shift"] is None
+    assert out["applies"] == ["a"]                          # a hidden object is not re-applied
+
+
+def test_review_list_and_status_endpoints(client):  # noqa: F811
+    job, shop = _converted_shop(client)
+    top = _scene(client, job, shop)["layers"][0]["children"][0]["id"]
+    client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]})
+    body = client.get("/api/v2/corrections").json()
+    assert body["counts"] == {"pending": 1, "approved": 0, "rejected": 0}
+    assert body["corrections"][0]["id"] == shop
+    assert body["corrections"][0]["changes"][0]["shift"]["dx_mm"] == pytest.approx(60, abs=1)
+    assert client.put(f"/api/v2/corrections/{shop}/status", json={"status": "rejected"}).json() == {"id": shop, "status": "rejected"}
+    assert client.get("/api/v2/corrections?status=rejected").json()["corrections"][0]["status"] == "rejected"
+    assert client.get("/api/v2/corrections?status=pending").json()["corrections"] == []
+
+
+def test_status_endpoint_validates(client):  # noqa: F811
+    assert client.put("/api/v2/corrections/nope/status", json={"status": "approved"}).status_code == 404
+    assert client.put("/api/v2/corrections/nope/status", json={"status": "maybe"}).status_code == 422
+    assert client.get("/api/v2/corrections?status=maybe").status_code == 422
+
+
+def test_an_edit_saved_again_goes_back_to_pending(client):  # noqa: F811
+    import app.db as db
+    job, shop = _converted_shop(client)
+    top = _scene(client, job, shop)["layers"][0]["children"][0]["id"]
+    ops = [{"op": "move", "ids": [top], "dx": 60, "dy": 0}]
+    client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": ops})
+    client.put(f"/api/v2/corrections/{shop}/status", json={"status": "approved"})
+    client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": ops + [{"op": "move", "ids": [top], "dx": 10, "dy": 0}]})
+    assert db.get_correction(shop)["status"] == "pending"      # the edits it described changed: review again

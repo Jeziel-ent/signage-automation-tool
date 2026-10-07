@@ -201,6 +201,11 @@ _safe = scene_export._safe
 _children = scene_export._children
 
 
+def _holds_text(node: dict) -> bool:
+    """True when the node or anything inside it is a text object."""
+    return node.get("type") == "text" or any(_holds_text(c) for c in node.get("children") or [])
+
+
 def index_doc(page) -> tuple[dict, dict]:
     """node id -> COM shape and layer id -> COM layer, using exactly the ids scene_export assigns.
 
@@ -323,7 +328,12 @@ class Replayer:
         mode is a wrong export that still "succeeds", so it must be an error, not a warning.
         Text nodes are only checked for existing and still being text: their measured extent
         legitimately differs between sessions (font substitution/linking), which would make a box
-        comparison a false alarm that blocks valid exports.
+        comparison a false alarm that blocks valid exports. The same goes for a GROUP that contains
+        text: its box is just the union of its children's, so it moves with the text's extent (seen on
+        Hangyo boards - the same file's Tamil name measured 1234 x 75 mm in one session and
+        1118 x 136 mm in the next, which moved the name block's and the whole board group's boxes).
+        The group's other children are still compared strictly, so a drifted id is still caught.
+        A PowerClip container is NOT relaxed: its box is its frame, not derived from its contents.
         """
         bad: list[str] = []
         for node in scene_ops.iter_nodes(scene):
@@ -333,6 +343,8 @@ class Replayer:
             elif node.get("type") == "text":
                 if int(shape.Type) != 6:
                     bad.append(f"{node['id']} is a text object in the scene but not in CorelDRAW")
+            elif node.get("kind") == "group" and _holds_text(node):
+                continue                               # a group's box follows its text's measured extent (see above)
             else:
                 got = [float(shape.LeftX), float(shape.BottomY), float(shape.SizeWidth), float(shape.SizeHeight)]
                 want = [node["x"], node["y"], node["w"], node["h"]]

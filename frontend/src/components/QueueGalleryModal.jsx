@@ -32,7 +32,7 @@ export default function QueueGalleryModal({ shops, onClose }) {
 
   async function enlarge(shop) {
     // the full preview's file name comes from the shop's status (the list rows may not carry `files`)
-    setEnlarged({ shop, src: `/api/v2/shops/${shop.id}/thumb?v=${v}` });
+    setEnlarged({ shop, src: `/api/v2/shops/${shop.id}/thumb?size=1000&v=${v}` });
     try {
       const st = await fetch(`/api/v2/shops/${shop.id}/status`).then((r) => (r.ok ? r.json() : null));
       const preview = st?.files?.preview;
@@ -79,7 +79,7 @@ export default function QueueGalleryModal({ shops, onClose }) {
                 {items.map((s) => (
                   <figure key={s.id} className="qg-card">
                     <button className="qg-thumb" onClick={() => enlarge(s)} title="Click to enlarge">
-                      <img src={`/api/v2/shops/${s.id}/thumb?v=${v}`} alt={s.name} loading="lazy"
+                      <img src={`/api/v2/shops/${s.id}/thumb?size=720&v=${v}`} alt={s.name} loading="lazy"
                         onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
                     </button>
                     <figcaption>

@@ -148,11 +148,74 @@ python tools/seed_corrections.py dalmia --from-cache                          # 
 3. The 120x48 dalmia boards now differ more from the designers' files (max 6.8-22 %) than the old notes (1.9-4.8 %); 144x60 max ~58 % (was
    2-15 %). The engine changed since (loose-logo units 2026-10-01); not yet investigated. The old numbers in this file are historical.
 
+**Apply step verified on REAL CorelDRAW (2026-10-07, CorelDRAW 2019 / `.21`, scratch backend, dalmia master `02 - 120 X 48 Inch - ...SRI KAVI STEELS.cdr`
+uploaded under its original name).** Converted a 144x60 in board (~30 s) and built its scene (~30 s), saved ONE `move` op through
+`PUT /api/editor/.../ops` (group `s115`, +109.7 mm = 3 % of the page; the editor's own save call, not a mouse drag), the correction was recorded,
+two more boards of that size were converted, the sparkle re-run (`use_intelligence`) reported `applied 1, skipped 0, conflicting 0`, and the rebuilt
+scene put `s115` +109.69 mm right of the plain board (dy 0.01, size unchanged); it was the only one of 138 objects that differed. NOT covered live:
+resize / hidden / several disagreeing designers (unit tests only), a mouse drag in the editor UI. Note `GET /api/v2/intelligence/available` lists only
+boards that are already DONE.
+
+**Review / approve screen (built 2026-10-07).** `corrections.usable_records` now uses ONLY `approved` records (pending wait for review, rejected never
+apply); a record saved again from the editor goes back to `pending`; the 12 dataset seeds are stored `approved`. `GET /api/v2/corrections[?status=]`
+({corrections[], counts}; each correction spelled out by `corrections.summarize`: changes as page fractions + mm shifts, whether it applies),
+`PUT /api/v2/corrections/{shop_id}/status` {status: approved|rejected|pending}; `/api/v2/intelligence/available` also returns `pending`. UI:
+`pages/Corrections.jsx` (sidebar "Intelligence review", `/corrections`): tabs Pending / Approved / Rejected / All with counts, a list, and for the
+selected record a to-scale drawing (dashed = engine, red = designer) + a sentence per change + Approve / Reject / Back to pending; the Automation top bar
+shows "N to review" next to the Intelligence switch, and the sparkle notice says when corrections exist but none is approved. Helpers + tests:
+`utils/correctionsView.js`. Checked in the browser (mock engine, two pending records: approve moves it to Approved, counts update, no page scroll);
+backend 1043 passed, frontend 287.
+
+**Save Changes now builds the edited files (2026-10-07).** Before, "Save Changes" only stored the op list, so the ZIP / print sheet fell back to the
+conversion's files with a "not exported" warning. Now `EditorPage.saveChanges` flushes the ops and calls `POST /api/editor/{job}/{shop}/publish`
+(`main.editor_publish`): no edits -> `unchanged`; an export of EXACTLY these ops (all four formats) already queued/running/done -> reused
+(`building` / `ready`); else one export of cdr+pdf+png+jpeg with the default options is queued on the shared `_pool`. `asset_zip.pick_sources` then
+finds it (ops equal) and the ZIP carries the edited files; while it is still running the ZIP note says "still being built". The main tab gets the
+result on the BroadcastChannel message (`publish`) and shows `savedNotice`, then `finishedNotice` when the export ends (`utils/publishEdits.js`,
+tested). Verified LIVE on real CorelDRAW 2019 (scratch backend, dalmia 144x60 board, one move saved): ZIP before publish = warning; publish ->
+export done in ~25 s with verification ok (142 objects compared, 0 mismatches); ZIP after = no notes and the CDR in it differs from the
+conversion's CDR. Not covered: "Recently generated" rows still list the conversion's own files (not the edited ones); a 503 (low RAM) on publish is
+only reported in the Automation tab's notice. Backend 1049 passed, frontend 293.
+
+**Nested corrections + text style (2026-10-07).** Found on a designer's real Hangyo records: the learner compared TOP-LEVEL objects only, but on the
+4 X 8 master everything sits in one big group (`s95 > s96 name block > s97 name text`), so her name-block resize/moves, line spacing and bold were
+invisible (only the `s95` resize was recorded). Now `corrections.diff_nested` compares objects at ANY depth: a nested object's box against where its
+parent's own move/resize would leave it (children that merely stayed put while the parent's box refreshed to follow an edited child are NOT blamed:
+`_group_refresh`), plus text style (`STYLE_KEYS`: font, bold, italic, underline, align, line/char spacing; size only when it is not just the box
+resize). Text CONTENT is never learned (counted in `text_edits`). Stored in `record["nested"]`. A text object or a group holding only text (`_text_block`)
+is replayed by the designer's CENTRE and HEIGHT, scaled uniformly - never her width (the width is this shop's name). Applying: after a sparkle
+conversion `main._apply_learned_nested` builds the scene, `corrections.nested_ops` turns the approved records into ordinary editor ops (same
+consensus rule; matched by node id + kind/text/n_desc, parents first, each op applied to a working copy), saves them as the board's edits (visible and
+undoable in the editor) and calls `editor_publish`; `report.layout.intelligence.nested = {applied, skipped, conflicting}`. The review screen lists
+nested changes ("inside a group") and the text style; the sparkle count and "Learned (n)" include them. `tools/recapture_corrections.py [--all]` /
+`main.recapture_corrections` re-derive stored editor records from their saved edits (done for the two pending ones). Tests: `test_corrections_nested.py`
+(10). **Verified LIVE** (Hangyo 4 X 8 master, CorelDRAW 27, scratch backend): board A's name-block move + bold + line spacing were recorded, approved,
+the sparkle on a same-size board replayed them (`nested applied 2`; ops = resize of the block by centre/height + the text style) and the files were
+published. **Found while doing it (pre-existing, NOT fixed): CorelDRAW measures the same file's Tamil text differently between sessions** - three
+scene rebuilds of one Hangyo board gave the name text 1234 x 75 mm, 1234 x 75 mm and 1118 x 136 mm (English text stable). The export refused to run
+("scene does not match the document") on any Hangyo board whose group holds Tamil text; `_check_scene_matches_doc` now skips the box of a GROUP that
+holds text (its box follows the text's extent; leaves are still compared strictly, PowerClip frames too). The export then completes but
+`verification` reports the name block/group 12-58 mm off the editor's box, so a Tamil name edited or re-fitted by the replay can sit tens of mm away from
+the editor preview - check the exported PNG. Root cause (font fallback / shaping timing?) is not investigated. Backend 1060 passed, frontend 295.
+
+**UI round (2026-10-07): tab state, master numbers, previews.** (1) `App.jsx` mounts `<Automation hidden={!onHome}/>` ONCE, outside `<Routes>` (`/`
+renders `null`): leaving Automation only hides it (`.ws-page[hidden] { display: none }`), so the queue, drafts, uploads and scroll survive a visit to
+Intelligence review / Create Print File / Recently generated (checked: a DOM marker and a draft row were still there after the round trip). Note the
+page keeps polling while hidden. (2) Master names: `main._master_label` - a name the designer typed is shown as typed; a blank one (and any stored
+"Master N" from older versions) is "Master <position>" among the brand's live automatically-named masters of that ORIENTATION, oldest first, so every
+brand + orientation starts at Master 1 and deleting one renumbers the rest (`MasterContext.remove` re-reads `/api/masters` quietly afterwards; uploads
+store a blank name now). Supersedes "a name is never reused after a delete" in the registry section above. `report.master_used.name` uses it too.
+(2b) Every server start hides the previous run's masters (`main._archive_previous_masters` in the lifespan -> `db.archive_registered_masters`, the same
+soft delete as the Delete button: files and made boards stay), so a session begins empty at Master 1; `SIGNAGE_KEEP_MASTERS=1` keeps them (hosted
+installs). Checked with a real restart (3 listed -> 0, folders still on disk). Old shops whose master was hidden fall back like a deleted master.
+(3) Previews: `GET /api/v2/shops/{id}/thumb?size=` (120-1400 long side, cached per size; default stays 240). The queue gallery (`QueueGalleryModal`)
+asks for 720 (card 340 px tall, enlarge = 1000 px then the full file); the Eye modal (`PreviewGalleryModal`) is now a big viewer + thumbnail strip
+(`.pg-view`): the image is bounded by `grid-template: minmax(0,1fr)` - a first version let a tall portrait image overflow its box and be CROPPED,
+found by measuring (1775 px image in a 632 px box), fixed (337 x 590 px, fully inside, aspect kept). Backend 1063 passed, frontend 295.
+
 **Open items, in order.**
-1. Review/approve screen for corrections (today `pending` records are used straight away; a single bad edit applies to the next board of
-   that size). Idea: show a diff per record, approve/reject, and only use `approved` ones.
-2. Verify the apply step on a REAL CorelDRAW board (only the mock engine + unit tests ran it): convert, move an object in the editor,
-   save, convert another board of the same size, click the sparkle icon. Upload the dalmia master under its ORIGINAL file name - records match by it.
+1. (done 2026-10-07: review/approve screen.)
+2. (done 2026-10-07: apply step verified on real CorelDRAW for a move - see above.)
 3. Decide the CorelDRAW 2019-vs-27 default; fix the dump/COM bug in `corel_worker`/`dump_objects` so batches work.
 4. Hosting plan (discussed, not built): cloud site on a droplet + a small Windows agent on each designer PC that pulls jobs, runs
    `corel_worker`, uploads results (browsers cannot call COM); needs login/per-user data, storage interface (local -> Spaces), Postgres if

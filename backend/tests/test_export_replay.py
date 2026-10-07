@@ -919,6 +919,17 @@ def test_replay_refuses_a_scene_whose_shapes_do_not_match_the_document():
         er.Replayer(doc, scene, [])
 
 
+def test_scene_check_ignores_the_box_of_a_group_that_holds_text_but_not_of_one_that_does_not():
+    """A group's box is the union of its children's, so it follows a Tamil text whose measured extent changes between sessions."""
+    text = {"id": "t1", "type": "text", "kind": "shape", "x": 0, "y": 0, "w": 100, "h": 50, "text": {"content": "x"}}
+    box = {"id": "b1", "type": "shape", "kind": "shape", "x": 200, "y": 0, "w": 100, "h": 50}
+    with_text = {"id": "g1", "type": "group", "kind": "group", "x": 0, "y": 0, "w": 100, "h": 50, "children": [text]}
+    without = {"id": "g2", "type": "group", "kind": "group", "x": 200, "y": 0, "w": 100, "h": 50, "children": [box]}
+    assert er._holds_text(with_text) is True
+    assert er._holds_text(without) is False
+    assert er._holds_text({"id": "x", "type": "shape", "kind": "shape"}) is False
+
+
 def test_scene_check_ignores_text_extent_but_still_requires_text_to_be_text():
     doc, scene, inner = _doc_with_powerclip_text()
     node = scene_ops.find_node(scene, f"s{inner.StaticID}")
