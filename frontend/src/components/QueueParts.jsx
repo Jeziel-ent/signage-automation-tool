@@ -35,7 +35,7 @@ function unitNote(report) {
 export function ImportReport({ report, defaultUnit }) {
   const errors = report.errors;
   return (
-    <div className="import-report" role="status">
+    <output className="import-report">
       {report.added > 0 && <div>Successfully imported {report.added} shop{plural(report.added)} from {report.file}</div>}
       {errors.length > 0 && <div>{errors.length} row{plural(errors.length)} skipped:</div>}
       {report.sheets?.length > 0 && <div>Sheets: {report.sheets.join(", ")} - one tab each below.</div>}
@@ -51,12 +51,12 @@ export function ImportReport({ report, defaultUnit }) {
       {report.note && <div className="err">{report.note}</div>}
       {errors.length > 0 && (
         <ul className="err">
-          {errors.map((e, i) => (
-            <li key={i}>{e.sheet ? `${e.sheet}, row` : "Row"} {e.row}: {e.reason}</li>
+          {errors.map((e) => (
+            <li key={`${e.sheet || ""}:${e.row}:${e.reason}`}>{e.sheet ? `${e.sheet}, row` : "Row"} {e.row}: {e.reason}</li>
           ))}
         </ul>
       )}
-    </div>
+    </output>
   );
 }
 

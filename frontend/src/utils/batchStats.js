@@ -71,5 +71,6 @@ export function fmtEta(seconds) {
 
 /** The line shown when Convert All has finished: how many converted and how many failed (or never started). */
 export function batchFinishedText(done, failed) {
-  return `Batch finished: ${done} converted${failed ? `, ${failed} failed` : ""}.`;
+  const tail = failed ? ", " + failed + " failed" : "";
+  return `Batch finished: ${done} converted${tail}.`;
 }
