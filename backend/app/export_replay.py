@@ -59,6 +59,21 @@ class ReplayError(Exception):
     """An operation is valid in the editor but cannot be reproduced in CorelDRAW."""
 
 
+_NEWLINE = re.compile(r"\r\n|\r|\n")
+
+
+def corel_line_breaks(text) -> str:
+    """The editor text field gives a line break as LF (a textarea), but CorelDRAW starts a new line / paragraph only on CR: a LF written to
+    Story.Text is not a line break, so a two-line name came out as ONE line in the exported files (found on a real Hangyo board: the editor
+    showed the Tamil name on two lines, the exported PNG on one, and verification reported text differs)."""
+    return _NEWLINE.sub("\r", str(text))
+
+
+def same_text(a, b) -> bool:
+    """Text equality for verification: any kind of line break counts as the same break, outer whitespace is ignored."""
+    return _NEWLINE.sub("\n", str(a or "")).strip() == _NEWLINE.sub("\n", str(b or "")).strip()
+
+
 # ------------------------------------------------------------------ options
 
 def _raster_options(base: dict, fmt: str, override: dict) -> dict:
@@ -251,6 +266,38 @@ def _set_bbox(shape, box: dict) -> None:
     shape.BottomY = float(box["y"])
 
 
+def _line_count(text) -> int:
+    return len(_NEWLINE.split(str(text or ""))) if str(text or "") else 1
+
+
+def _set_edited_text_bbox(shape, node: dict, orig_lines: int = 1) -> bool:
+    """A text whose content / font the designer edited is drawn by the editor as live text (LiveText.jsx), never stretched: ONE line of it is as
+    tall as the box was for the ORIGINAL text (`orig_lines` lines - a name that grows from one line to two grows downwards, it does not
+    shrink to stay inside the box), its width follows the glyphs, and it is centred in the box. CorelDRAW's SetSize would stretch the text to the
+    box width instead (a two-line Tamil name came out with its letters spread far apart in the exported files, unlike the editor). So the font
+    size is scaled uniformly until one line is that tall, and the text is centred on the box. False when that cannot be done (not an edited
+    text, heights unknown): the caller then falls back to SetSize."""
+    if not (node.get("stale") and node.get("type") == "text"):
+        return False
+    try:
+        story = shape.Text.Story
+        line_h = max(float(node["h"]), 0.01) / max(int(orig_lines), 1)
+        h, w = float(shape.SizeHeight), float(shape.SizeWidth)
+        now_line = h / _line_count(story.Text)
+        if now_line <= 0.01 or w <= 0.01:
+            return False
+        k = line_h / now_line
+        if abs(k - 1.0) > 1e-4:
+            shape.SetSize(w * k, h * k)      # the SAME factor both ways: CorelDRAW scales the font size (reading Story.Size back after a resize is unreliable)
+        cx = float(node["x"]) + float(node["w"]) / 2
+        cy = float(node["y"]) + float(node["h"]) / 2
+        shape.LeftX = cx - float(shape.SizeWidth) / 2
+        shape.BottomY = cy - float(shape.SizeHeight) / 2
+    except Exception:
+        return False
+    return True
+
+
 def _subtree_ids(node: dict) -> list[str]:
     out = [node["id"]]
     for c in node.get("children") or []:
@@ -278,6 +325,9 @@ class Replayer:
         self.page = doc.ActivePage
         self.ops = ops
         self.shadow = copy.deepcopy(scene)
+        # how many lines each text had before any edit: an edited text is sized per line (_set_edited_text_bbox)
+        self.orig_lines = {n["id"]: _line_count((n.get("text") or {}).get("content")) for n in scene_ops.iter_nodes(scene)
+                           if n.get("type") == "text"}
         self.shapes, self.layers = index_doc(self.page)
         self._check_scene_matches_doc(scene)
         self.sid = {int(s.StaticID): nid for nid, s in self.shapes.items()}
@@ -392,7 +442,9 @@ class Replayer:
     def _op_resize(self, op, before):
         after = scene_ops._index(self.shadow)
         for i in scene_ops._top_ids(before, op["ids"]):
-            _set_bbox(self._shape(i), after[i]["node"])
+            node = after[i]["node"]
+            if not _set_edited_text_bbox(self._shape(i), node, self.orig_lines.get(i, 1)):
+                _set_bbox(self._shape(i), node)
 
     def _op_order(self, op, before):
         s = self._shape(op["id"])
@@ -416,7 +468,7 @@ class Replayer:
     def _apply_text(self, shape, patch: dict) -> None:
         story = shape.Text.Story
         if patch.get("content") is not None:
-            story.Text = str(patch["content"])
+            story.Text = corel_line_breaks(patch["content"])
         if patch.get("font") is not None:
             story.Font = str(patch["font"])
             actual = _safe(lambda: story.Font)
@@ -607,7 +659,7 @@ class Replayer:
             self._register_copy(node, dup)
             dup.Visible = bool(node.get("visible", True))
             _set_bbox(dup, node)
-            if node.get("text") and _safe(lambda: dup.Text.Story.Text) != node["text"].get("content"):
+            if node.get("text") and not same_text(_safe(lambda: dup.Text.Story.Text), node["text"].get("content")):
                 self._apply_text(dup, node["text"])
             dup.MoveToLayer(self.layers[layer_id])
             if dst != layer_id:
@@ -741,6 +793,10 @@ def _canon(node: dict) -> dict:
     }
 
 
+def _holds_edited_text(node: dict) -> bool:
+    return any((c.get("stale") and c.get("type") == "text") or _holds_edited_text(c) for c in node.get("children") or [])
+
+
 def verify(page, expected: dict, limit: int = 20) -> dict:
     """Compare the real document with the shadow scene the replay was supposed to produce."""
     layers, _ = scene_export.walk_page(page)
@@ -780,6 +836,8 @@ def verify(page, expected: dict, limit: int = 20) -> dict:
                 ok_y = any(abs(a - b) <= tol for a, b in ((gy, wy), (gy + gh / 2, wy + wh / 2), (gy + gh, wy + wh)))
                 if not (ok_x and ok_y):
                     note(f"{here} (text): now at {gx:.1f},{gy:.1f} mm, expected near {wx:.1f},{wy:.1f} (no left/centre/right anchor matches)")
+            elif w["kind"] == "group" and _holds_edited_text(w):
+                pass          # a group's box follows its text, and an edited text is not stretched to its box (_set_edited_text_bbox)
             else:
                 for k in range(4):
                     if abs(g["box"][k] - w["box"][k]) > tol:
@@ -787,7 +845,7 @@ def verify(page, expected: dict, limit: int = 20) -> dict:
                         break
             if bool(g["visible"]) != bool(w["visible"]):
                 note(f"{here}: visibility differs")
-            if w["type"] == "text" and (g["text"] or "").strip() != (w["text"] or "").strip():
+            if w["type"] == "text" and not same_text(g["text"], w["text"]):
                 note(f"{here}: text differs")
             if w["kind"] in ("group", "powerclip"):
                 # PowerClip contents are compared too: nested text/move/resize edits (scene_ops.py's

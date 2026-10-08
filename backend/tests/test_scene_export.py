@@ -397,6 +397,20 @@ def test_powerclip_records_whether_its_frame_is_an_axis_aligned_rectangle(tmp_pa
     assert by_id[f"s{ellipse.StaticID}"]["frame_rect"] is False
 
 
+def test_a_frame_turned_by_a_multiple_of_90_degrees_is_still_a_rectangle(tmp_path):
+    turned = [Shape(RECT, 0, 0, 60, 60, powerclip=[Shape(RECT, 10, 10, 20, 20)]) for _ in range(4)]
+    for shape, angle in zip(turned, (180.0, 90.0, 270.0, 359.999)):
+        shape.RotationAngle = angle
+    tilted = Shape(RECT, 100, 0, 60, 60, powerclip=[Shape(RECT, 110, 10, 20, 20)])
+    tilted.RotationAngle = 30.0
+    doc = FakeDoc(Page([Layer("L", turned + [tilted])]))
+    _attach(doc)
+    scene = scene_export.export_scene(doc, tmp_path)
+    by_id = {n["id"]: n for n in scene_ops.iter_nodes(scene)}
+    assert all(by_id[f"s{t.StaticID}"]["frame_rect"] is True for t in turned)
+    assert by_id[f"s{tilted.StaticID}"]["frame_rect"] is False
+
+
 def test_a_powerclip_frame_is_exported_on_its_own_for_the_editor(tmp_path):
     # The editor draws a live PowerClip as its contents in a clip path; the frame's own fill came from nowhere, so the
     # Hangyo board's pink side panels (the frame's fill) drew as white. The frame is now exported from a duplicate whose
@@ -415,7 +429,7 @@ def test_a_powerclip_frame_is_exported_on_its_own_for_the_editor(tmp_path):
     node = next(n for n in scene_ops.iter_nodes(scene) if n["kind"] == "powerclip")
     assert node["frame_image"] == {"file": f"s{clip.StaticID}_frame.svg", "format": "svg"}
     assert events[-4:] == ["frame dup", "frame moved", "frame contents deleted", "frame deleted"]
-    assert scene["version"] == scene_export.SCENE_VERSION == 4
+    assert scene["version"] == scene_export.SCENE_VERSION == 5
 
 
 def test_a_frame_export_failure_only_leaves_the_frame_image_out(tmp_path):

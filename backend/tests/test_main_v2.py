@@ -395,6 +395,28 @@ def test_v2_thumb_is_small_capped_and_cached_outside_the_shop_folder(client):
     assert client.get(f"/api/v2/shops/{shop_id}/thumb").content == r.content  # served from the cache
 
 
+def test_thumb_and_latest_preview_show_the_edited_export_not_the_conversion(client, monkeypatch):
+    import io as _io
+    import json as _json
+    from PIL import Image
+    job_id, shop_id, out, main = _shop_with_png_preview(client)          # conversion preview = red
+    ex = out / "exports" / "ex1"
+    ex.mkdir(parents=True)
+    Image.new("RGB", (800, 320), (20, 200, 30)).save(ex / "board.png")     # the edited export = green
+    monkeypatch.setattr(main.db, "list_exports", lambda sid, limit=10: [
+        {"id": "ex1", "status": "done", "files_json": _json.dumps({"png": "board.png"})}])
+    full = client.get(f"/api/v2/shops/{shop_id}/latest-preview")
+    assert full.status_code == 200
+    assert Image.open(_io.BytesIO(full.content)).size == (800, 320)
+    assert Image.open(_io.BytesIO(full.content)).getpixel((5, 5)) == (20, 200, 30)
+    thumb = Image.open(_io.BytesIO(client.get(f"/api/v2/shops/{shop_id}/thumb").content))
+    assert thumb.getpixel((5, 5))[1] > 150                                  # green, not the conversion's red
+    monkeypatch.setattr(main.db, "list_exports", lambda sid, limit=10: [])
+    plain = client.get(f"/api/v2/shops/{shop_id}/latest-preview")
+    assert Image.open(_io.BytesIO(plain.content)).getpixel((5, 5)) == (200, 30, 40)
+    assert client.get("/api/v2/shops/nope/latest-preview").status_code == 404
+
+
 def test_v2_thumb_is_rebuilt_when_the_preview_changes(client):
     import io as _io
     import os as _os

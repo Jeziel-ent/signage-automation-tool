@@ -1368,6 +1368,33 @@ def _write_thumb(src: Path, thumb: Path, fmt: str, ext: str, long_side: int) -> 
         tmp.unlink(missing_ok=True)
 
 
+def _newest_look(row: dict) -> Path | None:
+    """The file that shows a board as it is NOW: the PNG/JPEG of its latest finished editor export (it carries the designer's edits),
+    else the conversion's own preview - raster or, for MockEngine, SVG. Thumbnails, the gallery and the full-size preview all use it, so
+    an edited board is never shown as the unedited conversion."""
+    out_dir = (JOBS_V2 / row["job_id"] / "out" / row["id"]).resolve()
+    p = _shop_thumbnail(row)
+    if p is None:
+        name = (json.loads(row["files_json"]) if row.get("files_json") else {}).get("preview")
+        p = (out_dir / name) if name else None
+    if p is None:
+        return None
+    p = p.resolve()
+    return p if out_dir in p.parents and p.is_file() else None
+
+
+@app.get("/api/v2/shops/{shop_id}/latest-preview", responses={404: {"description": "Not found"}})
+def v2_shop_latest_preview(shop_id: str):
+    """The full-size newest look of a converted shop (its latest edited export, else the conversion preview)."""
+    row = db.get_shop(shop_id)
+    if not row:
+        raise HTTPException(404, _SHOP_NOT_FOUND)
+    src = _newest_look(row)
+    if src is None:
+        raise HTTPException(404, "no preview for this shop")
+    return FileResponse(src, headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/api/v2/shops/{shop_id}/thumb", responses={404: {"description": "Not found"}})
 def v2_shop_thumb(shop_id: str, size: int | None = None):
     """A small copy of a converted shop's preview for list thumbnails. The full preview is CorelDRAW's 1600 px PNG
@@ -1380,11 +1407,8 @@ def v2_shop_thumb(shop_id: str, size: int | None = None):
     row = db.get_shop(shop_id)
     if not row:
         raise HTTPException(404, _SHOP_NOT_FOUND)
-    files = json.loads(row["files_json"]) if row.get("files_json") else {}
-    name = (files or {}).get("preview")
-    out_dir = (JOBS_V2 / row["job_id"] / "out" / shop_id).resolve()
-    src = (out_dir / name).resolve() if name else None
-    if not src or out_dir not in src.parents or not src.is_file():
+    src = _newest_look(row)
+    if src is None:
         raise HTTPException(404, "no preview for this shop")
     fmt, ext = _thumb_format()
     long_side = THUMB_MAX_PX if size is None else max(120, min(int(size), 1400))
@@ -2151,7 +2175,7 @@ def _scene_progress(shop_id: str) -> dict:
 def _needs_powerclip_images(scene: dict) -> bool:
     """A scene cached before version 3 has PowerClips whose children carry no images (v1) or empty
     SVGs (v2), so the editor could only outline them or drew them as nothing; before version 4 the frame's own fill was
-    missing (frame_image) - pink panels drawn white. Rebuild it once (boards without a PowerClip are untouched)."""
+    missing (frame_image) - pink panels drawn white; before version 5 a frame rotated by 180 degrees was not "live" (frame_rect false). Rebuild it once (boards without a PowerClip are untouched)."""
     if scene.get("version", 1) >= scene_export.SCENE_VERSION:
         return False
     return any(n.get("kind") == "powerclip" for n in scene_ops.iter_nodes(scene))

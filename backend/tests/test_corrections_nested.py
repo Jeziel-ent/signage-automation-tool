@@ -96,8 +96,8 @@ def test_the_learned_changes_replay_on_a_fresh_board_of_the_same_structure():
     g, w = find(got, "s96"), find(want, "s96")
     assert g["x"] + g["w"] / 2 == pytest.approx(w["x"] + w["w"] / 2, abs=0.5)        # the designer's centre ...
     assert g["y"] + g["h"] / 2 == pytest.approx(w["y"] + w["h"] / 2, abs=0.5)
-    assert g["h"] == pytest.approx(w["h"], abs=0.5)                                  # ... and height; the width follows this name's text
-    assert g["w"] == pytest.approx(800, abs=0.5)
+    assert g["w"] == pytest.approx(600, abs=0.5)         # fitted INSIDE her 600 x 100 box, keeping this name's 8:1 shape - never wider than her box
+    assert g["h"] == pytest.approx(75, abs=0.5)
     assert find(got, "s97")["text"]["bold"] is True
     assert find(got, "s97")["text"]["line_spacing"] == 80.0
     assert find(got, "s97")["text"]["content"] == "NEW CHENNAI BAKERY"          # content is never taught
@@ -114,6 +114,20 @@ def test_a_text_object_keeps_its_own_shape_and_takes_the_designers_height_and_ce
     assert n["h"] == pytest.approx(200, abs=0.5)
     assert n["w"] / n["h"] == pytest.approx(400 / 100, rel=0.01)             # still the shorter name's shape, scaled uniformly
     assert n["y"] + n["h"] / 2 == pytest.approx(1000, abs=0.5)               # the designer's vertical centre
+
+
+def test_a_name_is_never_made_larger_than_the_designers_box_even_when_her_box_holds_two_lines():
+    """Found on a real Hangyo board: she set the Tamil name on two lines (box 1682 x 293 mm); the next board's ONE-line name (1682 x 173) was scaled to
+    her height - 1.7 times too wide - and ran off its white panel."""
+    fresh = _board()
+    block = fresh["layers"][0]["children"][0]["children"][1]
+    block["w"] = block["children"][0]["w"] = 800.0
+    block["h"] = block["children"][0]["h"] = 100.0
+    ops, _ = corrections.nested_ops(fresh, [_approved([{"op": "resize", "ids": ["s97"], "from": {"x": 100, "y": 800, "w": 800, "h": 100},
+                                                        "to": {"x": 100, "y": 750, "w": 800, "h": 170}}])])
+    n = scene_ops.apply_ops(fresh, ops)["layers"][0]["children"][0]["children"][1]["children"][0]
+    assert n["w"] <= 800.5                                                  # her width, not 800 x 1.7
+    assert n["h"] <= 170.5 and n["w"] / n["h"] == pytest.approx(8.0, rel=0.01)
 
 
 def test_designers_who_disagree_are_not_applied_and_a_different_structure_is_skipped():

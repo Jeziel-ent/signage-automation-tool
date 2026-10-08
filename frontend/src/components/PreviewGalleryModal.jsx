@@ -39,10 +39,10 @@ function Viewer({ shop, images, sel, onSel }) {
 }
 
 /**
- * A completed row's preview gallery (the Eye icon): every rendered image of that shop - the conversion's preview and the
- * PNG/JPEG of each finished editor export, newest first. Image URLs carry `?v=<time the gallery opened>`, so a board
- * re-exported from the Editor shows its new pixels instead of a cached copy. (Saving in the Editor stores the edits only;
- * new pixels exist once the edits are exported - the row's Download -> More export options.)
+ * A completed row's preview (the Eye icon): the board as it is now - its newest edited export, else the conversion's preview
+ * (utils/gallery.js galleryImages returns that one image). Image URLs carry `?v=<time the preview opened>`, so a re-exported board
+ * shows its new pixels instead of a cached copy. Save Changes in the editor builds the edited files in the background (about a
+ * minute); until they exist the previous version is shown.
  */
 export default function PreviewGalleryModal({ shop, onClose }) {
   const [state, setState] = useState({ loading: true, error: "", status: null, exports: [] });
@@ -93,7 +93,7 @@ export default function PreviewGalleryModal({ shop, onClose }) {
           {images.length > 0 && <Viewer shop={shop} images={images} sel={Math.min(sel, images.length - 1)} onSel={setSel} />}
         </div>
         <footer className="xm-foot">
-          <span className="pg-hint">Editor changes show here after an export (Download &rarr; More export options).</span>
+          <span className="pg-hint">Shows the latest edited version. After Save Changes in the editor it updates once the edited files are built (about a minute).</span>
           <button className="xm-primary" onClick={onClose}>Close</button>
         </footer>
       </motion.div>

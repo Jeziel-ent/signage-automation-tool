@@ -410,14 +410,16 @@ def _frac_to_mm(box: dict, pw: float, ph: float) -> dict:
 
 
 def _nested_target(node: dict, box: dict, pw: float, ph: float, is_text: bool) -> dict:
-    """Where an object should end up. A text object keeps its own width-to-height shape (its content differs from the designer's):
-    it is scaled uniformly to the designer's height and centred on the designer's centre. Anything else takes the designer's box."""
+    """Where an object should end up. A text object keeps its own width-to-height shape (its content differs from the designer's): it is
+    scaled uniformly to FIT INSIDE the designer's box and centred on the designer's centre - never larger than her box in either direction.
+    (It used to take her HEIGHT only; her box can hold two lines where this board's name has one - a Hangyo name she had set on two lines
+    came out 1.7 times too wide on the next board and ran off its white panel.) Anything else takes the designer's box."""
     t = _frac_to_mm(box, pw, ph)
-    if not is_text or not node["h"]:
+    if not is_text or not node["h"] or not node["w"]:
         return t
-    s = t["h"] / node["h"]
-    w = node["w"] * s
-    return {"x": t["x"] + t["w"] / 2 - w / 2, "y": t["y"], "w": w, "h": t["h"]}
+    s = min(t["w"] / node["w"], t["h"] / node["h"])
+    w, h = node["w"] * s, node["h"] * s
+    return {"x": t["x"] + t["w"] / 2 - w / 2, "y": t["y"] + t["h"] / 2 - h / 2, "w": w, "h": h}
 
 
 def _nested_requests(records: list[dict]) -> dict[str, list[dict]]:

@@ -30,17 +30,9 @@ export default function QueueGalleryModal({ shops, onClose }) {
     return () => window.removeEventListener("keydown", onKey);
   }, [enlarged, onClose]);
 
-  async function enlarge(shop) {
-    // the full preview's file name comes from the shop's status (the list rows may not carry `files`)
-    setEnlarged({ shop, src: `/api/v2/shops/${shop.id}/thumb?size=1000&v=${v}` });
-    try {
-      const st = await fetch(`/api/v2/shops/${shop.id}/status`).then((r) => (r.ok ? r.json() : null));
-      const preview = st?.files?.preview;
-      if (preview) setEnlarged((cur) => (cur && cur.shop.id === shop.id
-        ? { shop, src: `/api/v2/shops/${shop.id}/files/${encodeURIComponent(preview)}?v=${v}` } : cur));
-    } catch {
-      /* keep the thumbnail */
-    }
+  function enlarge(shop) {
+    // the board as it is now: its newest edited export, else the conversion preview (server side, so edited boards are never shown unedited)
+    setEnlarged({ shop, src: `/api/v2/shops/${shop.id}/latest-preview?v=${v}` });
   }
 
   return (

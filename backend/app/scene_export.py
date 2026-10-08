@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-SCENE_VERSION = 4
+SCENE_VERSION = 5
 CDR_PNG = 802
 CDR_SVG = 1345
 CDR_CURRENT_PAGE = 1
@@ -138,10 +138,14 @@ def _node(shape, kind: str, type_: str) -> dict:
 
 
 def _frame_is_rect(shape, type_: str) -> bool:
-    """True when the PowerClip frame is an axis-aligned rectangle, i.e. clipping to its bounding box
+    """True when the PowerClip frame is an axis-aligned rectangle (also one turned by a multiple of 90 degrees), i.e. clipping to its bounding box
     is exact - the editor draws the contents live only then. A rectangle drawn as a curve counts:
     every node sits on a corner of the bounding box."""
-    if abs(_safe(lambda: float(shape.RotationAngle), 0.0)) > 0.01:
+    # A rectangle turned by 90 / 180 / 270 degrees is still an axis-aligned rectangle: the bounding box the scene records IS the
+    # frame. Hangyo boards keep their full-board frame rotated 180 degrees, which this used to reject (the whole board then drew
+    # as one flat image and nothing inside it could be moved or resized with real pixels).
+    turn = abs(_safe(lambda: float(shape.RotationAngle), 0.0)) % 90.0
+    if min(turn, 90.0 - turn) > 0.01:
         return False
     if type_ == "rectangle":
         return True
@@ -444,7 +448,7 @@ def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = Non
         failed.append(f"page image: {e}")
 
     scene = {
-        "version": SCENE_VERSION,          # 2: PowerClip children have own images; 3: ...and are exported from duplicates (v2 wrote empty SVGs for them); 4: + the frame's own fill (frame_image)
+        "version": SCENE_VERSION,          # 2: PowerClip children have own images; 3: ...and are exported from duplicates (v2 wrote empty SVGs for them); 4: + the frame's own fill (frame_image); 5: a frame turned by a multiple of 90 degrees still counts as a rectangle (frame_rect)
         "unit": "mm",
         "page": {"width": round(page_w, 4), "height": round(page_h, 4)},
         "page_image": page_image,

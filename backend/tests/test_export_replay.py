@@ -741,6 +741,41 @@ def test_index_finds_powerclip_children_and_text_op_edits_them():
     assert r.warnings == []
 
 
+def test_a_line_break_typed_in_the_editor_is_written_to_corel_as_a_paragraph_break():
+    """The editor textarea gives a LF; CorelDRAW only breaks a line on a CR - a LF left the name on ONE line in the exported files
+    (and verification said text differs)."""
+    assert er.corel_line_breaks("A\nB") == "A\rB"
+    assert er.corel_line_breaks("A\r\nB\n\nC") == "A\rB\r\rC"
+    assert er.same_text("A\rB ", "A\nB") and not er.same_text("AB", "A\nB")
+    doc, scene, inner = _doc_with_powerclip_text()
+    child_id = f"s{inner.StaticID}"
+    _, r, _, check = run([{"op": "text", "id": child_id, "content": "ஏசியன் \nஜூஸ் பார்"}], doc, scene)
+    assert inner.Text.Story.Text == "ஏசியன் \rஜூஸ் பார்"
+    assert check["ok"], check
+
+
+class _TextShape:
+    """Just enough of a CorelDRAW text shape: a size that scales when it is SetSize'd, and a position."""
+
+    def __init__(self, w, h, text):
+        self.SizeWidth, self.SizeHeight, self.LeftX, self.BottomY = w, h, 0.0, 0.0
+        self.Text = type("T", (), {"Story": type("S", (), {"Text": text})()})()
+
+    def SetSize(self, w, h):
+        self.SizeWidth, self.SizeHeight = w, h
+
+
+def test_an_edited_text_is_scaled_uniformly_per_line_and_centred_not_stretched_to_its_box():
+    node = {"stale": True, "type": "text", "x": 100.0, "y": 50.0, "w": 800.0, "h": 60.0}
+    shape = _TextShape(w=300.0, h=80.0, text="A" + chr(13) + "B")          # two lines of 40 mm now
+    assert er._set_edited_text_bbox(shape, node, orig_lines=1)
+    assert abs(shape.SizeHeight / 2 - 60.0) < 1e-6                          # one line as tall as the box was for ONE original line
+    assert abs(shape.SizeWidth / shape.SizeHeight - 300.0 / 80.0) < 1e-9    # the same factor both ways: no stretch
+    assert abs(shape.LeftX + shape.SizeWidth / 2 - 500.0) < 1e-6            # centred on the box
+    assert abs(shape.BottomY + shape.SizeHeight / 2 - 80.0) < 1e-6
+    assert not er._set_edited_text_bbox(shape, {**node, "stale": False}, 1)  # an unedited text keeps the old SetSize path
+
+
 def test_powerclip_child_text_edit_runs_the_tamil_font_fix():
     tamil = "அல் மதீனா"
     doc, scene, inner = _doc_with_powerclip_text(font="Arial")
