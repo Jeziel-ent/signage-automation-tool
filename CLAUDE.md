@@ -28,8 +28,7 @@ continues independently - none of it was touched building the new UI.
   `/api/v2/shops/{id}/thumb` and the new `GET /api/v2/shops/{id}/latest-preview`; the Eye preview (`PreviewGalleryModal`, `utils/gallery.js galleryImages`)
   shows ONE image (newest edited export, else "As converted"), the queue gallery's enlarge uses `latest-preview`. Save Changes still builds the edited files
   in the background (~1 min); until then the previous version is shown.
-- **Export vs editor mismatch on edited text** (`export_replay.py`): (1) the editor's textarea gives `
-` but CorelDRAW only breaks a line on ``, so a two-line
+- **Export vs editor mismatch on edited text** (`export_replay.py`): (1) the editor's textarea gives `\n` but CorelDRAW only breaks a line on `\r`, so a two-line
   Tamil name came out as one line and verification said "text differs": `corel_line_breaks` / `same_text`. (2) CorelDRAW `SetSize` stretched an edited text to its
   box width (letters spread apart): `_set_edited_text_bbox` scales it UNIFORMLY (same factor both ways via `SetSize`; reading `Story.Size` back after a resize is
   unreliable, it returned a negative number) so ONE line is as tall as the box was for the original text's line count (`Replayer.orig_lines`), centred on the
