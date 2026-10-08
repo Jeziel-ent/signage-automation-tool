@@ -17,7 +17,31 @@ is being built alongside it, not as a replacement yet. Engine-side work
 (layout rules, validation, tiling) is unaffected by either UI and
 continues independently - none of it was touched building the new UI.
 
-## Continue here (handoff, 2026-10-08) - read this first on another machine
+## Continue here (handoff, 2026-10-09) - read this first on another machine
+
+**Latest round (2026-10-08/09, commit `94a4eb7`, all found on a real Hangyo board "Asian Juice bar", Tiruvannamalai batch).** Backend 1038 passed / 37 skipped, frontend 302.
+- **Editor: PowerClip stayed "flat" (ice creams could not be moved/resized with real pixels).** The full-board frame was a normal rectangle but CorelDRAW
+  stores it ROTATED 180 deg, and `scene_export._frame_is_rect` rejected any rotation. Now a multiple of 90 deg still counts (`frame_rect` true); scene
+  `SCENE_VERSION` 4 -> 5, so boards with a PowerClip rebuild once when opened. Real-CorelDRAW rebuild + a browser drag were NOT run (unit tests and
+  `model.livePowerclip` on the real scene only) - check it by opening the board after restarting the backend.
+- **Previews showed the unedited conversion.** `main._newest_look` (latest finished editor export PNG/JPG, else the conversion preview) now feeds
+  `/api/v2/shops/{id}/thumb` and the new `GET /api/v2/shops/{id}/latest-preview`; the Eye preview (`PreviewGalleryModal`, `utils/gallery.js galleryImages`)
+  shows ONE image (newest edited export, else "As converted"), the queue gallery's enlarge uses `latest-preview`. Save Changes still builds the edited files
+  in the background (~1 min); until then the previous version is shown.
+- **Export vs editor mismatch on edited text** (`export_replay.py`): (1) the editor's textarea gives `
+` but CorelDRAW only breaks a line on ``, so a two-line
+  Tamil name came out as one line and verification said "text differs": `corel_line_breaks` / `same_text`. (2) CorelDRAW `SetSize` stretched an edited text to its
+  box width (letters spread apart): `_set_edited_text_bbox` scales it UNIFORMLY (same factor both ways via `SetSize`; reading `Story.Size` back after a resize is
+  unreliable, it returned a negative number) so ONE line is as tall as the box was for the original text's line count (`Replayer.orig_lines`), centred on the
+  box; verification skips the box of a group that holds edited text. Verified by replaying the real board's 40 ops through real CorelDRAW (`export_from_file`,
+  scratch output): `ok: true`, 49 objects, 0 mismatches, Tamil name on two lines, undistorted, like the editor.
+- **Corel Intelligence made the next board's Tamil name 1.7x too wide** (it ran off the white panel): the designer had set the name on two lines (box 1682 x
+  293 mm), and the learned text block was scaled to HER HEIGHT. `corrections._nested_target` now fits a text block INSIDE her box (uniform, centred on her
+  centre), never larger. Not learned (by design): her line breaks - the next board keeps a one-line name. Re-run the row's sparkle after restarting the backend.
+- Excel sheets: `docs/hangyo_tiruvannamalai_shops.xlsx` (50 rows from the file names: S.NO | Shop name | W | H | Unit | Board) and
+  `docs/hangyo_tiruvannamalai_queue.xlsx` (the 49 queue rows as pasted from the app, import header format; its "Type of board" is "Nonlit" for every row
+  because that is what the queue showed - the real types are Frontlit / GSB / Double Side GSB in the first sheet).
+- Known leftovers: the exported Tamil name sits close to "ASIAN JUICE BAR" (same in the editor); `Save Changes` of an unchanged op list reuses the old export.
 
 **Newest work (2026-10-07, all on `main`, branch `corel-intelligence` is merged and gone from the remote): "Corel Intelligence"** (learning from designer
 corrections) - full description in "Corel Intelligence" below. Latest commit `5be1b23`: the top-bar switch and the approve/reject step were REMOVED -
