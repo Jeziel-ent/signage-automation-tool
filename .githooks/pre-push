@@ -1,0 +1,6 @@
+#!/bin/sh
+# Before every push: make sure Jenkins is running, so the pushed commit gets built even when Jenkins was off.
+# Enable once per clone:  git config core.hooksPath .githooks      (never blocks the push)
+root="$(git rev-parse --show-toplevel)"
+if command -v py >/dev/null 2>&1; then py -3 "$root/ci/ensure_jenkins.py"; else python "$root/ci/ensure_jenkins.py"; fi
+exit 0

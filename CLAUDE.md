@@ -113,6 +113,7 @@ cd backend && python -m uvicorn app.main:app --port 8000        # NO --reload (i
 cd backend && ..\.venv\Scripts\python.exe dev_server.py          # same server, but restarts ITSELF when app/*.py|json change (waits while a shop is converting)
 cd frontend && npm install && npm run dev                       # :5173, proxies /api -> :8000; SIGNAGE_API=http://localhost:8001 points it elsewhere
 cd backend && python -m pytest -q ; cd ../frontend && npm test
+git config core.hooksPath .githooks                              # once per clone: every push starts Jenkins first when it is down (ci/ensure_jenkins.py)
 ```
 Env knobs worth knowing: `SIGNAGE_DATA` (data dir), `SIGNAGE_ENGINE=corel|mock`, `SIGNAGE_SHOP_TIMEOUT_S` (default 45 - raise to 240 for the
 100-350 MB Agarpathi masters), `SIGNAGE_KEEP_MASTER_OPEN`, `SIGNAGE_MAX_BITMAP_DPI`. Restart the backend after pulling: a server started before the
