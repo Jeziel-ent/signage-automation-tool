@@ -292,23 +292,27 @@ def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
     out, text_edits = [], 0
     alive = set(new)
     for nid, (o, parent) in old.items():
-        if parent is None:
-            continue                                         # top-level: handled in diff_scenes
-        if nid not in new:
-            if parent in new and not _survivors(o, alive):
-                out.append(_gone_entry(nid, parent, old, o, "deleted", pw, ph))     # the object itself was deleted (not just ungrouped)
-            continue
-        if new[nid][1] != parent:
-            continue                                         # moved to another parent: not learned
-        n = new[nid][0]
-        if o.get("visible", True) and not n.get("visible", True):
-            out.append(_gone_entry(nid, parent, old, o, "hidden", pw, ph))
-            continue
-        text_edits += _content_of(n) != _content_of(o)
-        entry = _nested_entry(nid, parent, old, new, pw, ph)
+        entry, edited_text = _nested_change(nid, o, parent, old, new, alive, pw, ph)
+        text_edits += edited_text
         if entry:
             out.append(entry)
     return out, text_edits
+
+
+def _nested_change(nid: str, o: dict, parent: str | None, old: dict, new: dict, alive: set[str], pw: float, ph: float) -> tuple[dict | None, int]:
+    """(the recorded change for one nested object or None, 1 when its text content was edited)."""
+    if parent is None:
+        return None, 0                                       # top-level: handled in diff_scenes
+    if nid not in new:
+        if parent in new and not _survivors(o, alive):
+            return _gone_entry(nid, parent, old, o, "deleted", pw, ph), 0     # the object itself was deleted (not just ungrouped)
+        return None, 0
+    if new[nid][1] != parent:
+        return None, 0                                       # moved to another parent: not learned
+    n = new[nid][0]
+    if o.get("visible", True) and not n.get("visible", True):
+        return _gone_entry(nid, parent, old, o, "hidden", pw, ph), 0
+    return _nested_entry(nid, parent, old, new, pw, ph), int(_content_of(n) != _content_of(o))
 
 
 SAME_SIZE_TOL = 0.005      # a correction applies to a board whose page is within 0.5 % of the one it was made on
@@ -408,22 +412,28 @@ def _collect_votes(placed: list, new_w: float, new_h: float, records: list[dict]
     votes: dict[str, list[tuple[dict, str, bool]]] = {}
     skipped = 0
     for rec in records:
-        sid = rec.get("shop_id") or (rec.get("record") or {}).get("shop_id")
-        taken: set[str] = set()                                   # within one record an object answers one change only
-        for ch in (rec.get("record") or rec).get("changes", []):
-            if ch["action"] in SCENE_ACTIONS:
-                continue                                          # replayed afterwards as editor ops (nested_ops)
-            if ch["action"] not in APPLIED_ACTIONS or (ch.get("signature") or {}).get("kind") == "text":
-                skipped += 1
-                continue
-            best = _nearest_placed(placed, taken, ch["before"], new_w, new_h)
-            if best is None:
-                skipped += 1
-                continue
-            taken.add(best[1].id)
-            after = {**ch["after"], "_w": NEARBY_WEIGHT} if rec.get("nearby") else ch["after"]
-            votes.setdefault(best[1].id, []).append((after, sid, _is_editor(rec)))
+        skipped += _record_votes(rec, placed, new_w, new_h, votes)
     return votes, skipped
+
+
+def _record_votes(rec: dict, placed: list, new_w: float, new_h: float, votes: dict) -> int:
+    """Add one record's votes to `votes`; returns how many of its changes matched nothing or are not re-applied."""
+    sid = rec.get("shop_id") or (rec.get("record") or {}).get("shop_id")
+    taken: set[str] = set()                                   # within one record an object answers one change only
+    skipped = 0
+    for ch in (rec.get("record") or rec).get("changes", []):
+        if ch["action"] in SCENE_ACTIONS:
+            continue                                          # replayed afterwards as editor ops (nested_ops)
+        best = None
+        if ch["action"] in APPLIED_ACTIONS and (ch.get("signature") or {}).get("kind") != "text":
+            best = _nearest_placed(placed, taken, ch["before"], new_w, new_h)
+        if best is None:
+            skipped += 1
+            continue
+        taken.add(best[1].id)
+        after = {**ch["after"], "_w": NEARBY_WEIGHT} if rec.get("nearby") else ch["after"]
+        votes.setdefault(best[1].id, []).append((after, sid, _is_editor(rec)))
+    return skipped
 
 
 def blend_boxes(boxes: list[dict]) -> dict:
@@ -761,6 +771,13 @@ def _replay(work: dict, ops: list[dict]) -> bool:
     return True
 
 
+def _edits_for(ch: dict, node: dict, nid: str, pw: float, ph: float) -> list[dict] | None:
+    """The editor ops for one agreed change, or None when the board's node is not the object that was recorded."""
+    if ch["action"] in SCENE_ACTIONS:
+        return _scene_action_ops(ch, nid) if _fits_object(ch, node) else None
+    return _nested_edits(ch, node, nid, pw, ph) if _fits_node(ch, node) else None
+
+
 def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
     """Editor ops that reproduce the stored records' nested changes on a freshly converted board's `scene`.
 
@@ -783,18 +800,8 @@ def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
             continue
         if nid not in nodes:
             continue                                          # inside something already deleted
-        node = nodes[nid][0]
-        if ch["action"] in SCENE_ACTIONS:
-            if not _fits_object(ch, node):
-                summary["skipped"] += 1
-                continue
-            made = _scene_action_ops(ch, nid)
-        elif not _fits_node(ch, node):
-            summary["skipped"] += 1
-            continue
-        else:
-            made = _nested_edits(ch, node, nid, pw, ph)
-        if not _replay(work, made):
+        made = _edits_for(ch, nodes[nid][0], nid, pw, ph)
+        if made is None or not _replay(work, made):
             summary["skipped"] += 1
             continue
         nodes = _nodes_with_parents(work)

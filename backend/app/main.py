@@ -24,6 +24,7 @@ import logging
 from fastapi import Body, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from starlette.concurrency import run_in_threadpool
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
@@ -98,6 +99,16 @@ async def _lifespan(_app):
     _recover_interrupted_work()
     _archive_previous_masters()
     yield
+
+
+MSG_NOT_CDR = "Master file must be a .cdr"
+MSG_BAD_ORIENTATION = "orientation must be 'landscape' or 'portrait'"
+
+
+def _save_stream(src, dest: Path) -> None:
+    """Copy an uploaded file to disk (blocking: async handlers run it in a worker thread)."""
+    with open(dest, "wb") as f:
+        shutil.copyfileobj(src, f)
 
 
 app = FastAPI(title="signage-automation-tool", lifespan=_lifespan)
@@ -181,7 +192,7 @@ async def create_job(
     shops: str = Form(...),
 ):
     if not (master.filename or "").lower().endswith(".cdr"):
-        raise HTTPException(400, "Master file must be a .cdr")
+        raise HTTPException(400, MSG_NOT_CDR)
     try:
         shop_list = json.loads(shops)
         if not (isinstance(shop_list, list) and shop_list):
@@ -313,10 +324,10 @@ def _save_master_upload(master: UploadFile, brand: str, orientation: str, master
                         default_size: tuple[float, float, str] | None = None) -> str:
     """Store an uploaded master .cdr as a new registered `jobs` row (+ its instant preview); returns its id."""
     if not (master.filename or "").lower().endswith(".cdr"):
-        raise HTTPException(400, "Master file must be a .cdr")
+        raise HTTPException(400, MSG_NOT_CDR)
     orientation = orientation.strip().lower()
     if orientation not in MASTER_ORIENTATIONS:
-        raise HTTPException(400, "orientation must be 'landscape' or 'portrait'")
+        raise HTTPException(400, MSG_BAD_ORIENTATION)
     brand = brand.strip()
     if not brand:
         raise HTTPException(400, "brand required")
@@ -408,7 +419,7 @@ def list_masters(brand: str | None = None, orientation: str | None = None):
     """Registered master templates (any number per orientation), oldest first - the first of each orientation is its
     default. Optional `brand` / `orientation` filters. Returns {masters, landscape, portrait}."""
     if orientation is not None and orientation not in MASTER_ORIENTATIONS:
-        raise HTTPException(400, "orientation must be 'landscape' or 'portrait'")
+        raise HTTPException(400, MSG_BAD_ORIENTATION)
     masters = [_master_json(r) for r in db.list_masters(brand, orientation)]
     return {"masters": masters,
             "landscape": [m for m in masters if m["orientation"] == "landscape"],
@@ -462,7 +473,7 @@ def update_master(master_id: str, payload: dict):
     if "orientation" in payload:
         orientation = str(payload["orientation"] or "").strip().lower()
         if orientation not in MASTER_ORIENTATIONS:
-            raise HTTPException(400, "orientation must be 'landscape' or 'portrait'")
+            raise HTTPException(400, MSG_BAD_ORIENTATION)
         fields["orientation"] = orientation
     if "dimensions_default" in payload:
         d = payload["dimensions_default"]
@@ -479,11 +490,10 @@ async def replace_master_file(master_id: str, master: UploadFile = File(...)):
     the preview is read again from the new file."""
     row = _live_master(master_id)
     if not (master.filename or "").lower().endswith(".cdr"):
-        raise HTTPException(400, "Master file must be a .cdr")
+        raise HTTPException(400, MSG_NOT_CDR)
     path = Path(row["master_path"])
     tmp = path.with_name(path.name + ".new")
-    with open(tmp, "wb") as f:
-        shutil.copyfileobj(master.file, f)
+    await run_in_threadpool(_save_stream, master.file, tmp)
     tmp.replace(path)
     db.update_master(master_id, {"master_filename": master.filename})
     preview_path, preview_error = _extract_cdr_preview(path)

@@ -746,7 +746,8 @@ def test_a_line_break_typed_in_the_editor_is_written_to_corel_as_a_paragraph_bre
     (and verification said text differs)."""
     assert er.corel_line_breaks("A\nB") == "A\rB"
     assert er.corel_line_breaks("A\r\nB\n\nC") == "A\rB\r\rC"
-    assert er.same_text("A\rB ", "A\nB") and not er.same_text("AB", "A\nB")
+    assert er.same_text("A\rB ", "A\nB")
+    assert not er.same_text("AB", "A\nB")
     doc, scene, inner = _doc_with_powerclip_text()
     child_id = f"s{inner.StaticID}"
     _, r, _, check = run([{"op": "text", "id": child_id, "content": "ஏசியன் \nஜூஸ் பார்"}], doc, scene)
@@ -1184,13 +1185,15 @@ def test_a_learned_width_is_kept_from_the_real_measured_width_but_never_below_th
     shape = _TextShape(w=700.0, h=100.0, text="NAME")                         # really measured 700 mm wide at 100 mm tall
     notes = []
     assert er._set_edited_text_bbox(shape, node, orig_lines=1, fit_w=552.0, notes=notes)
-    assert shape.SizeWidth == pytest.approx(552.0) and not notes             # scaled uniformly down to the learned width
+    assert shape.SizeWidth == pytest.approx(552.0)                           # scaled uniformly down to the learned width
+    assert not notes
     assert abs(shape.SizeWidth / shape.SizeHeight - 7.0) < 1e-9
     wide = _TextShape(w=4000.0, h=100.0, text="NAME")                         # would need 14 % of the line height: below the 70 % floor
     notes = []
     assert er._set_edited_text_bbox(wide, node, orig_lines=1, fit_w=552.0, notes=notes)
     assert wide.SizeHeight == pytest.approx(70.0)                             # floor reached, not shrunk silently further
-    assert notes and "does not fit the learned width" in notes[0]
+    assert notes
+    assert "does not fit the learned width" in notes[0]
     free = _TextShape(w=300.0, h=100.0, text="NAME")
     assert er._set_edited_text_bbox(free, node, orig_lines=1, fit_w=552.0)
     assert free.SizeWidth == pytest.approx(300.0)                             # already narrower than the cap: the usual line height

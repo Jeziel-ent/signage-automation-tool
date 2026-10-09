@@ -285,14 +285,18 @@ def test_a_correction_the_engine_already_produces_is_reported_in_place_not_appli
     rec["record"]["changes"][0].update(before={"cx": 0.5, "cy": 0.5, "w": 0.988, "h": 1.0}, after={"cx": 0.5, "cy": 0.5, "w": 1.0, "h": 1.0})
     bg = _placed("0", 0, 0, 1000, 400)                            # the engine already fills the page, as the designer did
     s = corrections.apply_to_placed([bg], 1000.0, 400.0, [rec])
-    assert s["applied"] == 0 and s["in_place"] == 1 and s["records"] == ["s1"]
-    assert (bg.x, bg.y, bg.w, bg.h) == (0, 0, 1000, 400) and not bg.warnings
+    assert s["applied"] == 0
+    assert s["in_place"] == 1
+    assert s["records"] == ["s1"]
+    assert (bg.x, bg.y, bg.w, bg.h) == (0, 0, 1000, 400)
+    assert not bg.warnings
 
 
 def test_a_before_box_just_over_the_old_tolerance_still_matches():
     logo = _placed("0", 100, 150, 200 * 0.985, 100)               # 1.5 % of the page narrower than recorded: matched since 2 %
     s = corrections.apply_to_placed([logo], 1000.0, 400.0, [_rec()])
-    assert s["applied"] == 1 and s["skipped"] == 0
+    assert s["applied"] == 1
+    assert s["skipped"] == 0
 
 
 def test_delete_a_correction_endpoint(client):  # noqa: F811
@@ -309,9 +313,12 @@ def test_editor_corrections_are_blended_80_percent_newest_and_20_percent_average
     old["record"]["changes"][0]["after"] = {"cx": 0.9, "cy": 0.9, "w": 0.2, "h": 0.25}
     logo = _placed("0", 100, 150, 200, 100)
     s = corrections.apply_to_placed([logo], 1000.0, 400.0, [new, old])
-    assert s["applied"] == 1 and s["conflicting"] == 0 and sorted(s["records"]) == ["new", "old"]
+    assert s["applied"] == 1
+    assert s["conflicting"] == 0
+    assert sorted(s["records"]) == ["new", "old"]
     # newest (0.3, 0.4), older (0.9, 0.9): average (0.6, 0.65); 0.8 * 0.3 + 0.2 * 0.6 = 0.36, 0.8 * 0.4 + 0.2 * 0.65 = 0.45
-    assert round(logo.x + logo.w / 2, 3) == 360.0 and round(logo.y + logo.h / 2, 3) == 180.0
+    assert round(logo.x + logo.w / 2, 3) == 360.0
+    assert round(logo.y + logo.h / 2, 3) == 180.0
     assert corrections.blend_boxes([{"cx": 1.0, "cy": 0.0, "w": 0.5, "h": 0.5}]) == {"cx": 1.0, "cy": 0.0, "w": 0.5, "h": 0.5}   # one record: as made
 
 
@@ -331,4 +338,5 @@ def test_an_editor_correction_beats_designer_file_records_but_a_change_only_the_
     other["record"]["changes"][0].update(id="b", before={"cx": 0.7, "cy": 0.5, "w": 0.2, "h": 0.25}, after={"cx": 0.75, "cy": 0.5, "w": 0.2, "h": 0.25})
     two = [_placed("0", 100, 150, 200, 100), _placed("1", 600, 150, 200, 100)]
     s = corrections.apply_to_placed(two, 1000.0, 400.0, [editor, other])
-    assert s["applied"] == 2 and s["conflicting"] == 0                            # each object takes the vote it has
+    assert s["applied"] == 2                                                      # each object takes the vote it has
+    assert s["conflicting"] == 0

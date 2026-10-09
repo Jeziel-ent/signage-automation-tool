@@ -21,6 +21,8 @@ export default function Masters() {
   const [notice, setNotice] = useState("");
   const masters = useMemo(() => registry.forBrand(brand), [registry, brand]);
   const total = masterCount(masters);
+  const plural = total === 1 ? "" : "s";
+  const badgeText = brand ? `${total} master${plural} for ${brand}` : "No brand selected";
 
   async function addBrand() {
     const name = newBrand.trim();
@@ -77,7 +79,7 @@ export default function Masters() {
         </div>
         <div className="ws-badges">
           <span className="ws-badge" title={`${mastersOf(masters, "landscape").length} landscape, ${mastersOf(masters, "portrait").length} portrait`}>
-            {brand ? `${total} master${total === 1 ? "" : "s"} for ${brand}` : "No brand selected"}
+            {badgeText}
           </span>
         </div>
       </header>
@@ -89,10 +91,10 @@ export default function Masters() {
           </div>
           <div className="ws-card-body">
             {notice && (
-              <p className="queue-notice" role="status">
+              <output className="queue-notice">
                 <span>{notice}</span>
                 <button type="button" className="icon-btn" onClick={() => setNotice("")} aria-label="Dismiss">{"×"}</button>
-              </p>
+              </output>
             )}
             <div className="mt-grid">
               {["landscape", "portrait"].map((o) => (

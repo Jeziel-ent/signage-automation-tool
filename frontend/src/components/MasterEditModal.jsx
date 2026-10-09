@@ -13,6 +13,11 @@ const UNITS = ["in", "ft", "cm", "mm"];
  * with a new version (PUT /api/masters/{id}/file, real upload progress). Used on the Masters page and on the Automation page.
  * `onSaved(master, { fileReplaced })` gets the master as the server now has it.
  */
+function saveLabelFor(progress, saving) {
+  if (progress !== null) return `Uploading ${progress}%`;
+  return saving ? "Saving..." : "Save";
+}
+
 export default function MasterEditModal({ master, onSaved, onClose }) {
   const d = master.dimensions_default;
   const [name, setName] = useState(master.name);
@@ -158,7 +163,7 @@ export default function MasterEditModal({ master, onSaved, onClose }) {
             <span className="xm-foot-hint">Boards already made from this master stay as they are.</span>
             <button type="button" className="xm-btn" onClick={onClose} disabled={busy}>Cancel</button>
             <button className="xm-primary" type="submit" disabled={busy || !dimsValid}>
-              {progress !== null ? `Uploading ${progress}%` : saving ? "Saving..." : "Save"}
+              {saveLabelFor(progress, saving)}
             </button>
           </footer>
         </form>

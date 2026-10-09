@@ -127,7 +127,8 @@ def test_a_name_is_never_made_larger_than_the_designers_box_even_when_her_box_ho
                                                         "to": {"x": 100, "y": 750, "w": 800, "h": 170}}])])
     n = scene_ops.apply_ops(fresh, ops)["layers"][0]["children"][0]["children"][1]["children"][0]
     assert n["w"] <= 800.5                                                  # her width, not 800 x 1.7
-    assert n["h"] <= 170.5 and n["w"] / n["h"] == pytest.approx(8.0, rel=0.01)
+    assert n["h"] <= 170.5
+    assert n["w"] / n["h"] == pytest.approx(8.0, rel=0.01)
 
 
 def test_designers_who_disagree_are_not_applied_and_a_different_structure_is_skipped():
@@ -239,7 +240,8 @@ def test_a_fresh_board_gets_the_same_number_of_lines_inside_her_box():
     got = scene_ops.apply_ops(fresh, ops)
     block = next(n for n in _walk(got) if n["id"] == "s96")
     text = next(n for n in _walk(got) if n["id"] == "s97")
-    assert text["text"]["content"] == "SRI GANESHA\nKITCHEN" and text["stale"] is True
+    assert text["text"]["content"] == "SRI GANESHA\nKITCHEN"
+    assert text["stale"] is True
     assert block["w"] <= 600 * corrections.LINED_FILL_MAX + 0.5                  # kept near her 600 mm box (a rough guard, see LINED_FILL_MAX)
     assert block["y"] + block["h"] / 2 == pytest.approx(780, abs=0.5)             # centred on her box
     assert block["h"] == pytest.approx(160, abs=0.5) or block["h"] < 160          # per-line height: hers, or smaller to stay inside
@@ -317,9 +319,11 @@ def test_a_hidden_object_inside_a_group_is_recorded_and_hidden_again_on_the_next
     ops = [{"op": "visibility", "id": "s97", "visible": False}]
     d = corrections.diff_scenes(_board(), _edited(ops))
     gone = next(c for c in d["nested"] if c["id"] == "s97")
-    assert gone["action"] == "hidden" and gone["after"] is None
+    assert gone["action"] == "hidden"
+    assert gone["after"] is None
     got, summary = corrections.nested_ops(_board(), [_approved(ops)])
-    assert got == [{"op": "visibility", "id": "s97", "visible": False}] and summary["applied"] == 1
+    assert got == [{"op": "visibility", "id": "s97", "visible": False}]
+    assert summary["applied"] == 1
     assert _find_node(scene_ops.apply_ops(_board(), got), "s97")["visible"] is False
 
 
@@ -338,7 +342,8 @@ def test_a_top_level_hide_is_replayed_through_the_same_path():
                                                     "after": None, "action": "hidden"}], "nested": []}}
     assert corrections.has_scene_changes([rec])
     got, summary = corrections.nested_ops(_board(), [rec])
-    assert got == [{"op": "visibility", "id": "s95", "visible": False}] and summary["applied"] == 1
+    assert got == [{"op": "visibility", "id": "s95", "visible": False}]
+    assert summary["applied"] == 1
 
 
 def test_nested_boxes_are_blended_80_20_newest_first():
@@ -363,7 +368,8 @@ def test_the_length_of_the_name_she_broke_is_recorded_and_a_much_shorter_name_st
     ok = _board()
     ok["layers"][0]["children"][0]["children"][1]["children"][0]["text"]["content"] = "SRI GANESHA STORES"    # about as long as hers
     ops, _ = corrections.nested_ops(ok, [_approved(TWO_LINE_OPS)])
-    assert ops[0]["op"] == "text" and "\n" in ops[0]["content"]
+    assert ops[0]["op"] == "text"
+    assert "\n" in ops[0]["content"]
 
 
 def test_old_records_without_a_name_length_still_break_any_name():
@@ -373,7 +379,8 @@ def test_old_records_without_a_name_length_still_break_any_name():
     short = _board()
     short["layers"][0]["children"][0]["children"][1]["children"][0]["text"]["content"] = "SRI AMMAN"
     ops, _ = corrections.nested_ops(short, [rec])
-    assert ops[0]["op"] == "text" and "\n" in ops[0]["content"]
+    assert ops[0]["op"] == "text"
+    assert "\n" in ops[0]["content"]
 
 
 def test_the_resize_of_a_name_block_carries_the_width_the_export_must_keep():
@@ -396,7 +403,8 @@ def test_a_nearby_size_record_is_used_but_a_different_shape_is_not():
     far = _near(_rec("f"), 1000.0, 600.0)
     got = corrections.usable_records([far, near, exact], "b", "m.cdr", 1000.0, 400.0, None)
     assert [r["shop_id"] for r in got] == ["e", "n"]                                     # exact size first, then the nearby one
-    assert got[1]["nearby"] is True and "nearby" not in got[0]
+    assert got[1]["nearby"] is True
+    assert "nearby" not in got[0]
     wide = _near(_rec("w"), 1000.0, 290.0)             # same area band but aspect 3.4: not nearby
     assert corrections.usable_records([wide], "b", "m.cdr", 1000.0, 400.0, None) == []
 
@@ -407,7 +415,8 @@ def test_a_nearby_record_stands_in_when_there_is_no_exact_one_and_counts_half_ne
     near["nearby"] = True
     logo = _placed("0", 100, 150, 200, 100)
     s = corrections.apply_to_placed([logo], 1000.0, 400.0, [near])
-    assert s["applied"] == 1 and logo.x + logo.w / 2 == pytest.approx(300.0)             # alone it is applied as it is
+    assert s["applied"] == 1
+    assert logo.x + logo.w / 2 == pytest.approx(300.0)             # alone it is applied as it is
     exact = _rec("e")
     other = _near(_rec("o"), 1000.0, 410.0)
     other["nearby"] = True

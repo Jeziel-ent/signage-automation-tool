@@ -679,7 +679,7 @@ class Replayer:
             self._register_copy(node, dup)
             dup.Visible = bool(node.get("visible", True))
             _set_bbox(dup, node)
-            if node.get("text") and not same_text(_safe(lambda: dup.Text.Story.Text), node["text"].get("content")):
+            if node.get("text") and not same_text(_safe(lambda d=dup: d.Text.Story.Text), node["text"].get("content")):
                 self._apply_text(dup, node["text"])
             dup.MoveToLayer(self.layers[layer_id])
             if dst != layer_id:

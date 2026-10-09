@@ -241,7 +241,8 @@ def test_update_master_renames_and_sets_the_default_size(client):
     assert body["name"] == "Promo"
     assert body["dimensions_default"] == {"width": 10, "height": 3, "unit": "ft"}
     r = client.patch(f"/api/masters/{m['id']}", json={"name": "", "dimensions_default": None})
-    assert r.json()["name"] == "Master 1" and r.json()["dimensions_default"] is None
+    assert r.json()["name"] == "Master 1"
+    assert r.json()["dimensions_default"] is None
 
 
 def test_update_master_validates(client):
@@ -262,7 +263,8 @@ def test_replace_master_file_keeps_the_entry_and_updates_the_file(client):
     r = client.put(f"/api/masters/{m['id']}/file", files={"master": ("new version.cdr", b"NEWDATA", "application/octet-stream")})
     assert r.status_code == 200
     body = r.json()
-    assert body["id"] == m["id"] and body["file_name"] == "new version.cdr"
+    assert body["id"] == m["id"]
+    assert body["file_name"] == "new version.cdr"
     assert Path(m["file_path"]).read_bytes() == b"NEWDATA"
     assert client.put(f"/api/masters/{m['id']}/file", files={"master": ("x.txt", b"x", "text/plain")}).status_code == 400
     assert client.put("/api/masters/nope/file", files={"master": ("x.cdr", b"x", "application/octet-stream")}).status_code == 404
