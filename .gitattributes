@@ -2,3 +2,4 @@
 presentations/ export-ignore
 *.pptx export-ignore
 .claude/ export-ignore
+.githooks/* text eol=lf
