@@ -1164,3 +1164,33 @@ def test_swap_image_does_not_escape_the_assets_directory(tmp_path):
     replayer = er.Replayer(doc, scene, [op], assets_dir=assets_dir)
     with pytest.raises(er.ReplayError, match="replacement image not found"):
         replayer.run()
+
+
+def test_an_edited_text_wider_than_the_page_is_scaled_down_uniformly_and_centred():
+    """The editor's preview font is narrower than the real one: the same line height came out several times wider than the board."""
+    node = {"stale": True, "type": "text", "x": 0.0, "y": 700.0, "w": 914.4, "h": 218.0}
+    shape = _TextShape(w=400.0, h=100.0, text="Sri Sai" + chr(13) + "cafe")      # two lines, 4:1
+    assert er._set_edited_text_bbox(shape, node, orig_lines=1, max_w=914.4 * 0.98)
+    assert shape.SizeWidth <= 914.4 * 0.98 + 1e-6                                   # (uncapped it would be 400 * 218/50 = 1744 mm)
+    assert abs(shape.SizeWidth / shape.SizeHeight - 4.0) < 1e-9                    # still no stretch
+    assert abs(shape.LeftX + shape.SizeWidth / 2 - 457.2) < 1e-6                    # centred on the box
+    plain = _TextShape(w=400.0, h=100.0, text="A" + chr(13) + "B")
+    assert er._set_edited_text_bbox(plain, node, orig_lines=1)                      # without a cap: the old behaviour
+    assert plain.SizeWidth > 914.4
+
+
+def test_a_learned_width_is_kept_from_the_real_measured_width_but_never_below_the_floor():
+    node = {"stale": True, "type": "text", "x": 0.0, "y": 100.0, "w": 600.0, "h": 100.0}
+    shape = _TextShape(w=700.0, h=100.0, text="NAME")                         # really measured 700 mm wide at 100 mm tall
+    notes = []
+    assert er._set_edited_text_bbox(shape, node, orig_lines=1, fit_w=552.0, notes=notes)
+    assert shape.SizeWidth == pytest.approx(552.0) and not notes             # scaled uniformly down to the learned width
+    assert abs(shape.SizeWidth / shape.SizeHeight - 7.0) < 1e-9
+    wide = _TextShape(w=4000.0, h=100.0, text="NAME")                         # would need 14 % of the line height: below the 70 % floor
+    notes = []
+    assert er._set_edited_text_bbox(wide, node, orig_lines=1, fit_w=552.0, notes=notes)
+    assert wide.SizeHeight == pytest.approx(70.0)                             # floor reached, not shrunk silently further
+    assert notes and "does not fit the learned width" in notes[0]
+    free = _TextShape(w=300.0, h=100.0, text="NAME")
+    assert er._set_edited_text_bbox(free, node, orig_lines=1, fit_w=552.0)
+    assert free.SizeWidth == pytest.approx(300.0)                             # already narrower than the cap: the usual line height

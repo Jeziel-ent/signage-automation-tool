@@ -1082,7 +1082,7 @@ def _apply_learned_nested(shop_id: str) -> None:
         found = corrections.usable_records(db.list_corrections(), job["brand"], chosen.get("master_filename"),
                                            to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
                                            shop.get("board_type"))
-        if not any(r["record"].get("nested") for r in found):
+        if not corrections.has_scene_changes(found):
             return
         _scene_build_worker(shop["job_id"], shop_id)
         scene = _load_scene(shop["job_id"], shop_id)
@@ -1188,7 +1188,7 @@ def _learned_for(rows: list[dict], shop: dict | None) -> int:
                                        to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
                                        shop.get("board_type"))
     top = sum(1 for r in found for c in r["record"]["changes"]
-              if c["action"] in corrections.APPLIED_ACTIONS and (c.get("signature") or {}).get("kind") != "text")
+              if c["action"] in corrections.LEARNED_ACTIONS and (c.get("signature") or {}).get("kind") != "text")
     return top + sum(len(r["record"].get("nested", [])) for r in found)
 
 
@@ -1200,6 +1200,15 @@ def v2_corrections():
         shop = db.get_shop(row["shop_id"])
         out.append(corrections.summarize(row, shop["name"] if shop else None))
     return {"corrections": out}
+
+
+@app.delete("/api/v2/corrections/{shop_id:path}", responses={404: {"description": "Not found"}})
+def v2_delete_correction(shop_id: str):
+    """Forget one stored correction (a bad editor save, or a record nobody wants applied any more)."""
+    if not db.get_correction(shop_id):
+        raise HTTPException(404, "No such correction")
+    db.delete_correction(shop_id)
+    return {"deleted": shop_id}
 
 
 @app.get("/api/v2/shops/{shop_id}/status", responses={404: {"description": "Not found"}})

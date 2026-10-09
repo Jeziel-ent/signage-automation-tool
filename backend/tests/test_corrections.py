@@ -171,8 +171,15 @@ def test_apply_ignores_text_unmatched_and_non_geometry_changes():
     assert corrections.apply_to_placed([_placed("0", 100, 150, 200, 100)], 1000.0, 400.0, [rec])["applied"] == 0
 
 
+def _from_files(*recs):
+    """Mark records as learned from designers' own files (the ones that must AGREE, instead of the newest editor save winning)."""
+    for r in recs:
+        r["record"]["source"] = "designer-dataset"
+    return list(recs)
+
+
 def test_designers_who_agree_are_applied_as_their_median_and_ones_who_disagree_are_not():
-    agree = [_rec("a"), _rec("b"), _rec("c")]
+    agree = _from_files(_rec("a"), _rec("b"), _rec("c"))
     agree[1]["record"]["changes"][0]["after"] = {"cx": 0.305, "cy": 0.4, "w": 0.2, "h": 0.25}
     agree[2]["record"]["changes"][0]["after"] = {"cx": 0.295, "cy": 0.4, "w": 0.2, "h": 0.25}
     logo = _placed("0", 100, 150, 200, 100)
@@ -181,7 +188,7 @@ def test_designers_who_agree_are_applied_as_their_median_and_ones_who_disagree_a
     assert s["conflicting"] == 0
     assert sorted(s["records"]) == ["a", "b", "c"]
     assert round(logo.x + logo.w / 2) == 300                       # the median centre (0.30 of 1000 mm)
-    split = [_rec("x"), _rec("y")]
+    split = _from_files(_rec("x"), _rec("y"))
     split[1]["record"]["changes"][0]["after"] = {"cx": 0.9, "cy": 0.9, "w": 0.2, "h": 0.25}
     logo2 = _placed("0", 100, 150, 200, 100)
     s = corrections.apply_to_placed([logo2], 1000.0, 400.0, split)
@@ -248,7 +255,7 @@ def test_summarize_marks_dataset_seeds_and_skips_shift_for_hidden():
     out = corrections.summarize(row)
     assert out["source"] == "designer-dataset"
     assert out["changes"][1]["shift"] is None
-    assert out["applies"] == ["a"]                          # a hidden object is not re-applied
+    assert out["applies"] == ["a", "h"]                     # a hidden object is replayed too (as a visibility op)
 
 
 def test_learned_list_endpoint(client):  # noqa: F811
@@ -271,3 +278,57 @@ def test_an_edit_saved_again_replaces_the_record_and_stays_used(client):  # noqa
     client.put(f"/api/editor/{job}/{shop}/ops", json={"ops": ops + [{"op": "move", "ids": [top], "dx": 10, "dy": 0}]})
     assert len(db.list_corrections()) == 1
     assert client.get(f"/api/v2/intelligence/available?ids={shop}").json() == {"available": {shop: 1}}
+
+
+def test_a_correction_the_engine_already_produces_is_reported_in_place_not_applied():
+    rec = _rec()
+    rec["record"]["changes"][0].update(before={"cx": 0.5, "cy": 0.5, "w": 0.988, "h": 1.0}, after={"cx": 0.5, "cy": 0.5, "w": 1.0, "h": 1.0})
+    bg = _placed("0", 0, 0, 1000, 400)                            # the engine already fills the page, as the designer did
+    s = corrections.apply_to_placed([bg], 1000.0, 400.0, [rec])
+    assert s["applied"] == 0 and s["in_place"] == 1 and s["records"] == ["s1"]
+    assert (bg.x, bg.y, bg.w, bg.h) == (0, 0, 1000, 400) and not bg.warnings
+
+
+def test_a_before_box_just_over_the_old_tolerance_still_matches():
+    logo = _placed("0", 100, 150, 200 * 0.985, 100)               # 1.5 % of the page narrower than recorded: matched since 2 %
+    s = corrections.apply_to_placed([logo], 1000.0, 400.0, [_rec()])
+    assert s["applied"] == 1 and s["skipped"] == 0
+
+
+def test_delete_a_correction_endpoint(client):  # noqa: F811
+    from app import db
+    db.save_correction({"shop_id": "gone-1", "brand": "b", "master_file": "m.cdr", "page_w_mm": 1000.0, "page_h_mm": 400.0,
+                        "board_type": None, "changes": [], "nested": []})
+    assert client.delete("/api/v2/corrections/gone-1").json() == {"deleted": "gone-1"}
+    assert db.get_correction("gone-1") is None
+    assert client.delete("/api/v2/corrections/gone-1").status_code == 404
+
+
+def test_editor_corrections_are_blended_80_percent_newest_and_20_percent_average():
+    new, old = _rec("new"), _rec("old")                          # records come newest first
+    old["record"]["changes"][0]["after"] = {"cx": 0.9, "cy": 0.9, "w": 0.2, "h": 0.25}
+    logo = _placed("0", 100, 150, 200, 100)
+    s = corrections.apply_to_placed([logo], 1000.0, 400.0, [new, old])
+    assert s["applied"] == 1 and s["conflicting"] == 0 and sorted(s["records"]) == ["new", "old"]
+    # newest (0.3, 0.4), older (0.9, 0.9): average (0.6, 0.65); 0.8 * 0.3 + 0.2 * 0.6 = 0.36, 0.8 * 0.4 + 0.2 * 0.65 = 0.45
+    assert round(logo.x + logo.w / 2, 3) == 360.0 and round(logo.y + logo.h / 2, 3) == 180.0
+    assert corrections.blend_boxes([{"cx": 1.0, "cy": 0.0, "w": 0.5, "h": 0.5}]) == {"cx": 1.0, "cy": 0.0, "w": 0.5, "h": 0.5}   # one record: as made
+
+
+def test_three_editor_corrections_blend_with_the_newest_leading():
+    a, b, c = ({"cx": v, "cy": 0.5, "w": 0.2, "h": 0.2} for v in (0.2, 0.5, 0.8))      # newest first
+    got = corrections.blend_boxes([a, b, c])
+    assert got["cx"] == pytest.approx(0.8 * 0.2 + 0.2 * 0.5)                           # average of the three is 0.5
+
+
+def test_an_editor_correction_beats_designer_file_records_but_a_change_only_the_old_one_has_still_applies():
+    editor = _rec("ed")
+    files = _from_files(_rec("seed"))
+    files[0]["record"]["changes"][0]["after"] = {"cx": 0.9, "cy": 0.9, "w": 0.2, "h": 0.25}
+    logo = _placed("0", 100, 150, 200, 100)
+    assert corrections.apply_to_placed([logo], 1000.0, 400.0, [editor] + files)["records"] == ["ed"]
+    other = _rec("old")
+    other["record"]["changes"][0].update(id="b", before={"cx": 0.7, "cy": 0.5, "w": 0.2, "h": 0.25}, after={"cx": 0.75, "cy": 0.5, "w": 0.2, "h": 0.25})
+    two = [_placed("0", 100, 150, 200, 100), _placed("1", 600, 150, 200, 100)]
+    s = corrections.apply_to_placed(two, 1000.0, 400.0, [editor, other])
+    assert s["applied"] == 2 and s["conflicting"] == 0                            # each object takes the vote it has

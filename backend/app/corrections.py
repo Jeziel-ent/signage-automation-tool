@@ -12,6 +12,7 @@ generated. Every stored correction is applied to later boards of the same size (
 from __future__ import annotations
 
 import math
+import re
 
 MIN_SHIFT_FRAC = 0.002     # a move / resize smaller than this share of the page is nudging noise, not a correction
 
@@ -63,7 +64,12 @@ def _action(moved: bool, resized: bool) -> str:
     return "moved" if moved else "resized"
 
 
-def _top_change(nid: str, o: dict, n: dict | None, bw: float, bh: float) -> dict | None:
+def _survivors(node: dict, alive: set[str]) -> bool:
+    """True when a descendant of `node` is still on the edited board: the group was UNGROUPED (its content kept), not deleted."""
+    return any(c["id"] in alive or _survivors(c, alive) for c in node.get("children") or [])
+
+
+def _top_change(nid: str, o: dict, n: dict | None, bw: float, bh: float, alive: set[str] = frozenset()) -> dict | None:
     """What the designer did to ONE top-level object (`n` is its edited twin, None when it is gone), or None when nothing worth learning."""
     before = _frac_box(o, bw, bh)
 
@@ -71,7 +77,7 @@ def _top_change(nid: str, o: dict, n: dict | None, bw: float, bh: float) -> dict
         return {"id": nid, "signature": _signature(o), "before": before, "after": after, "action": action}
 
     if n is None:
-        return entry(None, "deleted")
+        return None if _survivors(o, alive) else entry(None, "deleted")
     if o.get("visible", True) and not n.get("visible", True):
         return entry(None, "hidden")
     if o.get("children") and _group_refresh(o, n, bw, bh):
@@ -94,12 +100,13 @@ def diff_scenes(base: dict, edited: dict) -> dict:
     if not (math.isclose(bw, ew, rel_tol=1e-6) and math.isclose(bh, eh, rel_tol=1e-6)):
         return {"page_changed": True, "changes": [], "nested": [], "text_edits": 0}
     old, new = _top_nodes(base), _all_nodes(edited)
+    alive = set(new)
     changes, text_edits = [], 0
     for nid, o in old.items():
         n = new.get(nid)
         if n is not None and n.get("text") != o.get("text"):
             text_edits += 1
-        ch = _top_change(nid, o, n, bw, bh)
+        ch = _top_change(nid, o, n, bw, bh, alive)
         if ch:
             changes.append(ch)
     nested, nested_text_edits = diff_nested(base, edited)
@@ -212,12 +219,49 @@ def _content_of(n: dict):
     return (n.get("text") or {}).get("content")
 
 
+_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+
+
+def _line_count(text) -> int:
+    text = str(text or "")
+    return len(_LINE_BREAK.split(text)) if text else 1
+
+
+def _single_text_leaf(n: dict) -> dict | None:
+    """The one text object inside `n` (n itself when it is text), None when there is no text or several."""
+    found: list[dict] = []
+
+    def walk(x: dict) -> None:
+        if x.get("text"):
+            found.append(x)
+        for c in x.get("children") or []:
+            walk(c)
+
+    walk(n)
+    return found[0] if len(found) == 1 else None
+
+
+def name_chars(text) -> int:
+    """How long a name is, ignoring line breaks and runs of spaces."""
+    return len(" ".join(str(text or "").split()))
+
+
+def _line_change(old: dict, new: dict) -> int | None:
+    """The number of lines the designer set a name block on, when that differs from the engine's (None when unchanged or not one text)."""
+    a, b = _single_text_leaf(old), _single_text_leaf(new)
+    if a is None or b is None:
+        return None
+    before, after = _line_count(_content_of(a)), _line_count(_content_of(b))
+    return after if after != before else None
+
+
 def _nested_entry(nid: str, parent: str, old: dict, new: dict, pw: float, ph: float) -> dict | None:
     """The recorded change for one nested object (box beyond its parent's own move / resize, and / or text style), or None."""
     o, n = old[nid][0], new[nid][0]
     shifted, resized = _nested_motion(o, n, old[parent][0], new[parent][0], pw, ph)
     style = _style_changes(o, n) if o.get("text") and n.get("text") else {}
-    if not (shifted or resized or style):
+    lines = _line_change(o, n) if _text_block(o) else None
+    if not (shifted or resized or style or lines):
         return None
     action = _action(shifted, resized) if shifted or resized else "styled"
     entry = {"id": nid, "parent": parent, "path": _path(old, nid), "signature": _signature(o), "action": action,
@@ -226,7 +270,17 @@ def _nested_entry(nid: str, parent: str, old: dict, new: dict, pw: float, ph: fl
         entry["text"] = True
     if style:
         entry["style"] = style
+    if lines:
+        entry["lines"] = lines          # how many lines she set the name on: the next board's name gets the same number
+        leaf = _single_text_leaf(n)
+        entry["name_chars"] = name_chars(_content_of(leaf)) if leaf else 0     # ... but only a name about as long as hers
     return entry
+
+
+def _gone_entry(nid: str, parent: str, old: dict, o: dict, action: str, pw: float, ph: float) -> dict:
+    """A nested object the designer hid or deleted (no 'after' box)."""
+    return {"id": nid, "parent": parent, "path": _path(old, nid), "signature": _signature(o), "action": action,
+            "before": _frac_box(o, pw, ph), "after": None}
 
 
 def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
@@ -236,10 +290,20 @@ def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
     pw, ph = _page(base)
     old, new = _nodes_with_parents(base), _nodes_with_parents(edited)
     out, text_edits = [], 0
+    alive = set(new)
     for nid, (o, parent) in old.items():
-        if parent is None or nid not in new or new[nid][1] != parent:
-            continue                                         # top-level (handled elsewhere) or moved to another parent: not learned
+        if parent is None:
+            continue                                         # top-level: handled in diff_scenes
+        if nid not in new:
+            if parent in new and not _survivors(o, alive):
+                out.append(_gone_entry(nid, parent, old, o, "deleted", pw, ph))     # the object itself was deleted (not just ungrouped)
+            continue
+        if new[nid][1] != parent:
+            continue                                         # moved to another parent: not learned
         n = new[nid][0]
+        if o.get("visible", True) and not n.get("visible", True):
+            out.append(_gone_entry(nid, parent, old, o, "hidden", pw, ph))
+            continue
         text_edits += _content_of(n) != _content_of(o)
         entry = _nested_entry(nid, parent, old, new, pw, ph)
         if entry:
@@ -248,10 +312,20 @@ def diff_nested(base: dict, edited: dict) -> tuple[list, int]:
 
 
 SAME_SIZE_TOL = 0.005      # a correction applies to a board whose page is within 0.5 % of the one it was made on
-MATCH_TOL = 0.012          # a recorded "before" box matches a placed object within 1.2 % of the page (centre and size)
+MATCH_TOL = 0.02           # a recorded "before" box matches a placed object within 2 % of the page (centre and size)
+IN_PLACE_TOL = 0.002       # an object already within 0.2 % of the page of the learned box needs no move
 CONSENSUS_TOL = 0.02       # several designers agree on an object when their boxes differ by less than this share of the page
 TEXT_ROLES = ("text", "shopname")
-APPLIED_ACTIONS = ("moved", "resized", "moved+resized")
+APPLIED_ACTIONS = ("moved", "resized", "moved+resized")     # re-applied while the board is placed (engine time)
+SCENE_ACTIONS = ("hidden", "deleted")                       # re-applied afterwards as editor ops (visibility / delete)
+LEARNED_ACTIONS = APPLIED_ACTIONS + SCENE_ACTIONS
+RECENT_WEIGHT = 0.8        # an object's learned box = 80 % the NEWEST editor correction ...
+AVERAGE_WEIGHT = 0.2       # ... + 20 % the MEDIAN (3+ records; the plain average of two) of every editor correction that names it
+NEARBY_ASPECT_TOL = 0.03   # a correction made on a page of nearly the same shape (aspect within 3 %) ...
+NEARBY_AREA_TOL = 0.25     # ... and size (area within 25 %) still describes a board that has no record of its own size
+NEARBY_WEIGHT = 0.5        # a nearby record counts half in the averaged part; a record of the exact size always leads
+LINE_MIN_FRAC = 0.75       # a name shorter than this share of the name she broke into lines stays on one line
+FIT_FRAC = 0.92            # the export keeps a learned name inside this share of her box width (measured by CorelDRAW, not estimated)
 
 
 def usable_records(rows: list[dict], brand: str | None, master_file: str | None, w_mm: float, h_mm: float,
@@ -261,7 +335,10 @@ def usable_records(rows: list[dict], brand: str | None, master_file: str | None,
     Newest first, so a later correction wins a clash."""
     want = (board_type or "").strip().lower()
     out = [r for r in rows if _record_fits(r, brand, master_file, w_mm, h_mm, want)]
-    return sorted(out, key=lambda r: r.get("updated_at") or 0, reverse=True)
+    out = sorted(out, key=lambda r: r.get("updated_at") or 0, reverse=True)
+    near = [{**r, "nearby": True} for r in rows if _record_fits(r, brand, master_file, w_mm, h_mm, want, nearby=True)]
+    near.sort(key=lambda r: r.get("updated_at") or 0, reverse=True)
+    return out + near                                       # exact-size records lead; nearby ones only steady them (or stand in when there is none)
 
 
 def _same_size(a, b) -> bool:
@@ -272,13 +349,29 @@ def _lower(v) -> str:
     return (v or "").strip().lower()
 
 
-def _record_fits(r: dict, brand: str | None, master_file: str | None, w_mm: float, h_mm: float, want_type: str) -> bool:
-    """One stored record describes this board: same brand, same master file, same page size and (when both name one) board type."""
+def _nearby_size(r: dict, w_mm: float, h_mm: float) -> bool:
+    """The record's page is not this size but nearly the same shape (`NEARBY_ASPECT_TOL`) and area (`NEARBY_AREA_TOL`)."""
+    try:
+        rw, rh = float(r["page_w_mm"]), float(r["page_h_mm"])
+        if min(rw, rh, w_mm, h_mm) <= 0:
+            return False
+        return abs(math.log((rw / rh) / (w_mm / h_mm))) <= NEARBY_ASPECT_TOL and abs((rw * rh) / (w_mm * h_mm) - 1.0) <= NEARBY_AREA_TOL
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _record_fits(r: dict, brand: str | None, master_file: str | None, w_mm: float, h_mm: float, want_type: str, nearby: bool = False) -> bool:
+    """One stored record describes this board: same brand, same master file, same page size (`nearby`: a nearly same-shaped, nearly same-sized
+    page that is NOT the same size) and (when both name one) board type."""
     if (r.get("brand") or "") != (brand or ""):
         return False
     if _lower(r.get("master_file")) != _lower(master_file):
         return False
-    if not (_same_size(r["page_w_mm"], w_mm) and _same_size(r["page_h_mm"], h_mm)):
+    same = _same_size(r["page_w_mm"], w_mm) and _same_size(r["page_h_mm"], h_mm)
+    if nearby:
+        if same or not _nearby_size(r, w_mm, h_mm):
+            return False
+    elif not same:
         return False
     have = _lower(r.get("board_type"))
     return not (want_type and have and want_type != have)
@@ -305,14 +398,21 @@ def _nearest_placed(placed: list, taken: set[str], b: dict, new_w: float, new_h:
     return best
 
 
+def _is_editor(rec: dict) -> bool:
+    """A record saved from the editor (a designer corrected a board in this app); False for one learned from a designer's own file."""
+    return not (rec.get("record") or rec).get("source")
+
+
 def _collect_votes(placed: list, new_w: float, new_h: float, records: list[dict]) -> tuple[dict, int]:
-    """({placed id: [(recorded "after" box, shop id)]}, number of recorded changes that matched nothing or are not re-applied)."""
-    votes: dict[str, list[tuple[dict, str]]] = {}
+    """({placed id: [(recorded "after" box, shop id, from the editor)]}, number of recorded changes that matched nothing or are not re-applied)."""
+    votes: dict[str, list[tuple[dict, str, bool]]] = {}
     skipped = 0
     for rec in records:
         sid = rec.get("shop_id") or (rec.get("record") or {}).get("shop_id")
         taken: set[str] = set()                                   # within one record an object answers one change only
         for ch in (rec.get("record") or rec).get("changes", []):
+            if ch["action"] in SCENE_ACTIONS:
+                continue                                          # replayed afterwards as editor ops (nested_ops)
             if ch["action"] not in APPLIED_ACTIONS or (ch.get("signature") or {}).get("kind") == "text":
                 skipped += 1
                 continue
@@ -321,8 +421,32 @@ def _collect_votes(placed: list, new_w: float, new_h: float, records: list[dict]
                 skipped += 1
                 continue
             taken.add(best[1].id)
-            votes.setdefault(best[1].id, []).append((ch["after"], sid))
+            after = {**ch["after"], "_w": NEARBY_WEIGHT} if rec.get("nearby") else ch["after"]
+            votes.setdefault(best[1].id, []).append((after, sid, _is_editor(rec)))
     return votes, skipped
+
+
+def blend_boxes(boxes: list[dict]) -> dict:
+    """The learned box from the editor corrections that name an object, NEWEST FIRST: 80 % the newest + 20 % the average of all of them."""
+    if len(boxes) == 1:
+        return {k: boxes[0][k] for k in BOX_KEYS}                # one correction: exactly as the designer made it
+    if len(boxes) >= 3:
+        mid = {k: _median([b[k] for b in boxes]) for k in BOX_KEYS}      # the median: one mistaken edit cannot drag the steady part
+    else:
+        w = [b.get("_w", 1.0) for b in boxes]                    # two records: the (weighted) average - a nearby-size record counts half
+        mid = {k: sum(b[k] * x for b, x in zip(boxes, w)) / sum(w) for k in BOX_KEYS}
+    return {k: round(RECENT_WEIGHT * boxes[0][k] + AVERAGE_WEIGHT * mid[k], 6) for k in BOX_KEYS}
+
+
+def _decide_box(votes: list[tuple[dict, str, bool]]) -> tuple[dict | None, list[str]]:
+    """(the box an object takes, the shop ids behind it). Corrections saved from the editor beat the rest and are blended 8:2 - 80 % the NEWEST
+    (`records` come newest first) and 20 % the average of all of them (`blend_boxes`) - so a fresh fix leads and older ones steady it instead of
+    clashing. Without one (corrections learned from designer files) the boxes must agree - see `_agreed_box`."""
+    editors = [(box, sid) for box, sid, editor in votes if editor]
+    if editors:
+        return blend_boxes([b for b, _ in editors]), [sid for _, sid in editors]
+    agreed = _agreed_box([b for b, _, _ in votes])
+    return agreed, [sid for _, sid, _ in votes]
 
 
 def _agreed_box(boxes: list[dict]) -> dict | None:
@@ -344,20 +468,33 @@ def apply_to_placed(placed: list, new_w: float, new_h: float, records: list[dict
     """
     votes, skipped = _collect_votes(placed, new_w, new_h, records)
     by_id = {p.id: p for p in placed}
-    applied = conflicting = 0
+    applied = conflicting = in_place = 0
     used: list[str] = []
     for pid, vs in votes.items():
-        a = _agreed_box([x for x, _ in vs])
+        a, sids = _decide_box(vs)
         if a is None:
             conflicting += 1
             continue
         p = by_id[pid]
+        if _already_there(p, a, new_w, new_h):
+            in_place += 1
+            used.extend(sid for sid in sids if sid not in used)
+            continue
         p.w, p.h = a["w"] * new_w, a["h"] * new_h
         p.x, p.y = a["cx"] * new_w - p.w / 2, a["cy"] * new_h - p.h / 2
         p.warnings.append("moved to where a designer corrected this board size (Corel Intelligence)")
         applied += 1
-        used.extend(sid for _, sid in vs if sid not in used)
-    return {"applied": applied, "skipped": skipped, "conflicting": conflicting, "records": used}
+        used.extend(sid for sid in sids if sid not in used)
+    out = {"applied": applied, "skipped": skipped, "conflicting": conflicting, "records": used}
+    if in_place:
+        out["in_place"] = in_place          # learned boxes the engine already produced: nothing to move
+    return out
+
+
+def _already_there(p, box: dict, new_w: float, new_h: float) -> bool:
+    """True when the placed object already sits (within IN_PLACE_TOL of the page) where the designers put it."""
+    return (abs((p.x + p.w / 2) / new_w - box["cx"]) <= IN_PLACE_TOL and abs((p.y + p.h / 2) / new_h - box["cy"]) <= IN_PLACE_TOL
+            and abs(p.w / new_w - box["w"]) <= IN_PLACE_TOL and abs(p.h / new_h - box["h"]) <= IN_PLACE_TOL)
 
 
 def build_record(shop: dict, job: dict | None, base: dict, edited: dict, layout: dict | None) -> dict | None:
@@ -391,13 +528,15 @@ def summarize(row: dict, shop_name: str | None = None) -> dict:
             shift = {"dx_mm": round((a["cx"] - b["cx"]) * pw, 1), "dy_mm": round((a["cy"] - b["cy"]) * ph, 1),
                      "dw_mm": round((a["w"] - b["w"]) * pw, 1), "dh_mm": round((a["h"] - b["h"]) * ph, 1)}
         changes.append({"id": c["id"], "action": c["action"], "kind": "text" if c.get("text") else (c.get("signature") or {}).get("kind"),
-                        "before": b, "after": a, "shift": shift, "nested": bool(c.get("nested")), "style": c.get("style")})
+                        "before": b, "after": a, "shift": shift, "nested": bool(c.get("nested")), "style": c.get("style"),
+                        "lines": c.get("lines")})
     return {
         "id": row["shop_id"], "title": shop_name or rec.get("file") or row["shop_id"], "brand": row.get("brand"),
         "master_file": row.get("master_file"), "board_type": row.get("board_type"),
         "source": "designer-dataset" if rec.get("source") else "editor", "page_w_mm": pw, "page_h_mm": ph,
         "updated_at": row.get("updated_at"), "text_edits": rec.get("text_edits", 0),
-        "applies": [c["id"] for c in changes if (c["action"] in APPLIED_ACTIONS and c["kind"] != "text") or c["nested"]],
+        "applies": [c["id"] for c in changes if (c["action"] in LEARNED_ACTIONS and c["kind"] != "text") or c["nested"]
+                    or c["action"] in SCENE_ACTIONS],
         "changes": changes,
     }
 
@@ -422,11 +561,118 @@ def _nested_target(node: dict, box: dict, pw: float, ph: float, is_text: bool) -
     return {"x": t["x"] + t["w"] / 2 - w / 2, "y": t["y"] + t["h"] / 2 - h / 2, "w": w, "h": h}
 
 
+COMBINING_UNIT = 0.35      # a vowel sign / virama adds this much width next to its letter (Tamil letters are 1)
+SPACE_UNIT = 0.4
+INK_SAFETY = 1.0           # the width estimate is rough (no text shaping here, +-50 % on Tamil): it is only a guard against extremes
+LINED_FILL_MAX = 1.2       # a re-broken name is kept to at most this share of the designer's box width; below it she gets HER line height
+
+
+def _units(text: str) -> float:
+    """A rough visual width of `text`: letters 1, spaces and combining marks (Tamil vowel signs, pulli) less. There is no shaping engine here,
+    so counting code points would treat "ஸ்ரீ" (two letters + two marks) like four letters."""
+    import unicodedata
+
+    total = 0.0
+    for ch in str(text):
+        if ch.isspace():
+            total += SPACE_UNIT
+        elif unicodedata.category(ch) in ("Mn", "Mc", "Me"):
+            total += COMBINING_UNIT
+        else:
+            total += 1.0
+    return total
+
+
+def balanced_lines(content: str, n: int) -> str | None:
+    """`content` broken into `n` lines at its spaces, the longest line as short as it can be ("
+" between lines). None when it has fewer
+    than two words (nothing to break at) or `n` is below 2. With fewer words than `n`, one line per word."""
+    words = str(content or "").split()
+    n = min(int(n or 0), len(words))
+    if n < 2:
+        return None
+    size = [_units(w) for w in words]
+    total = len(words)
+
+    def span(i: int, j: int) -> float:                       # visual width of words[i:j] joined by single spaces
+        return sum(size[i:j]) + (j - i - 1) * SPACE_UNIT
+
+    best: dict[tuple[int, int], tuple[float, list[int]]] = {}
+
+    def solve(i: int, k: int) -> tuple[float, list[int]]:      # the best way to put words[i:] on k lines: (longest line, cut points)
+        if k == 1:
+            return span(i, total), []
+        if (i, k) in best:
+            return best[(i, k)]
+        pick = None
+        for j in range(i + 1, total - k + 2):
+            rest, cuts = solve(j, k - 1)
+            cand = (max(span(i, j), rest), [j] + cuts)
+            if pick is None or cand[0] < pick[0]:
+                pick = cand
+        best[(i, k)] = pick
+        return pick
+
+    _, cuts = solve(0, n)
+    edges = [0] + cuts + [total]
+    return "\n".join(" ".join(words[a:b]) for a, b in zip(edges, edges[1:]))
+
+
+def _line_plan(ch: dict, node: dict) -> dict | None:
+    """The new content for a name block the designer set on a different number of lines than this board has, or None."""
+    want = ch.get("lines")
+    leaf = _single_text_leaf(node)
+    if not want or leaf is None:
+        return None
+    old = str((leaf.get("text") or {}).get("content") or "")
+    hers = ch.get("name_chars")
+    if hers and name_chars(old) < hers * LINE_MIN_FRAC:
+        return None                                           # a much shorter name than the one she broke stays on one line
+    new = balanced_lines(" ".join(old.split()), want)
+    if new is None or _line_count(new) == _line_count(old):
+        return None
+    return {"id": leaf["id"], "content": new, "old": old, "from_lines": _line_count(old)}
+
+
+def _longest_line(text: str) -> float:
+    return max((_units(x) for x in _LINE_BREAK.split(text)), default=0.0) or 1.0
+
+
+def _lined_target(node: dict, box: dict, pw: float, ph: float, plan: dict) -> dict:
+    """Where a name block goes when its text gets a different number of lines. The editor and the export size an edited text PER ORIGINAL
+    LINE: one line is `box height / original lines` tall and the text grows around the box centre, so the designer's box height gives the
+    line height she chose. The width follows the glyphs: it is estimated from this board's one-line width and the longest new line, and the
+    line height is reduced when that would be wider than her box (a longer name must still stay inside the white panel)."""
+    t = _frac_to_mm(box, pw, ph)
+    w0, h0, l0 = node["w"], node["h"], plan["from_lines"]
+    if not w0 or not h0:
+        return t
+    line = t["h"] / l0                                       # her height of one line
+    ink = w0 * (line / (h0 / l0)) * (_longest_line(plan["content"]) / _longest_line(plan["old"])) * INK_SAFETY
+    room = t["w"] * LINED_FILL_MAX
+    if ink > room:
+        line *= room / ink
+        ink = room
+    h = line * l0
+    return {"x": t["x"] + t["w"] / 2 - ink / 2, "y": t["y"] + t["h"] / 2 - h / 2, "w": ink, "h": h}
+
+
+def _with_weight(c: dict, row: dict) -> dict:
+    """A change from a nearby-size record counts half in the averaged part (`blend_boxes` reads the `_w` mark on its box)."""
+    if row.get("nearby") and c.get("after"):
+        c = {**c, "after": {**c["after"], "_w": NEARBY_WEIGHT}}
+    return c
+
+
 def _nested_requests(records: list[dict]) -> dict[str, list[dict]]:
     asked: dict[str, list[dict]] = {}
     for r in records:
-        for c in (r.get("record") or {}).get("nested", []):
-            asked.setdefault(c["id"], []).append(c)
+        rec = r.get("record") or {}
+        for c in rec.get("nested", []):
+            asked.setdefault(c["id"], []).append(_with_weight({**c, "_editor": _is_editor(r)}, r))
+        for c in rec.get("changes", []):
+            if c["action"] in SCENE_ACTIONS:                 # a top-level object the designer hid / deleted
+                asked.setdefault(c["id"], []).append({**c, "_editor": _is_editor(r)})
     return asked
 
 
@@ -437,11 +683,23 @@ def _by_depth(asked: dict, nodes: dict) -> list[str]:
 
 def _agreed_change(group: list[dict]) -> dict | None:
     """One change for an object from every record that names it (same boxes within CONSENSUS_TOL and the same style), None when they clash."""
+    editors = [c for c in group if c.get("_editor")]
+    if editors:
+        newest = editors[0]                                   # records come newest first; its style / lines / action lead
+        if newest.get("lines"):
+            hers = [c["name_chars"] for c in editors if c.get("lines") == newest["lines"] and c.get("name_chars")]
+            if hers:
+                newest = {**newest, "name_chars": min(hers)}  # the SHORTEST name she has broken that way: shorter ones stay on one line
+        boxed = [c["after"] for c in editors if c.get("after")]
+        if newest.get("after") and boxed:
+            return {**newest, "after": blend_boxes(boxed)}    # 80 % newest + 20 % average of the editor corrections
+        return newest
     first = group[0]
     if len(group) == 1:
         return first
     for c in group[1:]:
-        if max(abs(c["after"][k] - first["after"][k]) for k in BOX_KEYS) > CONSENSUS_TOL or c.get("style") != first.get("style"):
+        if max(abs(c["after"][k] - first["after"][k]) for k in BOX_KEYS) > CONSENSUS_TOL or c.get("style") != first.get("style") \
+                or c.get("lines") != first.get("lines"):
             return None
     return {**first, "after": {k: _median([c["after"][k] for c in group]) for k in BOX_KEYS}}
 
@@ -456,15 +714,33 @@ def _fits_node(ch: dict, node: dict) -> bool:
     return not (node.get("kind") == "group" and sig.get("n_desc") != _count_nested(node))
 
 
+def _fits_object(ch: dict, node: dict) -> bool:
+    """A recorded hide / delete names the same kind of object (kind, and the number of nested shapes for a group)."""
+    sig = ch.get("signature") or {}
+    if sig.get("kind") != (node.get("kind") or node.get("type")):
+        return False
+    return not (node.get("kind") == "group" and sig.get("n_desc") != _count_nested(node))
+
+
+def _scene_action_ops(ch: dict, nid: str) -> list[dict]:
+    return [{"op": "visibility", "id": nid, "visible": False}] if ch["action"] == "hidden" else [{"op": "delete", "ids": [nid]}]
+
+
 def _nested_edits(ch: dict, node: dict, nid: str, pw: float, ph: float) -> list[dict]:
     """The editor ops that bring one node to the recorded box and style (none when it is already there)."""
     made = []
+    plan = _line_plan(ch, node)
+    if plan:
+        made.append({"op": "text", "id": plan["id"], "content": plan["content"]})     # first: the resize below then sizes the edited text
     if ch["action"] != "styled":
-        target = _nested_target(node, ch["after"], pw, ph, _text_block(node))
+        target = _lined_target(node, ch["after"], pw, ph, plan) if plan else _nested_target(node, ch["after"], pw, ph, _text_block(node))
         cur = _box(node)
         if max(abs(target["x"] - cur["x"]), abs(target["y"] - cur["y"])) / max(pw, ph) >= MIN_SHIFT_FRAC \
                 or max(abs(target["w"] - cur["w"]), abs(target["h"] - cur["h"])) / max(pw, ph) >= MIN_SHIFT_FRAC:
-            made.append({"op": "resize", "ids": [nid], "from": cur, "to": target})
+            op = {"op": "resize", "ids": [nid], "from": cur, "to": target}
+            if _text_block(node):
+                op["fit_w"] = round(_frac_to_mm(ch["after"], pw, ph)["w"] * FIT_FRAC, 3)   # the export keeps the real text inside her box
+            made.append(op)
     if ch.get("style"):
         have = node.get("text") or {}
         style = {k: v for k, v in ch["style"].items() if have.get(k) != v}
@@ -505,11 +781,19 @@ def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
         if ch is None:
             summary["conflicting"] += 1
             continue
+        if nid not in nodes:
+            continue                                          # inside something already deleted
         node = nodes[nid][0]
-        if not _fits_node(ch, node):
+        if ch["action"] in SCENE_ACTIONS:
+            if not _fits_object(ch, node):
+                summary["skipped"] += 1
+                continue
+            made = _scene_action_ops(ch, nid)
+        elif not _fits_node(ch, node):
             summary["skipped"] += 1
             continue
-        made = _nested_edits(ch, node, nid, pw, ph)
+        else:
+            made = _nested_edits(ch, node, nid, pw, ph)
         if not _replay(work, made):
             summary["skipped"] += 1
             continue
@@ -518,3 +802,9 @@ def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
             ops.extend(made)
             summary["applied"] += 1
     return ops, summary
+
+
+def has_scene_changes(rows: list[dict]) -> bool:
+    """True when any of the records has something that is replayed as editor ops (nested changes, or a hidden / deleted object)."""
+    return any((r.get("record") or {}).get("nested") or any(c["action"] in SCENE_ACTIONS for c in (r.get("record") or {}).get("changes", []))
+               for r in rows)

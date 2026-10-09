@@ -270,13 +270,19 @@ def _line_count(text) -> int:
     return len(_NEWLINE.split(str(text or ""))) if str(text or "") else 1
 
 
-def _set_edited_text_bbox(shape, node: dict, orig_lines: int = 1) -> bool:
+FIT_MIN_FRAC = 0.7         # a text kept inside a learned width (`fit_w`) is never made smaller than this share of its intended line height
+
+
+def _set_edited_text_bbox(shape, node: dict, orig_lines: int = 1, max_w: float | None = None, fit_w: float | None = None,
+                          notes: list | None = None) -> bool:
     """A text whose content / font the designer edited is drawn by the editor as live text (LiveText.jsx), never stretched: ONE line of it is as
     tall as the box was for the ORIGINAL text (`orig_lines` lines - a name that grows from one line to two grows downwards, it does not
     shrink to stay inside the box), its width follows the glyphs, and it is centred in the box. CorelDRAW's SetSize would stretch the text to the
     box width instead (a two-line Tamil name came out with its letters spread far apart in the exported files, unlike the editor). So the font
-    size is scaled uniformly until one line is that tall, and the text is centred on the box. False when that cannot be done (not an edited
-    text, heights unknown): the caller then falls back to SetSize."""
+    size is scaled uniformly until one line is that tall, and the text is centred on the box. `max_w` (the usable page width) caps the width:
+    the editor draws the text in a browser font whose glyphs are narrower than the real (or a missing, substituted) font's, so the same line
+    height can come out far wider in CorelDRAW - the text is then scaled down uniformly until it fits, never past the page. False when that
+    cannot be done (not an edited text, heights unknown): the caller then falls back to SetSize."""
     if not (node.get("stale") and node.get("type") == "text"):
         return False
     try:
@@ -287,6 +293,15 @@ def _set_edited_text_bbox(shape, node: dict, orig_lines: int = 1) -> bool:
         if now_line <= 0.01 or w <= 0.01:
             return False
         k = line_h / now_line
+        if fit_w and w * k > fit_w:
+            # closed loop: `w` is CorelDRAW's REAL measured width, so a learned width (Corel Intelligence) is kept exactly instead of estimated;
+            # never below FIT_MIN_FRAC of the intended line height - a text that still does not fit is reported, not silently shrunk further
+            floor = k * FIT_MIN_FRAC
+            k = max(fit_w / w, floor)
+            if w * k > fit_w * 1.001 and notes is not None:
+                notes.append(f"the name does not fit the learned width ({w * k:.0f} mm > {fit_w:.0f} mm) even at {FIT_MIN_FRAC:.0%} of its line height")
+        if max_w and w * k > max_w:
+            k = max_w / w                    # a wider font than the editor's preview: keep the text on the page (still one factor both ways)
         if abs(k - 1.0) > 1e-4:
             shape.SetSize(w * k, h * k)      # the SAME factor both ways: CorelDRAW scales the font size (reading Story.Size back after a resize is unreliable)
         cx = float(node["x"]) + float(node["w"]) / 2
@@ -439,11 +454,16 @@ class Replayer:
         for i in scene_ops._top_ids(before, op["ids"]):
             self._shape(i).Move(float(op["dx"]), float(op["dy"]))
 
+    def _max_text_width(self) -> float:
+        """The widest an edited text may be: the page width less a 2 % margin (see _set_edited_text_bbox)."""
+        return float(self.shadow["page"]["width"]) * 0.98
+
     def _op_resize(self, op, before):
         after = scene_ops._index(self.shadow)
         for i in scene_ops._top_ids(before, op["ids"]):
             node = after[i]["node"]
-            if not _set_edited_text_bbox(self._shape(i), node, self.orig_lines.get(i, 1)):
+            if not _set_edited_text_bbox(self._shape(i), node, self.orig_lines.get(i, 1), self._max_text_width(),
+                                         op.get("fit_w"), self.warnings):
                 _set_bbox(self._shape(i), node)
 
     def _op_order(self, op, before):

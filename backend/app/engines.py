@@ -1069,7 +1069,8 @@ class CorelEngine:
                     if src is not None:
                         src["intelligence"] = summary
                     if not summary["applied"]:
-                        warnings.append("Corel Intelligence had no matching designer correction to apply to this board")
+                        warnings.append("Corel Intelligence: the learned corrections are already in place on this board" if summary.get("in_place")
+                                        else "Corel Intelligence had no matching designer correction to apply to this board")
 
                 page.SetSize(new_w, new_h)
                 reused_base_ids: set[str] = set()

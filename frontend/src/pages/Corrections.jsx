@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2, Sparkles, Trash2 } from "lucide-react";
 import { ACTION_LABEL, describeShift, describeStyle, diffRects, pageLabel, pickSelection } from "../utils/correctionsView.js";
 import "./Corrections.css";
 
@@ -37,7 +37,8 @@ function ChangeList({ record }) {
           {c.nested && <span className="cr-inside"> inside a group</span>}{" "}
           <span className="cr-shift">{describeShift(c.shift)}</span>
           {c.style && <div className="cr-style">Text style: {describeStyle(c.style)}</div>}
-          {!record.applies.includes(c.id) && <em> - not re-applied (only moves and resizes are learned)</em>}
+          {c.lines && <div className="cr-style">Name set on {c.lines} line{c.lines === 1 ? "" : "s"} - the next board's name is broken the same way</div>}
+          {!record.applies.includes(c.id) && <em> - not re-applied (text itself, ordering and grouping are not learned)</em>}
         </li>
       ))}
       {record.text_edits > 0 && <li className="cr-skip">The text itself was edited {record.text_edits} time{record.text_edits === 1 ? "" : "s"} - names are never learned (they come from the sheet).</li>}
@@ -54,7 +55,7 @@ function ListItem({ record, active, onPick }) {
   );
 }
 
-function Detail({ record }) {
+function Detail({ record, onDelete }) {
   return (
     <div className="cr-detail">
       <header>
@@ -71,6 +72,9 @@ function Detail({ record }) {
       </div>
       <footer>
         <span className="cr-note">Every correction is stored and applied to later boards of this size - nothing to approve.</span>
+        <button type="button" className="btn-outline-red" onClick={() => onDelete(record)}>
+          <Trash2 size={14} /> Delete this correction
+        </button>
       </footer>
     </div>
   );
@@ -96,6 +100,17 @@ export default function Corrections() {
   }, []);
   useEffect(() => { load(); }, [load]);
 
+  const remove = useCallback(async (rec) => {
+    if (!window.confirm(`Delete the correction "${rec.title}"? Later boards of this size will no longer use it.`)) return;
+    try {
+      const r = await fetch(`/api/v2/corrections/${encodeURIComponent(rec.id)}`, { method: "DELETE" });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      await load();
+    } catch (e) {
+      setError(`Could not delete the correction: ${e.message}`);
+    }
+  }, [load]);
+
   const current = pickSelection(records, selected);
   const record = records.find((r) => r.id === current) ?? null;
 
@@ -118,7 +133,7 @@ export default function Corrections() {
           </div>
         </aside>
         <section className="cr-main">
-          {record ? <Detail record={record} /> : <p className="cr-empty">Pick a correction to see what it changed.</p>}
+          {record ? <Detail record={record} onDelete={remove} /> : <p className="cr-empty">Pick a correction to see what it changed.</p>}
         </section>
       </div>
     </div>
