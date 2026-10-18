@@ -187,6 +187,10 @@ def test_a_sparkle_conversion_replays_the_learned_nested_edits_and_publishes_the
     assert [o["ids"] for o in ops] == [["s3"]]
     status = client.get(f"/api/v2/shops/{b}/status").json()
     assert status["report"]["layout"]["intelligence"]["nested"] == {"applied": 1, "skipped": 0, "conflicting": 0}
+    for _ in range(100):                                       # the export is queued just AFTER the ops are saved
+        if db.list_exports(b):
+            break
+        time.sleep(0.05)
     assert db.list_exports(b), "the replayed edits are published as the board's new files"
 
 
