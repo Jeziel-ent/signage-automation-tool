@@ -24,7 +24,7 @@ const NAME_EXCLUDE_RE = new RegExp(
   "i");
 
 // the sheet's own serial number ("S.No", "S. No.", "Sl.No", "SNo", "Serial No", "Sr. No", "#") - kept as the row's S.No
-const SNO_RE = /^\s*(s\.?\s*no\.?|sl\.?\s*no\.?|sr\.?\s*no\.?|sno|slno|serial(\s*(no\.?|number|#))?|#)\s*$/i;
+const SNO_RE = /^\s*(s\.?\s*no\.?|s[li]\.?\s*no\.?|sr\.?\s*no\.?|sno|slno|sino|serial(\s*(no\.?|number|#))?|#)\s*$/i;
 
 // a column that holds just the unit of each row's size ("Unit": ft / Feet / in / Inches ...)
 const UNIT_COL_RE = /\bunits?\b|\buom\b|\bu\.o\.m\b/i;

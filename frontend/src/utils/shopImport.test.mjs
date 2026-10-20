@@ -275,7 +275,7 @@ test("the unit in a designer file name used as the shop name wins over the defau
 
 test("an explicit S.No column is kept per row; blank cells and sheets without one fall back to position", async () => {
   const { rowSno } = await import("./shopPayload.js");
-  for (const h of ["S.No", "S. No.", "Sl.No", "SNo", "SLNO", "Serial No", "Sr. No", "#"]) {
+  for (const h of ["S.No", "S. No.", "Sl.No", "SI.No", "SNo", "SLNO", "Serial No", "Sr. No", "#"]) {
     const r = mapSheetRows([[h, "Shop Name", "Size"], ["76", "Kalkee", "6x6 ft"], ["", "Anish", "8x4 ft"], ["SL-01", "Devi", "5x5 ft"]]);
     assert.equal(r.layout.snoCol, 0, h);
     assert.deepEqual(r.shops.map((s, i) => [s.name, rowSno(s, i)]), [["Kalkee", "76"], ["Anish", 2], ["Devi", "SL-01"]], h);
