@@ -56,6 +56,15 @@ function ListItem({ record, active, onPick }) {
   );
 }
 
+/** How the designers judged this lesson: kept on later boards (confirmed) or corrected again (disputed) - see corrections.trust. */
+function trustLine(r) {
+  const kept = r.confirmed ?? 0;
+  const again = r.disputed ?? 0;
+  if (r.quarantined) return `Paused - designers keep correcting what this taught (kept ${kept}x, corrected again ${again}x), so boards no longer use it`;
+  if (!kept && !again) return "Not used on a board yet";
+  return `Trust ${Math.round((r.trust ?? 0.5) * 100)}% - kept on ${kept} board${kept === 1 ? "" : "s"}, corrected again on ${again}`;
+}
+
 function Detail({ record, onDelete }) {
   const { isAdmin } = useAuth();   // deleting a learned correction is an administrator action
   return (
@@ -65,6 +74,7 @@ function Detail({ record, onDelete }) {
           <h2>{record.title}</h2>
           <p>{record.brand} · {record.master_file} · {pageLabel(record.page_w_mm, record.page_h_mm)}{record.board_type ? ` · ${record.board_type}` : ""}</p>
           <p>{record.source === "designer-dataset" ? "Learned from a designer's own file" : "Saved from the editor"}</p>
+          <p className={"cr-trust" + (record.quarantined ? " paused" : "")}>{trustLine(record)}</p>
         </div>
       </header>
       <div className="cr-body">

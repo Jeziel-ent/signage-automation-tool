@@ -1095,10 +1095,128 @@ def _convert_limits() -> dict:
     return {"job_timeout_s": limit, "overall_timeout_s": max(120.0, 2 * limit)}
 
 
-def _no_editor_in_remote_mode() -> None:
-    """The editor scene, exports and Save Changes drive CorelDRAW; through an agent they are the next milestone."""
+def _shop_owner(shop_id: str) -> int:
+    """The user whose agent works on this board: whoever converted it through the queue; else the only user with an agent online."""
+    last = db.latest_agent_job_for_shop(shop_id, "convert")
+    if last:
+        return last["user_id"]
+    owners = {a["user_id"] for a in db.list_agents() if agents._agent_json(a)["online"]}
+    return owners.pop() if len(owners) == 1 else 0
+
+
+def _enqueue_remote_scene_build(job_id: str, shop_id: str, then: str | None = None) -> None:
+    """Remote mode: the board's scene (what the editor draws) is built by the owner's agent from the converted .cdr."""
+    if db.active_agent_job("scene_build", shop_id=shop_id):
+        return                                              # already queued or running: its result serves every waiter
+    row = db.get_shop(shop_id)
+    files = json.loads(row["files_json"]) if row["files_json"] else {}
+    cdr = JOBS_V2 / job_id / "out" / shop_id / files.get("cdr", "")
+    if not files.get("cdr") or not cdr.is_file():
+        raise FileNotFoundError(f"converted file is missing: {files.get('cdr')}")
+    scene_dir = _scene_dir(job_id, shop_id)
+    scene_dir.mkdir(parents=True, exist_ok=True)
+    (scene_dir / _SCENE_JSON).unlink(missing_ok=True)
+    db.create_agent_job(uuid.uuid4().hex[:12], "scene_build", shop_id, _shop_owner(shop_id),
+                        {"spec": {"width_mm": to_mm(row["width"], row["width_unit"]), "height_mm": to_mm(row["height"], row["height_unit"])},
+                         "inputs": {"cdr": {"path": str(cdr), "filename": cdr.name}}, "out_dir": str(scene_dir), "then": then})
+
+
+def _start_scene_build(job_id: str, shop_id: str) -> None:
+    """The scene build for the editor: the single-worker pool here, or a job for the owner's agent in remote mode."""
     if _remote_mode():
-        raise HTTPException(501, "the editor and exports through the Windows agent are not available yet")
+        try:
+            _enqueue_remote_scene_build(job_id, shop_id)
+        except Exception as e:  # noqa: BLE001
+            with _scene_lock:
+                _scene_builds[shop_id] = {"status": "error", "error": str(e), "low_memory": False}
+        return
+    _pool.submit(_scene_build_worker, job_id, shop_id)
+
+
+def _unzip_safe(archive: Path, dest: Path) -> None:
+    """Extract a zip from an agent; any member that would land outside `dest` rejects the whole archive."""
+    root = dest.resolve()
+    with zipfile.ZipFile(archive) as z:
+        for info in z.infolist():
+            target = (root / info.filename).resolve()
+            if target != root and root not in target.parents:
+                raise ValueError(f"unsafe path in the agent's archive: {info.filename}")
+        z.extractall(root)
+
+
+def _finalize_agent_scene_build(job: dict, entry: dict) -> None:
+    shop_id = job["shop_id"]
+    payload = json.loads(job["payload_json"])
+    scene_dir = Path(payload["out_dir"])
+    if entry.get("status") != "done":
+        with _scene_lock:
+            _scene_builds[shop_id] = {"status": "error", "error": entry.get("error", "scene export failed"), "low_memory": False}
+        return
+    try:
+        archive = scene_dir / entry["result"]["files"]["scene"]
+        _unzip_safe(archive, scene_dir)                     # scene.json is the zip's last member: the scene appears whole
+        archive.unlink(missing_ok=True)
+        if not (scene_dir / _SCENE_JSON).is_file():
+            raise RuntimeError("the agent's scene has no scene.json")
+    except Exception as e:
+        with _scene_lock:
+            _scene_builds[shop_id] = {"status": "error", "error": f"the scene could not be stored: {e}", "low_memory": False}
+        raise
+    with _scene_lock:
+        _scene_builds.pop(shop_id, None)
+    if payload.get("then") == "learned_nested":
+        _learned_nested_finish(shop_id)
+
+
+agents.register_finalizer("scene_build", _finalize_agent_scene_build)
+
+
+def _enqueue_remote_export(job_id: str, shop_id: str, export_id: str) -> None:
+    """Remote mode: the export (replay the saved edits, write cdr / pdf / png / jpeg) runs on the owner's agent. It gets the board's .cdr,
+    its scene and the designer's product images as inputs; the options and edits travel in the job."""
+    row = db.get_export(export_id)
+    shop_row = db.get_shop(shop_id)
+    files = json.loads(shop_row["files_json"]) if shop_row["files_json"] else {}
+    cdr = JOBS_V2 / job_id / "out" / shop_id / files.get("cdr", "")
+    scene = _scene_dir(job_id, shop_id) / _SCENE_JSON
+    for what, path in (("converted file", cdr), ("scene", scene)):
+        if not path.is_file():
+            raise FileNotFoundError(f"the board's {what} is missing on the server")
+    inputs = {"cdr": {"path": str(cdr), "filename": cdr.name}, "scene": {"path": str(scene), "filename": scene.name}}
+    assets = _product_assets_dir(job_id, shop_id)
+    if assets.is_dir():
+        for f in sorted(assets.iterdir()):
+            if f.is_file():
+                inputs[f"asset:{f.name}"] = {"path": str(f), "filename": f.name}
+    spec = {"ops": json.loads(row["ops_json"]), "formats": json.loads(row["formats_json"]), "options": json.loads(row["options_json"]),
+            "base_name": file_naming.shop_basename(shop_row), "font_subs": db.get_font_substitutions(shop_id), "export_id": export_id}
+    db.create_agent_job(uuid.uuid4().hex[:12], "export", shop_id, _shop_owner(shop_id),
+                        {"spec": spec, "inputs": inputs, "out_dir": str(_export_dir(job_id, shop_id, export_id))}, ref=export_id)
+
+
+def _start_export(job_id: str, shop_id: str, export_id: str) -> None:
+    if _remote_mode():
+        try:
+            _enqueue_remote_export(job_id, shop_id, export_id)
+        except Exception as e:  # noqa: BLE001
+            db.set_export_status(export_id, "failed", str(e))
+        return
+    _pool.submit(_export_worker, job_id, shop_id, export_id)
+
+
+def _finalize_agent_export(job: dict, entry: dict) -> None:
+    export_id = job.get("ref")
+    if not export_id or not db.get_export(export_id):
+        return
+    if entry.get("status") != "done":
+        db.set_export_status(export_id, "failed", entry.get("error", "export failed"))
+        return
+    result = entry["result"]
+    db.set_export_result(export_id, result["files"], result["report"])
+
+
+agents.register_finalizer("export", _finalize_agent_export)
+
 
 
 def _enqueue_remote_convert(shop_id: str, user_id: int) -> None:
@@ -1116,12 +1234,13 @@ def _enqueue_remote_convert(shop_id: str, user_id: int) -> None:
 
 
 def _finalize_agent_convert(job: dict, entry: dict) -> None:
-    """An agent finished (or failed) a convert job: store it exactly like a local conversion result. Learned nested edits
-    (_apply_learned_nested) need an editor scene, which an agent cannot build yet, so they are skipped in remote mode."""
+    """An agent finished (or failed) a convert job: store it exactly like a local conversion result."""
     shop_id = job.get("shop_id")
     if not shop_id or not db.get_shop(shop_id):
         return
     _store_convert_result(shop_id, entry, json.loads(job["payload_json"]).get("master_used") or {})
+    if entry.get("status") == "done":
+        _apply_learned_nested(shop_id)         # Corel Intelligence boards: queues the scene build whose result continues the replay
 
 
 agents.register_finalizer("convert", _finalize_agent_convert)
@@ -1209,32 +1328,59 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         _apply_learned_nested(sid)
 
 
+def _learned_nested_found(shop: dict | None) -> list[dict] | None:
+    """The stored records whose nested / hide / delete changes a Corel Intelligence board should get replayed as editor ops, or None."""
+    if not shop or shop["status"] != "done" or not shop.get("use_intelligence"):
+        return None
+    job = db.get_job(shop["job_id"])
+    report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
+    chosen = db.get_job((report.get("master_used") or {}).get("job_id")) or job
+    found = corrections.usable_records(db.list_corrections(), job["brand"], chosen.get("master_filename"),
+                                       to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
+                                       shop.get("board_type"))
+    return found if corrections.has_scene_changes(found) else None
+
+
 def _apply_learned_nested(shop_id: str) -> None:
     """After a Corel Intelligence conversion: the stored corrections that touch objects INSIDE groups (the shop-name block and its text)
     cannot be placed during the conversion, so they are replayed on the new board as ordinary editor edits - build its scene, work out the
     ops (corrections.nested_ops), save them as the board's edits (the designer sees and can undo them in the editor) and publish the files.
+    With SIGNAGE_ENGINE=remote the scene is built by the agent: this queues that job and `_learned_nested_finish` runs when it is stored.
     Never raises: a failure only means the board keeps the top-level learning."""
     try:
         shop = db.get_shop(shop_id)
-        if not shop or shop["status"] != "done" or not shop.get("use_intelligence"):
+        if not _learned_nested_found(shop):
             return
-        job = db.get_job(shop["job_id"])
-        report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
-        chosen = db.get_job((report.get("master_used") or {}).get("job_id")) or job
-        found = corrections.usable_records(db.list_corrections(), job["brand"], chosen.get("master_filename"),
-                                           to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
-                                           shop.get("board_type"))
-        if not corrections.has_scene_changes(found):
+        if _remote_mode():
+            _enqueue_remote_scene_build(shop["job_id"], shop_id, then="learned_nested")
             return
         _scene_build_worker(shop["job_id"], shop_id)
+        _learned_nested_finish(shop_id)
+    except Exception:
+        _CORR_LOG.exception("could not apply the learned nested edits for shop %s", shop_id)
+
+
+def _learned_nested_finish(shop_id: str) -> None:
+    """The second half: the board's scene exists - work out the learned ops, save them as its edits and publish the files."""
+    try:
+        shop = db.get_shop(shop_id)
+        found = _learned_nested_found(shop)
+        if not found:
+            return
+        report = json.loads(shop["report_json"]) if shop.get("report_json") else {}
         scene = _load_scene(shop["job_id"], shop_id)
         if scene is None:
             _CORR_LOG.warning("shop %s: scene could not be built for the learned nested edits", shop_id)
             return
-        ops, summary = corrections.nested_ops(scene, found)
+        nested_sources: list[str] = []
+        ops, summary = corrections.nested_ops(scene, found, nested_sources)
         layout = report.setdefault("layout", {})
         if isinstance(layout, dict):
-            layout.setdefault("intelligence", {})["nested"] = summary
+            intel = layout.setdefault("intelligence", {})
+            intel["nested"] = summary
+            # remembered so the designer's next save is judged against the board as it was LEFT, and each record learns whether its lesson was kept
+            intel["learned_ops"] = ops
+            intel["nested_sources"] = nested_sources
         db.set_shop_result(shop_id, json.loads(shop["files_json"]) if shop.get("files_json") else {}, report)
         if ops:
             db.set_editor_ops(shop_id, ops)
@@ -2314,7 +2460,11 @@ def _scene_build_worker(job_id: str, shop_id: str) -> None:
 def _scene_progress(shop_id: str) -> dict:
     step, pct = "starting", 3
     hb = CONVERT_RUNS / f"scene_{shop_id}.heartbeat"
-    if hb.exists():
+    if _remote_mode():
+        queued = db.active_agent_job("scene_build", shop_id=shop_id)
+        if queued:
+            step = queued.get("step") or ("waiting for your agent" if queued["state"] == "queued" else "starting")
+    elif hb.exists():
         try:
             step = json.loads(hb.read_text(encoding="utf-8")).get("step", step)
         except Exception:
@@ -2350,7 +2500,6 @@ def _scene_cut_short(scene: dict) -> bool:
 
 @app.get("/api/editor/{job_id}/{shop_id}/scene", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 500: {"description": "Server error"}, 503: {"description": "Service unavailable"}})
 def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool = False):
-    _no_editor_in_remote_mode()
     _editor_shop(job_id, shop_id)
     scene_path = _scene_dir(job_id, shop_id) / _SCENE_JSON
     with _scene_lock:
@@ -2363,7 +2512,7 @@ def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool =
             scene = json.loads(scene_path.read_text(encoding="utf-8"))
             if _needs_powerclip_images(scene) or _scene_cut_short(scene):
                 _scene_builds[shop_id] = {"status": "building"}
-                _pool.submit(_scene_build_worker, job_id, shop_id)
+                _start_scene_build(job_id, shop_id)
                 return JSONResponse({"status": "building", "step": "queued", "progress_pct": 1}, status_code=202)
             scene["ops"] = db.get_editor_ops(shop_id)
             # Versioned by the scene build (scene.json is written last), so the images can be cached as immutable: re-opening a
@@ -2371,7 +2520,7 @@ def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool =
             scene["asset_base"] = f"/api/editor/{job_id}/{shop_id}/asset/v/{int(scene_path.stat().st_mtime)}/"
             return scene
         _scene_builds[shop_id] = {"status": "building"}
-    _pool.submit(_scene_build_worker, job_id, shop_id)
+    _start_scene_build(job_id, shop_id)
     return JSONResponse({"status": "building", "step": "queued", "progress_pct": 1}, status_code=202)
 
 
@@ -2526,11 +2675,16 @@ def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> 
             report = {}
         # the master the board was really made from (a shop can use another upload's master), not just its own job's
         made_from = db.get_job((report.get("master_used") or {}).get("job_id") or job_id) or db.get_job(job_id)
-        record = corrections.build_record(shop, made_from, base, edited, report.get("layout"))
+        record, verdicts = corrections.learn_from_save(shop, made_from, base, edited, report.get("layout"), db.list_corrections())
         if record:
+            record["feedback"] = (db.get_correction(shop_id) or {}).get("record", {}).get("feedback") or {}     # this board's own record keeps its tallies
+            if not record["feedback"]:
+                record.pop("feedback")
             db.save_correction(record)
         else:
             db.delete_correction(shop_id)
+        for source_id, (confirmed, disputed) in verdicts.items():        # did the designer keep what the records taught this board?
+            db.set_correction_feedback(source_id, shop_id, confirmed, disputed)
     except Exception:
         _CORR_LOG.exception("could not record the correction for shop %s", shop_id)
 
@@ -2719,52 +2873,7 @@ def _export_dir(job_id: str, shop_id: str, export_id: str) -> Path:
 
 
 def _mock_export(expected: dict, formats: list[str], opts: dict, out_dir: Path, base: str, heartbeat: Path) -> dict:
-    """MockEngine stand-in (no CorelDRAW): simple placeholder files so the whole flow is testable anywhere.
-    Clearly flagged in the report - real output only ever comes from CorelDRAW."""
-    import zipfile
-
-    from PIL import Image, ImageDraw
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    files: dict[str, str] = {}
-    timings: dict[str, float] = {}
-    sizes = export_replay.raster_sizes(expected["page"]["width"], expected["page"]["height"], opts, ["png", "jpeg"])
-
-    def beat(step: str) -> None:
-        heartbeat.write_text(json.dumps({"step": step}), encoding="utf-8")
-        time.sleep(0.25)
-
-    for step in ["launch", "open"]:
-        beat(step)
-    for fmt in export_replay.export_order(formats, opts):
-        beat(fmt)
-        size = sizes["png" if fmt in ("cdr", "pdf") else fmt]
-        scale = min(1.0, 1200 / max(size["w_px"], size["h_px"]))
-        w, h = max(1, round(size["w_px"] * scale)), max(1, round(size["h_px"] * scale))
-        p = out_dir / f"{base}.{export_replay.EXTENSION[fmt]}"
-        if fmt == "cdr":
-            with zipfile.ZipFile(p, "w") as z:
-                z.writestr("mimetype", "application/x-cdr")
-        else:
-            transparent = fmt == "png" and opts["png"]["png_background"] == "transparent"
-            im = Image.new("RGBA" if transparent else "RGB", (w, h), (255, 255, 255, 0) if transparent else (255, 255, 255))
-            d = ImageDraw.Draw(im)
-            for layer in expected["layers"]:
-                for n in layer["children"]:
-                    x0, y0 = n["x"] / expected["page"]["width"] * w, h - (n["y"] + n["h"]) / expected["page"]["height"] * h
-                    d.rectangle([x0, y0, x0 + n["w"] / expected["page"]["width"] * w, y0 + n["h"] / expected["page"]["height"] * h],
-                                outline=(224, 24, 47))
-            d.text((10, 10), f"MOCK EXPORT - not from CorelDRAW ({base})", fill=(0, 0, 0))
-            if fmt == "jpeg" and opts["jpeg"]["color"] == "cmyk":
-                im = im.convert("CMYK")
-            im.save(p, "PDF" if fmt == "pdf" else "PNG" if fmt == "png" else "JPEG")
-        files[fmt] = p.name
-        timings[fmt] = 0.25
-    return {
-        "mock": True, "formats": formats, "options": opts, "files": files, "timings_s": timings,
-        "file_bytes": {k: (out_dir / v).stat().st_size for k, v in files.items()},
-        "verification": {"ok": True, "compared": 0, "mismatches": []}, "warnings": ["Mock engine: placeholder files, not a CorelDRAW export."],
-    }
+    return export_replay.mock_export(expected, formats, opts, out_dir, base, heartbeat)
 
 
 def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
@@ -2816,7 +2925,6 @@ def editor_export_estimates():
 
 @app.post("/api/editor/{job_id}/{shop_id}/export", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
 def editor_export(job_id: str, shop_id: str, body: ExportRequest):
-    _no_editor_in_remote_mode()
     _editor_shop(job_id, shop_id)
     scene = _load_scene(job_id, shop_id)
     if scene is None:
@@ -2845,7 +2953,7 @@ def editor_export(job_id: str, shop_id: str, body: ExportRequest):
     plan = export_replay.plan_steps(formats, len(ops), db.get_export_step_estimates(), opts)
     export_id = uuid.uuid4().hex[:12]
     db.create_export(export_id, shop_id, formats, opts, ops, plan)
-    _pool.submit(_export_worker, job_id, shop_id, export_id)
+    _start_export(job_id, shop_id, export_id)
     return {"export_id": export_id, "plan": plan, "raster": size, "sizes": sizes, "ops": len(ops)}
 
 
@@ -2854,7 +2962,6 @@ def editor_publish(job_id: str, shop_id: str):
     """"Save Changes" makes the saved edits the board's NEW files: queues one export (cdr, pdf, png, jpeg with the default options) of
     the shop's current edit list, so the ZIP, the print sheet and the row's downloads pick up the edited version without a manual export.
     Nothing is queued when there are no edits, or when an export of exactly these edits is already queued / running / done."""
-    _no_editor_in_remote_mode()
     _editor_shop(job_id, shop_id)
     ops = db.get_editor_ops(shop_id)
     if not ops:
@@ -2884,9 +2991,10 @@ def editor_export_status(job_id: str, shop_id: str, export_id: str):
     if row["status"] == "running":
         step = "launch"
         hb = CONVERT_RUNS / f"export_{export_id}.heartbeat"
-        if hb.exists():
+        remote_job = db.agent_job_by_ref("export", export_id) if _remote_mode() else None
+        if remote_job is not None or hb.exists():
             try:
-                raw = json.loads(hb.read_text(encoding="utf-8")).get("step", step)
+                raw = (remote_job.get("step") or step) if remote_job is not None else json.loads(hb.read_text(encoding="utf-8")).get("step", step)
                 parts = raw.split()
                 step = parts[0]
                 if len(parts) > 1 and "/" in parts[1]:

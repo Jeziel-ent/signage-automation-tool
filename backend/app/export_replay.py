@@ -1140,3 +1140,54 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
             _safe(lambda: doc.Close())
         corel_util.quit_corel(app, launched, pid)
         pythoncom.CoUninitialize()
+
+
+def mock_export(expected: dict, formats: list[str], opts: dict, out_dir: Path, base: str, heartbeat: Path) -> dict:
+    """MockEngine stand-in (no CorelDRAW): simple placeholder files so the whole flow is testable anywhere.
+    Clearly flagged in the report - real output only ever comes from CorelDRAW."""
+    import json
+    import time
+    import zipfile
+
+    from PIL import Image, ImageDraw
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    files: dict[str, str] = {}
+    timings: dict[str, float] = {}
+    sizes = raster_sizes(expected["page"]["width"], expected["page"]["height"], opts, ["png", "jpeg"])
+
+    def beat(step: str) -> None:
+        heartbeat.write_text(json.dumps({"step": step}), encoding="utf-8")
+        time.sleep(0.25)
+
+    for step in ["launch", "open"]:
+        beat(step)
+    for fmt in export_order(formats, opts):
+        beat(fmt)
+        size = sizes["png" if fmt in ("cdr", "pdf") else fmt]
+        scale = min(1.0, 1200 / max(size["w_px"], size["h_px"]))
+        w, h = max(1, round(size["w_px"] * scale)), max(1, round(size["h_px"] * scale))
+        p = out_dir / f"{base}.{EXTENSION[fmt]}"
+        if fmt == "cdr":
+            with zipfile.ZipFile(p, "w") as z:
+                z.writestr("mimetype", "application/x-cdr")
+        else:
+            transparent = fmt == "png" and opts["png"]["png_background"] == "transparent"
+            im = Image.new("RGBA" if transparent else "RGB", (w, h), (255, 255, 255, 0) if transparent else (255, 255, 255))
+            d = ImageDraw.Draw(im)
+            for layer in expected["layers"]:
+                for n in layer["children"]:
+                    x0, y0 = n["x"] / expected["page"]["width"] * w, h - (n["y"] + n["h"]) / expected["page"]["height"] * h
+                    d.rectangle([x0, y0, x0 + n["w"] / expected["page"]["width"] * w, y0 + n["h"] / expected["page"]["height"] * h],
+                                outline=(224, 24, 47))
+            d.text((10, 10), f"MOCK EXPORT - not from CorelDRAW ({base})", fill=(0, 0, 0))
+            if fmt == "jpeg" and opts["jpeg"]["color"] == "cmyk":
+                im = im.convert("CMYK")
+            im.save(p, "PDF" if fmt == "pdf" else "PNG" if fmt == "png" else "JPEG")
+        files[fmt] = p.name
+        timings[fmt] = 0.25
+    return {
+        "mock": True, "formats": formats, "options": opts, "files": files, "timings_s": timings,
+        "file_bytes": {k: (out_dir / v).stat().st_size for k, v in files.items()},
+        "verification": {"ok": True, "compared": 0, "mismatches": []}, "warnings": ["Mock engine: placeholder files, not a CorelDRAW export."],
+    }

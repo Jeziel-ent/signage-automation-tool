@@ -265,13 +265,23 @@ def expire_and_fail() -> int:
     when an agent asks for work and by the server's background loop; returns how many jobs changed."""
     changed = db.expire_agent_jobs()
     for c in changed:
-        if not c["shop_id"] or not db.get_shop(c["shop_id"]):
+        job = db.get_agent_job(c["id"])
+        if not job:
             continue
         if c["state"] == "failed":
-            db.set_shop_status(c["shop_id"], "failed", error="the agent stopped responding and the job ran out of retries")
-        else:
+            _fail_target(job, {}, "the agent stopped responding and the job ran out of retries")
+        elif job["kind"] == "convert" and c["shop_id"] and db.get_shop(c["shop_id"]):
             db.set_shop_status(c["shop_id"], "queued")
+        elif job["kind"] == "export" and job.get("ref") and db.get_export(job["ref"]):
+            db.set_export_status(job["ref"], "queued")
     return len(changed)
+
+
+def _fail_target(job: dict, entry: dict, reason: str) -> None:
+    """A job that can no longer run: its shop / export / scene build is marked failed through the same finalizer an agent's error uses."""
+    fin = FINALIZERS.get(job["kind"])
+    if fin:
+        fin(job, {"status": "error", "error": reason})
 
 
 def _held_job(job_id: str, agent: dict) -> dict:
@@ -289,8 +299,12 @@ def _master_key(path: Path) -> str:
     return f"{st.st_size}-{int(st.st_mtime)}"
 
 
+KINDS = ("convert", "scene_build", "export")
+
+
 class ClaimBody(BaseModel):
     max: int = CLAIM_MAX
+    kinds: list[str] = ["convert"]      # what this agent can do: an agent that predates scene builds / exports only asks for converts
 
 
 class ProgressBody(BaseModel):
@@ -312,18 +326,36 @@ def claim_jobs(body: ClaimBody, request: Request):
     db.touch_agent(agent["id"], None, None, None)
     expire_and_fail()
     out = []
-    for job in db.claim_agent_jobs(agent["id"], agent["user_id"], max(1, min(body.max, CLAIM_MAX)), LEASE_S):
+    kinds = tuple(k for k in body.kinds if k in KINDS) or ("convert",)
+    for job in db.claim_agent_jobs(agent["id"], agent["user_id"], max(1, min(body.max, CLAIM_MAX)), LEASE_S, kinds):
         payload = json.loads(job["payload_json"])
-        master = Path(payload["master"]["path"])
-        if not master.is_file():
-            db.finish_agent_job(job["id"], agent["id"], False, None, "the master file is missing on the server")
-            if job["shop_id"] and db.get_shop(job["shop_id"]):
-                db.set_shop_status(job["shop_id"], "failed", error="the master file is missing on the server")
+        entry = {"id": job["id"], "kind": job["kind"], "lease_s": LEASE_S, "spec": payload.get("spec") or {}}
+        missing = None
+        if job["kind"] == "convert":
+            master = Path(payload["master"]["path"])
+            if not master.is_file():
+                missing = "the master file is missing on the server"
+            else:
+                entry.update(shop=payload["shop"], master={"filename": payload["master"]["filename"], "key": _master_key(master),
+                                                           "size": master.stat().st_size})
+        else:
+            inputs = {}
+            for name, src in (payload.get("inputs") or {}).items():
+                p = Path(src["path"])
+                if not p.is_file():
+                    missing = f"{src['filename']} is missing on the server"
+                    break
+                inputs[name] = {"filename": src["filename"], "key": _master_key(p), "size": p.stat().st_size}
+            entry["inputs"] = inputs
+        if missing:
+            db.finish_agent_job(job["id"], agent["id"], False, None, missing)
+            _fail_target(job, entry, missing)
             continue
-        if job["shop_id"] and db.get_shop(job["shop_id"]):
+        if job["kind"] == "convert" and job["shop_id"] and db.get_shop(job["shop_id"]):
             db.set_shop_status(job["shop_id"], "converting", step="starting")
-        out.append({"id": job["id"], "kind": job["kind"], "shop": payload["shop"], "lease_s": LEASE_S,
-                    "master": {"filename": payload["master"]["filename"], "key": _master_key(master), "size": master.stat().st_size}})
+        elif job["kind"] == "export" and job.get("ref") and db.get_export(job["ref"]):
+            db.set_export_status(job["ref"], "running")
+        out.append(entry)
     return {"jobs": out}
 
 
@@ -339,6 +371,18 @@ def job_master(job_id: str, request: Request):
     return FileResponse(master, media_type="application/octet-stream", filename=master.name)
 
 
+@router.get("/api/agent/jobs/{job_id}/input/{name}", responses={404: {"description": "No such input"}, 409: {"description": "Not held"}})
+def job_input(job_id: str, name: str, request: Request):
+    """A file a scene-build / export job needs (the board's .cdr, its scene, the product images), for the agent that holds the job."""
+    agent = agent_from_request(request)
+    job = _held_job(job_id, agent)
+    src = (json.loads(job["payload_json"]).get("inputs") or {}).get(name)
+    if not src or not Path(src["path"]).is_file():
+        raise HTTPException(404, "no such input")
+    db.touch_agent_job(job_id, agent["id"], LEASE_S, running=False)
+    return FileResponse(src["path"], media_type="application/octet-stream", filename=src["filename"])
+
+
 @router.post("/api/agent/jobs/{job_id}/progress", responses={409: {"description": "Not held"}})
 def job_progress(job_id: str, body: ProgressBody, request: Request):
     """The agent reports the step it is on (launch, open, tile_resize, saveas, pdf, png, uploading...): extends the lease and drives
@@ -346,7 +390,7 @@ def job_progress(job_id: str, body: ProgressBody, request: Request):
     agent = agent_from_request(request)
     job = _held_job(job_id, agent)
     db.touch_agent_job(job_id, agent["id"], LEASE_S, step=body.step or None)
-    if job["shop_id"] and body.step and db.get_shop(job["shop_id"]):
+    if job["kind"] == "convert" and job["shop_id"] and body.step and db.get_shop(job["shop_id"]):
         db.set_shop_status(job["shop_id"], "converting", step=body.step)
     return {"ok": True}
 
@@ -400,6 +444,10 @@ def job_result(job_id: str, body: ResultBody, request: Request):
         entry = {"status": "error", "error": body.error or "the agent reported an error"}
     fin = FINALIZERS.get(job["kind"])
     if fin:
-        fin(job, entry)
+        try:
+            fin(job, entry)
+        except Exception as e:  # noqa: BLE001 - a result that cannot be stored (corrupt zip ...) fails the job with the reason
+            db.finish_agent_job(job_id, agent["id"], False, None, f"the results could not be stored: {e}")
+            raise HTTPException(500, f"the results could not be stored: {e}") from None
     db.finish_agent_job(job_id, agent["id"], ok, entry.get("result") if ok else None, None if ok else entry["error"])
     return {"ok": True}

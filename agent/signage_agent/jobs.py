@@ -11,6 +11,7 @@ import logging
 import shutil
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 from . import client, engine_bridge
@@ -66,8 +67,14 @@ class JobRunner:
             self.agent.state = "idle"
         return len(jobs)
 
-    # ---- running a batch
+    # ---- running what was claimed
     def _run(self, jobs: list[dict]) -> None:
+        if jobs[0].get("kind", "convert") == "convert":
+            return self._run_convert(jobs)
+        for job in jobs:                                           # a scene build or an export is always claimed alone
+            self._run_single(job)
+
+    def _run_convert(self, jobs: list[dict]) -> None:
         cfg = self.agent.config
         work = cfg.home / "work" / jobs[0]["id"]
         work.mkdir(parents=True, exist_ok=True)
@@ -141,6 +148,94 @@ class JobRunner:
                     results[i] = {"status": "error", "error": str(e)}
         return results
 
+    # ---- a scene build or an export (the editor)
+    def _run_single(self, job: dict) -> None:
+        cfg = self.agent.config
+        work = cfg.home / "work" / job["id"]
+        work.mkdir(parents=True, exist_ok=True)
+        pump = _Pump(cfg.server_url, cfg.token, [job["id"]])
+        pump.start()
+        try:
+            inputs = self._fetch_inputs(job, work / "in")
+            if job["kind"] == "scene_build":
+                self._scene_build(job, inputs, work, pump)
+            elif job["kind"] == "export":
+                self._export(job, inputs, work, pump)
+            else:
+                self._fail(job, f"this agent cannot do {job['kind']!r} jobs - update the agent")
+        except Exception as e:  # noqa: BLE001 - whatever went wrong is the job's failure, with the reason
+            log.exception("job %s (%s) failed", job["id"], job["kind"])
+            self._fail(job, str(e) or type(e).__name__)
+        finally:
+            pump.stop()
+            shutil.rmtree(work, ignore_errors=True)
+
+    def _fetch_inputs(self, job: dict, folder: Path) -> dict[str, Path]:
+        """Download every input of the job; `asset:<name>` files (the designer's product images) go to folder/assets under their own names."""
+        cfg = self.agent.config
+        folder.mkdir(parents=True, exist_ok=True)
+        got: dict[str, Path] = {}
+        for name, meta in (job.get("inputs") or {}).items():
+            if name.startswith("asset:"):
+                dest = folder / "assets" / Path(meta["filename"]).name
+                dest.parent.mkdir(exist_ok=True)
+            else:
+                dest = folder / Path(meta["filename"]).name
+            client.download_input(cfg.server_url, cfg.token, job["id"], name, dest, meta["size"])
+            got[name] = dest
+        return got
+
+    def _scene_build(self, job: dict, inputs: dict[str, Path], work: Path, pump: "_Pump") -> None:
+        scene_dir = work / "scene"
+        spec = job.get("spec") or {}
+        if self.mock:
+            pump.step_for(0, "images 1/1")
+            engine_bridge.mock_scene(scene_dir, float(spec.get("width_mm") or 3000), float(spec.get("height_mm") or 1000))
+        else:
+            results_path = work / "scene.json"
+            pump.heartbeat = engine_bridge.heartbeat_path(results_path)
+            entry = engine_bridge.run_spec({"scene_export": str(inputs["cdr"]), "scene_out": str(scene_dir)}, results_path)
+            if entry.get("status") != "done":
+                raise RuntimeError(entry.get("error", "scene export failed"))
+        archive = work / "scene.zip"
+        _zip_scene(scene_dir, archive)
+        self._send_files(job, {"scene": archive}, {})
+
+    def _export(self, job: dict, inputs: dict[str, Path], work: Path, pump: "_Pump") -> None:
+        spec = dict(job.get("spec") or {})
+        out_dir = work / "out"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        results_path = work / "export.json"
+        pump.heartbeat = engine_bridge.heartbeat_path(results_path)
+        if self.mock:
+            report = engine_bridge.mock_export(inputs["scene"], spec, out_dir, pump.heartbeat)
+        else:
+            run = {"cdr": str(inputs["cdr"]), "scene": str(inputs["scene"]), "ops": spec.get("ops") or [], "formats": spec["formats"],
+                   "options": spec["options"], "out_dir": str(out_dir), "base_name": spec["base_name"],
+                   "assets_dir": str(work / "in" / "assets"), "font_subs": spec.get("font_subs") or {}}
+            entry = engine_bridge.run_spec({"export_replay": run}, results_path)
+            if entry.get("status") != "done":
+                raise RuntimeError(entry.get("error", "export failed"))
+            report = entry["report"]
+        self._send_files(job, {kind: out_dir / name for kind, name in (report.get("files") or {}).items()}, report)
+
+    def _send_files(self, job: dict, files: dict[str, Path], report: dict) -> None:
+        """Upload the named files of a finished scene build / export, then report it done."""
+        cfg = self.agent.config
+        sent: dict[str, str] = {}
+        try:
+            client.report_progress(cfg.server_url, cfg.token, job["id"], "uploading")
+            for kind, path in files.items():
+                if Path(path).is_file():
+                    self._upload(job["id"], Path(path))
+                    sent[kind] = Path(path).name
+            client.post_result(cfg.server_url, cfg.token, job["id"], "done", sent, report)
+        except client.ApiError as e:
+            if e.status == 409:
+                log.warning("job %s was taken back by the site before the results arrived", job["id"])
+                return
+            raise RuntimeError(f"could not upload the results: {e.detail}") from None
+
     # ---- sending the outcome
     def _fail(self, job: dict, reason: str) -> None:
         cfg = self.agent.config
@@ -182,6 +277,15 @@ class JobRunner:
                 if e.status not in (0, 502, 503, 504) or attempt == UPLOAD_TRIES:
                     raise
                 time.sleep(2 * attempt)
+
+
+def _zip_scene(scene_dir: Path, archive: Path) -> None:
+    """The scene folder (scene.json, img/*, page.png) as one zip with scene.json LAST, so the site shows the scene only once it is whole."""
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(scene_dir.rglob("*")):
+            if f.is_file() and f.name != "scene.json":
+                z.write(f, f.relative_to(scene_dir).as_posix())
+        z.write(scene_dir / "scene.json", "scene.json")
 
 
 class _Pump(threading.Thread):

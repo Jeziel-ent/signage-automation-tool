@@ -74,8 +74,11 @@ def download_exe(server: str, token: str, dest: Path, expected_sha256: str, expe
 
 # ------------------------------------------------------------------ the job queue
 
-def claim_jobs(server: str, token: str, limit: int = 5) -> list[dict]:
-    return call(server, "/api/agent/jobs/claim", {"max": limit}, token)["jobs"]
+KINDS = ["convert", "scene_build", "export"]       # what this agent can do (an older agent only asked for "convert")
+
+
+def claim_jobs(server: str, token: str, limit: int = 5, kinds: list[str] | None = None) -> list[dict]:
+    return call(server, "/api/agent/jobs/claim", {"max": limit, "kinds": kinds or KINDS}, token)["jobs"]
 
 
 def report_progress(server: str, token: str, job_id: str, step: str = "") -> None:
@@ -93,6 +96,23 @@ def download_master(server: str, token: str, job_id: str, dest: Path, expected_s
                 f.write(chunk)
         if expected_size is not None and size != expected_size:
             raise ApiError(0, f"the master arrived incomplete ({size} of {expected_size} bytes)")
+        part.replace(dest)
+    except BaseException:
+        part.unlink(missing_ok=True)
+        raise
+
+
+def download_input(server: str, token: str, job_id: str, name: str, dest: Path, expected_size: int | None = None) -> None:
+    """A file a scene-build / export job needs (its .cdr, scene.json, a product image); incomplete downloads are discarded."""
+    part = dest.with_name(dest.name + ".part")
+    size = 0
+    try:
+        with _open(f"{server}/api/agent/jobs/{job_id}/input/{urllib.parse.quote(name, safe='')}", token=token, timeout=300) as r, open(part, "wb") as f:
+            while chunk := r.read(1024 * 256):
+                size += len(chunk)
+                f.write(chunk)
+        if expected_size is not None and size != expected_size:
+            raise ApiError(0, f"{name} arrived incomplete ({size} of {expected_size} bytes)")
         part.replace(dest)
     except BaseException:
         part.unlink(missing_ok=True)

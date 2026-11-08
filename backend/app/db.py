@@ -93,8 +93,9 @@ CREATE TABLE IF NOT EXISTS agent_pairing_codes (
 -- calls, and an expired lease puts the job back in the queue (or fails it after MAX_ATTEMPTS).
 CREATE TABLE IF NOT EXISTS agent_jobs (
     id TEXT PRIMARY KEY,
-    kind TEXT NOT NULL,                 -- convert (scene_build and export_replay follow)
+    kind TEXT NOT NULL,                 -- convert | scene_build | export
     shop_id TEXT,
+    ref TEXT,                           -- what the job is for besides the shop: the export id of an export job
     user_id INTEGER NOT NULL,
     agent_id TEXT,
     state TEXT NOT NULL DEFAULT 'queued',   -- queued | claimed | running | done | failed
@@ -237,6 +238,7 @@ _MIGRATIONS = [
     # the master the user picked for this shop in the queue's Master column; NULL = the default master of the board's
     # orientation (landscape_master_id / portrait_master_id). main._select_shop_master falls back when it is unusable.
     ("shops", "master_id", "ALTER TABLE shops ADD COLUMN master_id TEXT"),
+    ("agent_jobs", "ref", "ALTER TABLE agent_jobs ADD COLUMN ref TEXT"),
 ]
 
 
@@ -491,13 +493,15 @@ def fail_interrupted_work(reason: str, keep_agent_jobs: bool = False) -> tuple[i
     so nothing will ever finish them - the UI would otherwise poll them forever ("Converting 1 of N"). Returns
     (shops, exports) changed. `keep_agent_jobs`: a shop with a live job in the agent queue (queued / claimed / running) is NOT
     interrupted - the queue lives in the database and survives a server restart."""
-    keep = (" AND id NOT IN (SELECT shop_id FROM agent_jobs WHERE state IN ('queued', 'claimed', 'running') AND shop_id IS NOT NULL)"
-            if keep_agent_jobs else "")
+    keep = (" AND id NOT IN (SELECT shop_id FROM agent_jobs WHERE kind = 'convert' AND state IN ('queued', 'claimed', 'running')"
+            " AND shop_id IS NOT NULL)" if keep_agent_jobs else "")
+    keep_exports = (" AND id NOT IN (SELECT ref FROM agent_jobs WHERE kind = 'export' AND state IN ('queued', 'claimed', 'running')"
+                    " AND ref IS NOT NULL)" if keep_agent_jobs else "")
     with _conn() as conn:
         shops = conn.execute("UPDATE shops SET status = 'failed', step = NULL, error = ? "
                              "WHERE status IN ('queued', 'converting')" + keep, (reason,)).rowcount
         exports = conn.execute("UPDATE exports SET status = 'failed', error = ?, completed_at = ? "
-                               "WHERE status IN ('queued', 'running')", (reason, time.time())).rowcount
+                               "WHERE status IN ('queued', 'running')" + keep_exports, (reason, time.time())).rowcount
     return shops, exports
 
 
@@ -609,6 +613,26 @@ def get_correction(shop_id: str) -> dict | None:
     if not row:
         return None
     return {**dict(row), "record": json.loads(row["record_json"])}
+
+
+def set_correction_feedback(source_shop_id: str, board_shop_id: str, confirmed: int, disputed: int) -> bool:
+    """Record what ONE board's save said about a stored record: how many of its lessons the designer kept / corrected on that board.
+    Kept per board (`record.feedback.boards[board]`), so saving the same board again replaces its verdict instead of adding to it."""
+    with _conn() as conn:
+        row = conn.execute("SELECT record_json FROM corrections WHERE shop_id = ?", (source_shop_id,)).fetchone()
+        if not row:
+            return False
+        rec = json.loads(row["record_json"])
+        fb = rec.setdefault("feedback", {})
+        fb.pop("confirmed", None)
+        fb.pop("disputed", None)
+        boards = fb.setdefault("boards", {})
+        if confirmed == 0 and disputed == 0:
+            boards.pop(board_shop_id, None)
+        else:
+            boards[board_shop_id] = [int(confirmed), int(disputed)]
+        conn.execute("UPDATE corrections SET record_json = ? WHERE shop_id = ?", (json.dumps(rec), source_shop_id))
+    return True
 
 
 def list_corrections() -> list[dict]:
@@ -843,10 +867,35 @@ def revoke_agent(agent_id: str) -> None:
 MAX_ATTEMPTS = 3
 
 
-def create_agent_job(job_id: str, kind: str, shop_id: str | None, user_id: int, payload: dict) -> None:
+def create_agent_job(job_id: str, kind: str, shop_id: str | None, user_id: int, payload: dict, ref: str | None = None) -> None:
     with _conn() as conn:
-        conn.execute("INSERT INTO agent_jobs (id, kind, shop_id, user_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-                     (job_id, kind, shop_id, user_id, json.dumps(payload), time.time()))
+        conn.execute("INSERT INTO agent_jobs (id, kind, shop_id, ref, user_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (job_id, kind, shop_id, ref, user_id, json.dumps(payload), time.time()))
+
+
+def active_agent_job(kind: str, shop_id: str | None = None, ref: str | None = None) -> dict | None:
+    """The newest queued / claimed / running job of this kind for a shop (or an export id), else None."""
+    sql, args = "SELECT * FROM agent_jobs WHERE kind = ? AND state IN ('queued', 'claimed', 'running')", [kind]
+    if shop_id is not None:
+        sql, args = sql + " AND shop_id = ?", args + [shop_id]
+    if ref is not None:
+        sql, args = sql + " AND ref = ?", args + [ref]
+    with _conn() as conn:
+        row = conn.execute(sql + " ORDER BY created_at DESC LIMIT 1", args).fetchone()
+    return dict(row) if row else None
+
+
+def agent_job_by_ref(kind: str, ref: str) -> dict | None:
+    """The newest job of this kind for an export id, in any state."""
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM agent_jobs WHERE kind = ? AND ref = ? ORDER BY created_at DESC LIMIT 1", (kind, ref)).fetchone()
+    return dict(row) if row else None
+
+
+def latest_agent_job_for_shop(shop_id: str, kind: str = "convert") -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM agent_jobs WHERE shop_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 1", (shop_id, kind)).fetchone()
+    return dict(row) if row else None
 
 
 def get_agent_job(job_id: str) -> dict | None:
@@ -863,14 +912,19 @@ def active_agent_job_for_shop(shop_id: str) -> dict | None:
 
 
 def claim_agent_jobs(agent_id: str, user_id: int, limit: int, lease_s: float, kinds: tuple = ("convert",)) -> list[dict]:
-    """Atomically hand `limit` queued jobs of this user (oldest first) to one agent. BEGIN IMMEDIATE takes the write lock first, so two
-    agents asking at the same moment can never get the same job."""
+    """Atomically hand queued jobs of this user (oldest first) to one agent. The OLDEST job decides the kind of the round: convert jobs are
+    batched (up to `limit`, one CorelDRAW for all), a scene build or an export goes alone. BEGIN IMMEDIATE takes the write lock first, so
+    two agents asking at the same moment can never get the same job. `kinds` = what this agent can do (an older agent only converts)."""
     now = time.time()
     marks = ",".join("?" * len(kinds))
     with _conn() as conn:
         conn.execute("BEGIN IMMEDIATE")
-        rows = conn.execute(f"SELECT id FROM agent_jobs WHERE state = 'queued' AND user_id = ? AND kind IN ({marks})"
-                            " ORDER BY created_at LIMIT ?", (user_id, *kinds, limit)).fetchall()
+        first = conn.execute(f"SELECT kind FROM agent_jobs WHERE state = 'queued' AND user_id = ? AND kind IN ({marks})"
+                             " ORDER BY created_at LIMIT 1", (user_id, *kinds)).fetchone()
+        if not first:
+            return []
+        rows = conn.execute("SELECT id FROM agent_jobs WHERE state = 'queued' AND user_id = ? AND kind = ? ORDER BY created_at LIMIT ?",
+                            (user_id, first["kind"], limit if first["kind"] == "convert" else 1)).fetchall()
         ids = [r["id"] for r in rows]
         for jid in ids:
             conn.execute("UPDATE agent_jobs SET state = 'claimed', agent_id = ?, claimed_at = ?, lease_until = ?, attempts = attempts + 1,"

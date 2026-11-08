@@ -330,6 +330,39 @@ NEARBY_AREA_TOL = 0.25     # ... and size (area within 25 %) still describes a b
 NEARBY_WEIGHT = 0.5        # a nearby record counts half in the averaged part; a record of the exact size always leads
 LINE_MIN_FRAC = 0.75       # a name shorter than this share of the name she broke into lines stays on one line
 FIT_FRAC = 0.92            # the export keeps a learned name inside this share of her box width (measured by CorelDRAW, not estimated)
+TRUST_LEAD = 0.5           # only a record trusted at least this much may LEAD a blend (the newest such record); distrusted ones only steady it
+QUARANTINE_TRUST = 0.3     # a record trusted less than this ...
+QUARANTINE_DISPUTES = 2    # ... after at least this many designers corrected what it taught, is left out until confirmations win it back
+
+
+# ---------------------------------------------------------------- trust: did the designers keep what a record taught?
+#
+# A record is a lesson. When a later board is made with it (Corel Intelligence) the designer either keeps the result (the lesson is
+# CONFIRMED) or corrects it again (DISPUTED). `learn_from_save` measures that on every editor save; `trust` turns the tallies into a
+# weight: (confirmed + 1) / (confirmed + disputed + 2), so an unproven record sits at 0.5, a confirmed one climbs towards 1 and a record that
+# keeps being corrected falls towards 0 and is finally paused (`quarantined`). Tallies are kept per BOARD (the board whose save produced
+# them), so autosaving the same board many times never counts twice.
+
+def _totals(fb: dict) -> tuple[int, int]:
+    boards = fb.get("boards") or {}
+    if boards:
+        return sum(int(v[0]) for v in boards.values()), sum(int(v[1]) for v in boards.values())
+    return max(0, int(fb.get("confirmed", 0) or 0)), max(0, int(fb.get("disputed", 0) or 0))
+
+
+def feedback_of(rec: dict) -> dict:
+    """{"confirmed", "disputed"} of a stored record (a row from db.list_corrections or the bare record)."""
+    c, d = _totals((rec.get("record") or rec).get("feedback") or {})
+    return {"confirmed": c, "disputed": d}
+
+
+def trust(rec: dict) -> float:
+    fb = feedback_of(rec)
+    return (fb["confirmed"] + 1) / (fb["confirmed"] + fb["disputed"] + 2)
+
+
+def quarantined(rec: dict) -> bool:
+    return feedback_of(rec)["disputed"] >= QUARANTINE_DISPUTES and trust(rec) < QUARANTINE_TRUST
 
 
 def usable_records(rows: list[dict], brand: str | None, master_file: str | None, w_mm: float, h_mm: float,
@@ -338,6 +371,7 @@ def usable_records(rows: list[dict], brand: str | None, master_file: str | None,
     both name one, the same TYPE OF BOARD. Every stored record is used.
     Newest first, so a later correction wins a clash."""
     want = (board_type or "").strip().lower()
+    rows = [r for r in rows if not quarantined(r)]           # a lesson the designers keep correcting is paused (see `trust`)
     out = [r for r in rows if _record_fits(r, brand, master_file, w_mm, h_mm, want)]
     out = sorted(out, key=lambda r: r.get("updated_at") or 0, reverse=True)
     near = [{**r, "nearby": True} for r in rows if _record_fits(r, brand, master_file, w_mm, h_mm, want, nearby=True)]
@@ -431,21 +465,25 @@ def _record_votes(rec: dict, placed: list, new_w: float, new_h: float, votes: di
             skipped += 1
             continue
         taken.add(best[1].id)
-        after = {**ch["after"], "_w": NEARBY_WEIGHT} if rec.get("nearby") else ch["after"]
+        after = {**ch["after"], "_t": trust(rec)}
+        if rec.get("nearby"):
+            after["_w"] = NEARBY_WEIGHT
         votes.setdefault(best[1].id, []).append((after, sid, _is_editor(rec)))
     return skipped
 
 
 def blend_boxes(boxes: list[dict]) -> dict:
-    """The learned box from the editor corrections that name an object, NEWEST FIRST: 80 % the newest + 20 % the average of all of them."""
-    if len(boxes) == 1:
-        return {k: boxes[0][k] for k in BOX_KEYS}                # one correction: exactly as the designer made it
-    if len(boxes) >= 3:
-        mid = {k: _median([b[k] for b in boxes]) for k in BOX_KEYS}      # the median: one mistaken edit cannot drag the steady part
+    """The learned box from the editor corrections that name an object, NEWEST FIRST: 80 % the newest + 20 % the average of all of them.
+    Records the designers keep correcting (`_t` below TRUST_LEAD) neither lead nor steady the blend while a trusted one is available."""
+    pool = [b for b in boxes if b.get("_t", 1.0) >= TRUST_LEAD] or boxes
+    if len(pool) == 1:
+        return {k: pool[0][k] for k in BOX_KEYS}                 # one correction: exactly as the designer made it
+    if len(pool) >= 3:
+        mid = {k: _median([b[k] for b in pool]) for k in BOX_KEYS}       # the median: one mistaken edit cannot drag the steady part
     else:
-        w = [b.get("_w", 1.0) for b in boxes]                    # two records: the (weighted) average - a nearby-size record counts half
-        mid = {k: sum(b[k] * x for b, x in zip(boxes, w)) / sum(w) for k in BOX_KEYS}
-    return {k: round(RECENT_WEIGHT * boxes[0][k] + AVERAGE_WEIGHT * mid[k], 6) for k in BOX_KEYS}
+        w = [b.get("_w", 1.0) * b.get("_t", 1.0) for b in pool]  # two records: the weighted average - a nearby-size record counts half
+        mid = {k: sum(b[k] * x for b, x in zip(pool, w)) / sum(w) for k in BOX_KEYS}
+    return {k: round(RECENT_WEIGHT * pool[0][k] + AVERAGE_WEIGHT * mid[k], 6) for k in BOX_KEYS}
 
 
 def _decide_box(votes: list[tuple[dict, str, bool]]) -> tuple[dict | None, list[str]]:
@@ -507,12 +545,12 @@ def _already_there(p, box: dict, new_w: float, new_h: float) -> bool:
             and abs(p.w / new_w - box["w"]) <= IN_PLACE_TOL and abs(p.h / new_h - box["h"]) <= IN_PLACE_TOL)
 
 
-def build_record(shop: dict, job: dict | None, base: dict, edited: dict, layout: dict | None) -> dict | None:
+def build_record(shop: dict, job: dict | None, base: dict, edited: dict, layout: dict | None, diff: dict | None = None) -> dict | None:
     """One correction record for a shop, or None when the designer changed nothing worth learning.
 
     `layout` is the report's `layout` block (which designer board the engine copied and how confident it was), when the report has one.
     """
-    d = diff_scenes(base, edited)
+    d = diff if diff is not None else diff_scenes(base, edited)
     if d["page_changed"] or not (d["changes"] or d["nested"]):
         return None
     pw, ph = _page(base)
@@ -545,6 +583,7 @@ def summarize(row: dict, shop_name: str | None = None) -> dict:
         "master_file": row.get("master_file"), "board_type": row.get("board_type"),
         "source": "designer-dataset" if rec.get("source") else "editor", "page_w_mm": pw, "page_h_mm": ph,
         "updated_at": row.get("updated_at"), "text_edits": rec.get("text_edits", 0),
+        "trust": round(trust(row), 2), **feedback_of(row), "quarantined": quarantined(row),
         "applies": [c["id"] for c in changes if (c["action"] in LEARNED_ACTIONS and c["kind"] != "text") or c["nested"]
                     or c["action"] in SCENE_ACTIONS],
         "changes": changes,
@@ -668,9 +707,14 @@ def _lined_target(node: dict, box: dict, pw: float, ph: float, plan: dict) -> di
 
 
 def _with_weight(c: dict, row: dict) -> dict:
-    """A change from a nearby-size record counts half in the averaged part (`blend_boxes` reads the `_w` mark on its box)."""
-    if row.get("nearby") and c.get("after"):
-        c = {**c, "after": {**c["after"], "_w": NEARBY_WEIGHT}}
+    """A change from a nearby-size record counts half in the averaged part (`blend_boxes` reads the `_w` mark on its box); every change also
+    carries the record it came from (`_src`) and that record's trust (`_t`, on the change and on its box)."""
+    c = {**c, "_src": row.get("shop_id"), "_t": trust(row)}
+    if c.get("after"):
+        extra = {"_t": c["_t"]}
+        if row.get("nearby"):
+            extra["_w"] = NEARBY_WEIGHT
+        c = {**c, "after": {**c["after"], **extra}}
     return c
 
 
@@ -682,7 +726,7 @@ def _nested_requests(records: list[dict]) -> dict[str, list[dict]]:
             asked.setdefault(c["id"], []).append(_with_weight({**c, "_editor": _is_editor(r)}, r))
         for c in rec.get("changes", []):
             if c["action"] in SCENE_ACTIONS:                 # a top-level object the designer hid / deleted
-                asked.setdefault(c["id"], []).append({**c, "_editor": _is_editor(r)})
+                asked.setdefault(c["id"], []).append({**c, "_editor": _is_editor(r), "_src": r.get("shop_id"), "_t": trust(r)})
     return asked
 
 
@@ -695,7 +739,7 @@ def _agreed_change(group: list[dict]) -> dict | None:
     """One change for an object from every record that names it (same boxes within CONSENSUS_TOL and the same style), None when they clash."""
     editors = [c for c in group if c.get("_editor")]
     if editors:
-        newest = editors[0]                                   # records come newest first; its style / lines / action lead
+        newest = next((c for c in editors if c.get("_t", 1.0) >= TRUST_LEAD), editors[0])   # newest first; the newest trusted one leads
         if newest.get("lines"):
             hers = [c["name_chars"] for c in editors if c.get("lines") == newest["lines"] and c.get("name_chars")]
             if hers:
@@ -778,13 +822,14 @@ def _edits_for(ch: dict, node: dict, nid: str, pw: float, ph: float) -> list[dic
     return _nested_edits(ch, node, nid, pw, ph) if _fits_node(ch, node) else None
 
 
-def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
+def nested_ops(scene: dict, records: list[dict], sources_out: list | None = None) -> tuple[list[dict], dict]:
     """Editor ops that reproduce the stored records' nested changes on a freshly converted board's `scene`.
 
     Same consensus rule as the top-level ones: one record applies as is; several that name the same object must agree within
     CONSENSUS_TOL (then the median is used) or the object is left alone. An object is matched by id AND checked (kind, text or not,
     number of nested shapes); a board whose structure differs skips it. Parents are handled before children and each op is applied to a
-    working copy first, so a child's op starts from where its parent's op left it. Returns (ops, {applied, skipped, conflicting})."""
+    working copy first, so a child's op starts from where its parent's op left it. Returns (ops, {applied, skipped, conflicting}); the shop ids of the
+    records the ops came from are appended to `sources_out` when given."""
     import copy
 
     pw, ph = _page(scene)
@@ -793,6 +838,7 @@ def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
     asked = _nested_requests(records)
     ops: list[dict] = []
     summary = {"applied": 0, "skipped": sum(1 for i in asked if i not in nodes), "conflicting": 0}
+    sources: list[str] = []
     for nid in _by_depth(asked, nodes):
         ch = _agreed_change(asked[nid])
         if ch is None:
@@ -808,6 +854,9 @@ def nested_ops(scene: dict, records: list[dict]) -> tuple[list[dict], dict]:
         if made:
             ops.extend(made)
             summary["applied"] += 1
+            sources.extend(s for s in (c.get("_src") for c in asked[nid]) if s and s not in sources)
+    if sources_out is not None:
+        sources_out.extend(sources)                           # the records these ops were learned from (judged on the next editor save)
     return ops, summary
 
 
@@ -815,3 +864,115 @@ def has_scene_changes(rows: list[dict]) -> bool:
     """True when any of the records has something that is replayed as editor ops (nested changes, or a hidden / deleted object)."""
     return any((r.get("record") or {}).get("nested") or any(c["action"] in SCENE_ACTIONS for c in (r.get("record") or {}).get("changes", []))
                for r in rows)
+
+
+# ------------------------------------------------------------------ learning from a save of a board that was made WITH learned data
+
+def learned_baseline(base: dict, learned_ops: list[dict]) -> dict:
+    """The board as Corel Intelligence left it: `base` with the learned editor ops applied. A save is judged against THIS, not against the
+    engine's raw board - otherwise the learned changes would be recorded again as if a designer had just made them (an echo that made
+    every lesson reinforce itself and always count as the 'newest' correction)."""
+    import copy
+
+    from . import scene_ops
+
+    if not learned_ops:
+        return base
+    work = copy.deepcopy(base)
+    try:
+        for op in learned_ops:
+            scene_ops.apply_op(work, op)
+    except scene_ops.OpError:
+        return base
+    return work
+
+
+def _op_ids(op: dict) -> list[str]:
+    ids = list(op.get("ids") or [])
+    if op.get("id"):
+        ids.append(op["id"])
+    return ids
+
+
+def nested_feedback(baseline: dict, edited: dict, learned_ops: list[dict]) -> tuple[int, int]:
+    """(confirmed, disputed) objects among those the learned ops touched: kept as learned, or moved / restyled / hidden / shown again."""
+    if not learned_ops:
+        return 0, 0
+    pw, ph = _page(baseline)
+    ew, eh = _page(edited)
+    if not (math.isclose(pw, ew, rel_tol=1e-6) and math.isclose(ph, eh, rel_tol=1e-6)):
+        return 0, 0
+    old, new = _all_nodes(baseline), _all_nodes(edited)
+    confirmed = disputed = 0
+    for nid in dict.fromkeys(i for op in learned_ops for i in _op_ids(op)):
+        o, n = old.get(nid), new.get(nid)
+        if o is None:
+            continue                                         # the lesson deleted it: nothing left to compare
+        if n is None or o.get("visible", True) != n.get("visible", True) or not _same(_box(o), _box(n), pw, ph) or _style_changes(o, n):
+            disputed += 1
+        else:
+            confirmed += 1
+    return confirmed, disputed
+
+
+def _close(a: dict, b: dict) -> bool:
+    return max(abs(a[k] - b[k]) for k in BOX_KEYS) <= MATCH_TOL
+
+
+def rebase_and_feedback(changes: list[dict], source_rows: list[dict], baseline: dict) -> tuple[list[dict], dict[str, list[int]]]:
+    """Top-level corrections made on a board that already carried learned moves.
+
+    `changes` are the new save's top-level changes, whose "before" is where the object sat on the LEARNED board. A record must describe the
+    move from the ENGINE's own placement (that is what the next conversion will match against), so a change that starts exactly where a
+    source record put the object gets that record's own "before" back. The same comparison is the verdict on the source: the designer moved
+    the object again (disputed), or it is still where the record put it (confirmed). Returns (changes, {source shop id: [confirmed, disputed]})."""
+    out = [dict(c) for c in changes]
+    pw, ph = _page(baseline)
+    boxes = [_frac_box(n, pw, ph) for n in _top_nodes(baseline).values()]
+    verdicts: dict[str, list[int]] = {}
+    rebased: set[int] = set()
+    for row in source_rows:
+        sid = row.get("shop_id")
+        for s in (row.get("record") or {}).get("changes", []):
+            if s["action"] not in APPLIED_ACTIONS or not s.get("after") or (s.get("signature") or {}).get("kind") == "text":
+                continue
+            hit = next((i for i, c in enumerate(out) if i not in rebased and c.get("before") and _close(c["before"], s["after"])), None)
+            tally = verdicts.setdefault(sid, [0, 0])
+            if hit is not None:
+                tally[1] += 1
+                rebased.add(hit)
+                out[hit]["before"] = s["before"]
+            elif any(_close(b, s["after"]) for b in boxes):
+                tally[0] += 1                                # nothing moved it again and it is where the record put it
+    return out, {k: v for k, v in verdicts.items() if v != [0, 0]}
+
+
+def learn_from_save(shop: dict, job: dict | None, base: dict, edited: dict, layout: dict | None,
+                    source_rows: list[dict]) -> tuple[dict | None, dict[str, list[int]]]:
+    """Everything one editor save teaches. Returns (the record to store or None, {record shop id: [confirmed, disputed] on THIS board}).
+
+    On a board made with Corel Intelligence the save is judged against the board as it was left (`learned_baseline`), so only what the
+    designer did ON TOP is recorded, top-level corrections are re-based onto the engine's own placement, and every record that fed the
+    board is told whether its lesson was kept. `source_rows` = stored records (db.list_corrections())."""
+    intel = (layout or {}).get("intelligence") if isinstance(layout, dict) else None
+    if not isinstance(intel, dict) or not (intel.get("learned_ops") or intel.get("records")):
+        return build_record(shop, job, base, edited, layout), {}
+    ops = intel.get("learned_ops") or []
+    baseline = learned_baseline(base, ops)
+    diff = diff_scenes(baseline, edited)
+    if diff["page_changed"]:
+        return None, {}
+    own = shop["id"]
+    used = {s for s in (intel.get("records") or []) if s != own}
+    rows = [r for r in source_rows if r.get("shop_id") in used]
+    diff["changes"], top = rebase_and_feedback(diff["changes"], rows, baseline)
+    verdicts: dict[str, list[int]] = {sid: list(v) for sid, v in top.items()}
+    nested_sources = [s for s in (intel.get("nested_sources") or []) if s != own]
+    if nested_sources:
+        c, d = nested_feedback(baseline, edited, ops)
+        for sid in nested_sources:
+            v = verdicts.setdefault(sid, [0, 0])
+            v[0] += c
+            v[1] += d
+    return build_record(shop, job, baseline, edited, layout, diff=diff), {k: v for k, v in verdicts.items() if v != [0, 0]}
+

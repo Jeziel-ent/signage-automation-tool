@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import logging.handlers
 import os
@@ -41,6 +42,16 @@ def main(argv: list[str] | None = None) -> int:
     raw = list(sys.argv[1:] if argv is None else argv)
     if raw and raw[0] == "--corel-worker" and len(raw) >= 4:
         return _corel_worker(raw[1:])
+    if raw and raw[0] == "--selftest":
+        from . import engine_bridge
+
+        home = Path(raw[1]) if len(raw) > 1 else install_dir()
+        engine_bridge.prepare(home / "data")
+        report = engine_bridge.selftest()
+        home.mkdir(parents=True, exist_ok=True)
+        (home / "selftest.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+        print(json.dumps(report, indent=2))
+        return 0 if not report.get("error") and all(v == "ok" for v in report["imports"].values()) else 1
     ap = argparse.ArgumentParser(prog="SignageAgent")
     ap.add_argument("--home", help="data folder (development / tests); default %%LOCALAPPDATA%%\AdinnSignageAgent")
     ap.add_argument("--no-install", action="store_true", help="run from here without installing (development)")

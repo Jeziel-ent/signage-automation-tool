@@ -73,8 +73,8 @@ class Agent:
         self.c = TestClient(site_client.app)
         self.h, self.id = headers, agent_id
 
-    def claim(self, n=5):
-        r = self.c.post("/api/agent/jobs/claim", json={"max": n}, headers=self.h)
+    def claim(self, n=5, kinds=None):
+        r = self.c.post("/api/agent/jobs/claim", json={"max": n, **({"kinds": kinds} if kinds else {})}, headers=self.h)
         assert r.status_code == 200, r.text
         return r.json()["jobs"]
 
@@ -89,6 +89,9 @@ class Agent:
 
     def master(self, job_id):
         return self.c.get(f"/api/agent/jobs/{job_id}/master", headers=self.h)
+
+    def input(self, job_id, name):
+        return self.c.get(f"/api/agent/jobs/{job_id}/input/{name}", headers=self.h)
 
 
 @pytest.fixture
@@ -302,12 +305,6 @@ def test_a_local_shop_is_still_failed_by_recovery_when_not_remote(world, monkeyp
     monkeypatch.setenv("SIGNAGE_ENGINE", "mock")
     world.main._recover_interrupted_work()
     assert world.dee.get(f"/api/v2/shops/{sid}/status").json()["status"] == "failed"
-
-
-def test_the_editor_and_exports_say_they_are_not_available_through_the_agent_yet(world):
-    job, sid = _shop(world.boss)
-    assert world.boss.get(f"/api/editor/{job}/{sid}/scene").status_code == 501
-    assert world.boss.post(f"/api/editor/{job}/{sid}/publish").status_code == 501
 
 
 def test_remote_mode_is_reported_by_health(world):
