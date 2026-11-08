@@ -11,7 +11,7 @@
 .srv-table td { padding: 6px 8px; border-bottom: 1px solid var(--ws-line, rgba(30, 41, 59, 0.6)); vertical-align: top; }
 .srv-table td.num { text-align: right; white-space: nowrap; width: 90px; }
 .srv-table td.bar { width: 38%; }
-.srv-table td.bar span { display: block; height: 8px; border-radius: 4px; background: #ef4444; }
+.srv-table td.bar span { display: block; height: 8px; border-radius: 4px; background: #94a3b8; }
 .srv-table.log td.when { white-space: nowrap; color: var(--ws-muted, #94a3b8); width: 190px; }
 .srv-table.log td.ip { color: var(--ws-faint, #64748b); white-space: nowrap; width: 120px; }
 .srv-clean { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }

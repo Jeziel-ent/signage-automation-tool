@@ -136,6 +136,8 @@ class JobRunner:
         # of the CorelDRAW installs on this PC only those that can open the masters in this batch are tried (a file saved by CorelDRAW 25
         # cannot be opened by 21): the worker process inherits this and corel_util.progid_candidates filters by it
         need = max([int((j.get("master") or {}).get("core_major") or 0) for j, _ in prepared] or [0])
+        # designers' real masters are 100-350 MB and take minutes to open: the website's 45 s default would kill them (an explicit setting still wins)
+        os.environ.setdefault("SIGNAGE_SHOP_TIMEOUT_S", "240")
         previous = os.environ.get("SIGNAGE_COREL_MIN_MAJOR")
         if need:
             os.environ["SIGNAGE_COREL_MIN_MAJOR"] = str(need)

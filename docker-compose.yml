@@ -34,7 +34,7 @@ services:
     build: .
     restart: unless-stopped
     env_file: deploy/server.env
-    command: ["sh", "-c", "while true; do python tools/backup_db.py --out /data/backups --keep 14; sleep 86400; done"]
+    command: ["sh", "-c", "until [ -f /data/signage.db ]; do sleep 5; done; while true; do python tools/backup_db.py --out /data/backups --keep 14; sleep 86400; done"]
     volumes:
       - signage-data:/data
     healthcheck:

@@ -49,6 +49,7 @@ def backup(db_path: Path, out_dir: Path, keep: int = 14, now: float | None = Non
         dst = sqlite3.connect(tmp)
         try:
             src.backup(dst)
+            dst.execute("PRAGMA journal_mode=DELETE")      # a plain single-file copy: no -wal/-shm left beside it
         finally:
             dst.close()
     finally:
@@ -59,6 +60,8 @@ def backup(db_path: Path, out_dir: Path, keep: int = 14, now: float | None = Non
         tmp.unlink(missing_ok=True)
         raise
     tmp.replace(target)
+    for stray in out_dir.glob("*.part-*"):                  # leftovers of earlier versions of this tool
+        stray.unlink(missing_ok=True)
     old = sorted(out_dir.glob("signage-*.db"))
     for p in old[:-keep] if keep > 0 else []:
         p.unlink(missing_ok=True)
