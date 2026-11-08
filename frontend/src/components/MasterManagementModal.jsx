@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { FileCheck2, Trash2, UploadCloud, X } from "lucide-react";
 import { motion } from "framer-motion";
+import { useAuth } from "../context/AuthContext.jsx";
 import { BACKDROP_MOTION, CARD_MOTION } from "./modalMotion.js";
 import { ORIENTATIONS, mastersOf } from "../utils/masters.js";
 import { fmtBytes } from "../utils/fileSize.js";
@@ -20,6 +21,7 @@ const UNITS = ["in", "ft", "cm", "mm"];
  * queue's conversions); `onDelete(master)` asks and deletes (resolves true when it did).
  */
 export default function MasterManagementModal({ brand, masters, onAdded, onDelete, onClose }) {
+  const { isAdmin } = useAuth();
   const [name, setName] = useState("");
   const [orientation, setOrientation] = useState("landscape");
   const [dims, setDims] = useState({ width: "", height: "", unit: "ft" });
@@ -196,10 +198,12 @@ export default function MasterManagementModal({ brand, masters, onAdded, onDelet
                         </small>
                         <small>Added {new Date(m.created_at).toLocaleString()}</small>
                       </div>
-                      <button className="icon-btn mm-del" onClick={() => remove(m)} disabled={busyId === m.id}
-                        title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
-                        <Trash2 size={15} />
-                      </button>
+                      {isAdmin && (
+                        <button className="icon-btn mm-del" onClick={() => remove(m)} disabled={busyId === m.id}
+                          title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
+                          <Trash2 size={15} />
+                        </button>
+                      )}
                     </li>
                   ))}
                 </ul>

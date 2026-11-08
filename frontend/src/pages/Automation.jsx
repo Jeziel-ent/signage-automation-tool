@@ -964,6 +964,9 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, int
       </button>
     );
   }
+  if (shop.status === "queued" && shop.waiting_for_agent) {
+    return <span className="badge badge-failed" title="None of your Signage Agents is online - start the agent on your PC and this board will convert (see the Agent page)">Waiting for agent</span>;
+  }
   if (shop.status === "queued") return <span className="badge badge-queued" title="Waiting its turn - CorelDRAW converts one board at a time">Pending</span>;
   if (shop.status === "converting") {
     // Eased toward (but capped just below) the next real step threshold - never a straight jump to the backend's

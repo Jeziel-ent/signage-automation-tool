@@ -49,6 +49,68 @@ CREATE TABLE IF NOT EXISTS corrections (
     updated_at REAL NOT NULL
 );
 
+-- Accounts (app/auth.py): email + password, role admin | designer. Sessions store only a hash of the cookie token.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    email TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL DEFAULT '',
+    password_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'designer',
+    active INTEGER NOT NULL DEFAULT 1,
+    created_at REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    created_at REAL NOT NULL,
+    expires_at REAL NOT NULL
+);
+
+-- Windows agents (app/agents.py): one row per designer PC that paired with the site. Only a hash of the agent's token is stored.
+CREATE TABLE IF NOT EXISTS agents (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL,
+    version TEXT,
+    corel_json TEXT,
+    state TEXT,
+    created_at REAL NOT NULL,
+    last_seen REAL,
+    revoked_at REAL
+);
+
+-- One-time codes the website hands to a signed-in user to pair an agent with their account (10 minutes, single use).
+CREATE TABLE IF NOT EXISTS agent_pairing_codes (
+    code_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at REAL NOT NULL
+);
+
+-- The job queue between the site and the Windows agents (app/agents.py): one row per piece of CorelDRAW work. A job belongs to the
+-- user who asked for it and is claimed by one of THAT user's agents; the claim is a lease that the agent keeps alive with progress
+-- calls, and an expired lease puts the job back in the queue (or fails it after MAX_ATTEMPTS).
+CREATE TABLE IF NOT EXISTS agent_jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,                 -- convert (scene_build and export_replay follow)
+    shop_id TEXT,
+    user_id INTEGER NOT NULL,
+    agent_id TEXT,
+    state TEXT NOT NULL DEFAULT 'queued',   -- queued | claimed | running | done | failed
+    payload_json TEXT NOT NULL,
+    result_json TEXT,
+    error TEXT,
+    step TEXT,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    lease_until REAL,
+    created_at REAL NOT NULL,
+    claimed_at REAL,
+    finished_at REAL
+);
+CREATE INDEX IF NOT EXISTS agent_jobs_queue ON agent_jobs (state, user_id, created_at);
+CREATE INDEX IF NOT EXISTS agent_jobs_shop ON agent_jobs (shop_id);
+
 -- Small app-wide switches (Corel Intelligence on/off).
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -184,6 +246,11 @@ def _conn():
     conn = sqlite3.connect(DB_PATH, timeout=30)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # write-ahead log: readers never block the writer and several designers can use the site at once (the default rollback journal
+    # answers "database is locked" to a second writer); the setting is stored in the file, repeating it per connection is cheap
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("PRAGMA synchronous = NORMAL")
+    conn.execute("PRAGMA busy_timeout = 30000")
     try:
         yield conn
         conn.commit()
@@ -418,14 +485,17 @@ def set_shop_result(shop_id: str, files: dict, report: dict) -> None:
         )
 
 
-def fail_interrupted_work(reason: str) -> tuple[int, int]:
+def fail_interrupted_work(reason: str, keep_agent_jobs: bool = False) -> tuple[int, int]:
     """Marks every shop still queued/converting and every export still queued/running as failed with `reason`.
     Called once at server start: those rows belonged to the previous server process, whose worker queue died with it,
     so nothing will ever finish them - the UI would otherwise poll them forever ("Converting 1 of N"). Returns
-    (shops, exports) changed."""
+    (shops, exports) changed. `keep_agent_jobs`: a shop with a live job in the agent queue (queued / claimed / running) is NOT
+    interrupted - the queue lives in the database and survives a server restart."""
+    keep = (" AND id NOT IN (SELECT shop_id FROM agent_jobs WHERE state IN ('queued', 'claimed', 'running') AND shop_id IS NOT NULL)"
+            if keep_agent_jobs else "")
     with _conn() as conn:
         shops = conn.execute("UPDATE shops SET status = 'failed', step = NULL, error = ? "
-                             "WHERE status IN ('queued', 'converting')", (reason,)).rowcount
+                             "WHERE status IN ('queued', 'converting')" + keep, (reason,)).rowcount
         exports = conn.execute("UPDATE exports SET status = 'failed', error = ?, completed_at = ? "
                                "WHERE status IN ('queued', 'running')", (reason, time.time())).rowcount
     return shops, exports
@@ -627,3 +697,229 @@ def delete_font_substitution(shop_id: str, original_font: str) -> bool:
     with _conn() as conn:
         cur = conn.execute("DELETE FROM font_substitutions WHERE shop_id = ? AND original_font = ?", (shop_id, original_font))
     return cur.rowcount > 0
+
+
+# ------------------------------------------------------------ users + sessions (app/auth.py)
+
+_USER_COLS = "id, email, name, role, active, created_at"
+_USER_UPDATABLE = ("name", "role", "active", "password_hash")
+
+
+def count_users() -> int:
+    with _conn() as conn:
+        return conn.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
+
+
+def create_user(email: str, name: str, password_hash: str, role: str) -> dict:
+    """Insert a user (email already lower-cased by the caller). Raises sqlite3.IntegrityError for a duplicate email."""
+    with _conn() as conn:
+        cur = conn.execute("INSERT INTO users (email, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)",
+                           (email, name, password_hash, role, time.time()))
+        row = conn.execute(f"SELECT {_USER_COLS} FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return dict(row)
+
+
+def get_user_with_hash(email: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE email = ?", (email,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_user(user_id: int) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute(f"SELECT {_USER_COLS} FROM users WHERE id = ?", (user_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_users() -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute(f"SELECT {_USER_COLS} FROM users ORDER BY id").fetchall()
+    return [dict(r) for r in rows]
+
+
+def count_active_admins() -> int:
+    with _conn() as conn:
+        return conn.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").fetchone()["n"]
+
+
+def update_user(user_id: int, fields: dict) -> None:
+    cols = [k for k in fields if k in _USER_UPDATABLE]
+    if not cols:
+        return
+    with _conn() as conn:
+        conn.execute(f"UPDATE users SET {', '.join(c + ' = ?' for c in cols)} WHERE id = ?",
+                     [fields[c] for c in cols] + [user_id])
+
+
+def create_session(token_hash: str, user_id: int, ttl_s: float) -> None:
+    now = time.time()
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now,))
+        conn.execute("INSERT INTO sessions (token_hash, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)",
+                     (token_hash, user_id, now, now + ttl_s))
+
+
+def get_session_user(token_hash: str) -> dict | None:
+    """The ACTIVE user owning an unexpired session, else None."""
+    with _conn() as conn:
+        row = conn.execute(
+            "SELECT u.id, u.email, u.name, u.role, u.active, u.created_at FROM sessions s JOIN users u ON u.id = s.user_id"
+            " WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1", (token_hash, time.time())).fetchone()
+    return dict(row) if row else None
+
+
+def delete_session(token_hash: str) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE token_hash = ?", (token_hash,))
+
+
+def delete_user_sessions(user_id: int) -> None:
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+
+
+# ------------------------------------------------------------ agents (app/agents.py)
+
+def create_pairing_code(code_hash: str, user_id: int, ttl_s: float) -> None:
+    now = time.time()
+    with _conn() as conn:
+        conn.execute("DELETE FROM agent_pairing_codes WHERE expires_at < ?", (now,))
+        conn.execute("INSERT INTO agent_pairing_codes (code_hash, user_id, expires_at) VALUES (?, ?, ?)",
+                     (code_hash, user_id, now + ttl_s))
+
+
+def consume_pairing_code(code_hash: str) -> int | None:
+    """The user a valid code belongs to (the code is deleted: single use), else None."""
+    with _conn() as conn:
+        row = conn.execute("SELECT user_id, expires_at FROM agent_pairing_codes WHERE code_hash = ?", (code_hash,)).fetchone()
+        if not row:
+            return None
+        conn.execute("DELETE FROM agent_pairing_codes WHERE code_hash = ?", (code_hash,))
+    return row["user_id"] if row["expires_at"] > time.time() else None
+
+
+def create_agent(agent_id: str, user_id: int, name: str, token_hash: str, version: str | None, corel_json: str | None) -> None:
+    with _conn() as conn:
+        conn.execute("INSERT INTO agents (id, user_id, name, token_hash, version, corel_json, state, created_at, last_seen)"
+                     " VALUES (?, ?, ?, ?, ?, ?, 'idle', ?, ?)", (agent_id, user_id, name, token_hash, version, corel_json,
+                                                                  time.time(), time.time()))
+
+
+def get_agent_by_token(token_hash: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM agents WHERE token_hash = ? AND revoked_at IS NULL", (token_hash,)).fetchone()
+    return dict(row) if row else None
+
+
+def touch_agent(agent_id: str, version: str | None, corel_json: str | None, state: str | None) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE agents SET last_seen = ?, version = COALESCE(?, version), corel_json = COALESCE(?, corel_json),"
+                     " state = COALESCE(?, state) WHERE id = ?", (time.time(), version, corel_json, state, agent_id))
+
+
+def list_agents(user_id: int | None = None) -> list[dict]:
+    """Not-revoked agents, newest first; one user's own, or everybody's when user_id is None."""
+    sql, args = "SELECT a.*, COALESCE(u.email, '(login off)') AS owner_email FROM agents a LEFT JOIN users u ON u.id = a.user_id WHERE a.revoked_at IS NULL", []
+    if user_id is not None:
+        sql, args = sql + " AND a.user_id = ?", [user_id]
+    with _conn() as conn:
+        rows = conn.execute(sql + " ORDER BY a.created_at DESC", args).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_agent(agent_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM agents WHERE id = ?", (agent_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def revoke_agent(agent_id: str) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE agents SET revoked_at = ? WHERE id = ?", (time.time(), agent_id))
+
+
+# ------------------------------------------------------------ agent job queue (app/agents.py)
+
+MAX_ATTEMPTS = 3
+
+
+def create_agent_job(job_id: str, kind: str, shop_id: str | None, user_id: int, payload: dict) -> None:
+    with _conn() as conn:
+        conn.execute("INSERT INTO agent_jobs (id, kind, shop_id, user_id, payload_json, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                     (job_id, kind, shop_id, user_id, json.dumps(payload), time.time()))
+
+
+def get_agent_job(job_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM agent_jobs WHERE id = ?", (job_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def active_agent_job_for_shop(shop_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM agent_jobs WHERE shop_id = ? AND state IN ('queued', 'claimed', 'running')"
+                           " ORDER BY created_at DESC LIMIT 1", (shop_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def claim_agent_jobs(agent_id: str, user_id: int, limit: int, lease_s: float, kinds: tuple = ("convert",)) -> list[dict]:
+    """Atomically hand `limit` queued jobs of this user (oldest first) to one agent. BEGIN IMMEDIATE takes the write lock first, so two
+    agents asking at the same moment can never get the same job."""
+    now = time.time()
+    marks = ",".join("?" * len(kinds))
+    with _conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute(f"SELECT id FROM agent_jobs WHERE state = 'queued' AND user_id = ? AND kind IN ({marks})"
+                            " ORDER BY created_at LIMIT ?", (user_id, *kinds, limit)).fetchall()
+        ids = [r["id"] for r in rows]
+        for jid in ids:
+            conn.execute("UPDATE agent_jobs SET state = 'claimed', agent_id = ?, claimed_at = ?, lease_until = ?, attempts = attempts + 1,"
+                         " step = NULL WHERE id = ?", (agent_id, now, now + lease_s, jid))
+        out = [dict(conn.execute("SELECT * FROM agent_jobs WHERE id = ?", (jid,)).fetchone()) for jid in ids]
+    return out
+
+
+def touch_agent_job(job_id: str, agent_id: str, lease_s: float, step: str | None = None, running: bool = True) -> bool:
+    """Extend the lease (and record the step) of a job THIS agent holds. False when it no longer holds it (lease expired, re-queued)."""
+    with _conn() as conn:
+        cur = conn.execute("UPDATE agent_jobs SET lease_until = ?, step = COALESCE(?, step),"
+                           " state = CASE WHEN ? THEN 'running' ELSE state END"
+                           " WHERE id = ? AND agent_id = ? AND state IN ('claimed', 'running')",
+                           (time.time() + lease_s, step, 1 if running else 0, job_id, agent_id))
+    return cur.rowcount > 0
+
+
+def finish_agent_job(job_id: str, agent_id: str, ok: bool, result: dict | None, error: str | None) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("UPDATE agent_jobs SET state = ?, result_json = ?, error = ?, finished_at = ?, lease_until = NULL"
+                           " WHERE id = ? AND agent_id = ? AND state IN ('claimed', 'running')",
+                           ("done" if ok else "failed", json.dumps(result) if result is not None else None, error, time.time(),
+                            job_id, agent_id))
+    return cur.rowcount > 0
+
+
+def expire_agent_jobs(now: float | None = None) -> list[dict]:
+    """Jobs whose lease ran out (the agent died, lost its connection or was closed): back to the queue, or failed after
+    MAX_ATTEMPTS. Returns [{id, shop_id, state}] of what changed, so the caller can fail the shop of a job that gave up."""
+    now = now or time.time()
+    changed = []
+    with _conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        rows = conn.execute("SELECT id, shop_id, attempts FROM agent_jobs WHERE state IN ('claimed', 'running') AND lease_until < ?",
+                            (now,)).fetchall()
+        for r in rows:
+            if r["attempts"] >= MAX_ATTEMPTS:
+                conn.execute("UPDATE agent_jobs SET state = 'failed', error = ?, finished_at = ?, lease_until = NULL WHERE id = ?",
+                             ("the agent stopped responding and the job ran out of retries", now, r["id"]))
+                changed.append({"id": r["id"], "shop_id": r["shop_id"], "state": "failed"})
+            else:
+                conn.execute("UPDATE agent_jobs SET state = 'queued', agent_id = NULL, lease_until = NULL, step = NULL WHERE id = ?", (r["id"],))
+                changed.append({"id": r["id"], "shop_id": r["shop_id"], "state": "queued"})
+    return changed
+
+
+def fail_active_agent_jobs(shop_id: str, reason: str) -> int:
+    with _conn() as conn:
+        return conn.execute("UPDATE agent_jobs SET state = 'failed', error = ?, finished_at = ?, lease_until = NULL"
+                            " WHERE shop_id = ? AND state IN ('queued', 'claimed', 'running')", (reason, time.time(), shop_id)).rowcount
+

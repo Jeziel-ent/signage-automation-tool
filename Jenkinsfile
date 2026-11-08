@@ -41,6 +41,7 @@ pipeline {
                         .venv\\Scripts\\python -m pip install --quiet --upgrade pip
                         .venv\\Scripts\\python -m pip install --quiet -r requirements.txt
                         .venv\\Scripts\\python -m pytest -q -p no:cacheprovider --cov=app --cov=tools --cov-report=xml:coverage.xml --junitxml=pytest-report.xml
+                        .venv\\Scripts\\python -m pytest -q -p no:cacheprovider ..\\agent\\tests
                     '''
                 }
             }

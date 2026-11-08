@@ -21,7 +21,7 @@ from pathlib import Path
 
 import logging
 
-from fastapi import Body, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from starlette.concurrency import run_in_threadpool
@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
-from . import confidence, corrections, file_naming
+from . import agents, auth, confidence, corrections, file_naming
 from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename, strip_copy_suffix
 from .engines import get_engine
 from .layout import to_mm
@@ -72,7 +72,7 @@ def _recover_interrupted_work() -> None:
     """Queued/converting shops and queued/running exports left over from the previous server process can never finish
     (their worker queue died with it): fail them with a clear reason so the page stops polling them, and drop that
     process's leftover supervisor files (a stale heartbeat would otherwise be read as the progress of a new run)."""
-    shops, exports = db.fail_interrupted_work(INTERRUPTED_ERROR)
+    shops, exports = db.fail_interrupted_work(INTERRUPTED_ERROR, keep_agent_jobs=_remote_mode())
     for p in CONVERT_RUNS.glob("*"):
         try:
             p.unlink()
@@ -94,25 +94,96 @@ def _archive_previous_masters() -> None:
         logger.info("startup: %d master template(s) from the previous run were hidden (SIGNAGE_ARCHIVE_MASTERS_ON_START=1)", hidden)
 
 
+def _remote_mode() -> bool:
+    """SIGNAGE_ENGINE=remote: CorelDRAW work is queued for the user's Windows agent instead of running in this process."""
+    return os.environ.get("SIGNAGE_ENGINE", "auto").strip().lower() == "remote"
+
+
+async def _expire_agent_jobs_loop() -> None:
+    """Every 15 s: a job whose agent stopped reporting goes back in the queue (or fails after its retries)."""
+    while True:
+        await asyncio.sleep(15)
+        try:
+            await run_in_threadpool(agents.expire_and_fail)
+        except Exception:  # noqa: BLE001 - the loop must survive a bad round
+            logger.exception("agent job expiry failed")
+
+
+def _refuse_mock_engine_in_production() -> None:
+    """SIGNAGE_REQUIRE_REAL_ENGINE=1 (set it on a production machine): refuse to start when the engine is the MOCK one. `auto` falls
+    back to the mock engine on any computer without Windows or CorelDRAW, and its placeholder files would otherwise be handed to
+    designers as if they were real boards."""
+    if os.environ.get("SIGNAGE_REQUIRE_REAL_ENGINE", "").strip().lower() in ("1", "true", "yes"):
+        name = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto")).name
+        if name not in ("corel", "remote"):
+            raise RuntimeError(f"SIGNAGE_REQUIRE_REAL_ENGINE is set but the engine is {name!r} (needs Windows + CorelDRAW, or SIGNAGE_ENGINE=remote)")
+
+
 @asynccontextmanager
 async def _lifespan(_app):
+    _refuse_mock_engine_in_production()
+    auth.bootstrap_admin()
     _recover_interrupted_work()
     _archive_previous_masters()
-    yield
+    expiry = asyncio.create_task(_expire_agent_jobs_loop()) if _remote_mode() else None
+    try:
+        yield
+    finally:
+        if expiry:
+            expiry.cancel()
 
 
 MSG_NOT_CDR = "Master file must be a .cdr"
 MSG_BAD_ORIENTATION = "orientation must be 'landscape' or 'portrait'"
 
 
+def max_upload_bytes() -> int:
+    """SIGNAGE_MAX_UPLOAD_MB (default 1024): the largest request body / uploaded file the API accepts (masters are 100-350 MB)."""
+    try:
+        return int(float(os.environ.get("SIGNAGE_MAX_UPLOAD_MB", "1024")) * 1024 * 1024)
+    except ValueError:
+        return 1024 * 1024 * 1024
+
+
 def _save_stream(src, dest: Path) -> None:
-    """Copy an uploaded file to disk (blocking: async handlers run it in a worker thread)."""
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(src, f)
+    """Copy an uploaded file to disk (blocking: async handlers run it in a worker thread). Stops at the upload limit, so a
+    chunked body without a Content-Length cannot fill the disk either."""
+    limit, written = max_upload_bytes(), 0
+    try:
+        with open(dest, "wb") as f:
+            while chunk := src.read(1024 * 1024):
+                written += len(chunk)
+                if written > limit:
+                    raise HTTPException(413, f"the file is larger than the {limit // (1024 * 1024)} MB upload limit")
+                f.write(chunk)
+    except HTTPException:
+        dest.unlink(missing_ok=True)
+        raise
 
 
-app = FastAPI(title="signage-automation-tool", lifespan=_lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+def _cors_origins() -> list[str]:
+    """SIGNAGE_CORS_ORIGINS = comma-separated origins allowed to call the API from another site. Empty (default) = same origin only,
+    which is all the built app and the Vite dev proxy need."""
+    return [o.strip().rstrip("/") for o in os.environ.get("SIGNAGE_CORS_ORIGINS", "").split(",") if o.strip() and o.strip() != "*"]
+
+
+app = FastAPI(title="signage-automation-tool", lifespan=_lifespan, dependencies=[Depends(auth.require_user)])
+app.add_middleware(CORSMiddleware, allow_origins=_cors_origins(), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.include_router(auth.router)
+app.include_router(agents.router)
+
+
+@app.middleware("http")
+async def _limit_upload_size(request: Request, call_next):
+    """Refuse a request whose declared body is over the upload limit before any of it is read (413)."""
+    if request.method in ("POST", "PUT", "PATCH"):
+        try:
+            declared = int(request.headers.get("content-length", "0"))
+        except ValueError:
+            declared = 0
+        if declared > max_upload_bytes() + 1024 * 1024:   # + multipart framing
+            return JSONResponse({"detail": f"the upload is larger than the {max_upload_bytes() // (1024 * 1024)} MB limit"}, status_code=413)
+    return await call_next(request)
 
 
 # CorelDRAW is a single-instance desktop app: process one job at a time.
@@ -130,6 +201,35 @@ def _brands() -> list[str]:
 @app.get("/api/health")
 def health():
     return {"ok": True, "engine": get_engine(os.environ.get("SIGNAGE_ENGINE", "auto")).name}
+
+
+@app.get("/healthz", responses={503: {"description": "A check failed"}})
+def healthz():
+    """Liveness / readiness for a load balancer, Docker HEALTHCHECK or an uptime monitor (public, no login): the database
+    answers, the data folder is writable, and how much disk is left. 503 with the failing check when something is wrong."""
+    checks: dict = {}
+    try:
+        with db._conn() as conn:
+            conn.execute("SELECT 1").fetchone()
+        checks["database"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - any failure means "not ready"
+        checks["database"] = f"error: {exc}"
+    try:
+        probe = DATA / f".healthz-{uuid.uuid4().hex}"
+        probe.write_bytes(b"ok")
+        probe.unlink()
+        checks["data_dir"] = "ok"
+    except OSError as exc:
+        checks["data_dir"] = f"error: {exc}"
+    free_gb = round(shutil.disk_usage(DATA).free / 1024 ** 3, 1)
+    min_gb = float(os.environ.get("SIGNAGE_MIN_FREE_DISK_GB", "2"))
+    checks["disk_free_gb"] = free_gb
+    if free_gb < min_gb:
+        checks["disk"] = f"error: only {free_gb} GB free (minimum {min_gb})"
+    engine = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto")).name
+    ok = all(v == "ok" for k, v in checks.items() if k != "disk_free_gb") and "disk" not in checks
+    body = {"ok": ok, "engine": engine, "mock_engine": engine == "mock", "checks": checks}
+    return JSONResponse(body, status_code=200 if ok else 503)
 
 
 @app.get("/api/brands")
@@ -437,7 +537,7 @@ async def upload_master(master: UploadFile = File(...), brand: str = Form(...), 
     return _master_json(db.get_job(job_id))
 
 
-@app.delete("/api/masters/{master_id}", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
+@app.delete("/api/masters/{master_id}", dependencies=[Depends(auth.require_admin)], responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def delete_master(master_id: str):
     """Remove a master from the registry. Soft delete: the file stays, because the boards already made from it live in
     its folder (Recently generated, the editor). Refused while a shop that uses it is queued or converting."""
@@ -459,7 +559,7 @@ def _live_master(master_id: str) -> dict:
     return row
 
 
-@app.patch("/api/masters/{master_id}", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
+@app.patch("/api/masters/{master_id}", dependencies=[Depends(auth.require_admin)], responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def update_master(master_id: str, payload: dict):
     """Edit a master's details: `name` (blank = automatic "Master N"), `orientation`, `dimensions_default`
     ({width, height, unit} or null to clear). Only the keys sent change. The file itself is replaced with PUT .../file."""
@@ -484,7 +584,7 @@ def update_master(master_id: str, payload: dict):
     return _master_json(db.get_job(master_id))
 
 
-@app.put("/api/masters/{master_id}/file", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
+@app.put("/api/masters/{master_id}/file", dependencies=[Depends(auth.require_admin)], responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 async def replace_master_file(master_id: str, master: UploadFile = File(...)):
     """Replace a master's .cdr with a new version (same registry entry, name and orientation). Boards already made from it are untouched;
     the preview is read again from the new file."""
@@ -995,6 +1095,38 @@ def _convert_limits() -> dict:
     return {"job_timeout_s": limit, "overall_timeout_s": max(120.0, 2 * limit)}
 
 
+def _no_editor_in_remote_mode() -> None:
+    """The editor scene, exports and Save Changes drive CorelDRAW; through an agent they are the next milestone."""
+    if _remote_mode():
+        raise HTTPException(501, "the editor and exports through the Windows agent are not available yet")
+
+
+def _enqueue_remote_convert(shop_id: str, user_id: int) -> None:
+    """SIGNAGE_ENGINE=remote: the conversion becomes a job in the agent queue (table agent_jobs) for the user's own agent. The payload is
+    exactly what the local worker would hand to corel_worker (shop settings, chosen master), plus where the results are stored."""
+    try:
+        job, master_used = _convert_job(shop_id)
+    except Exception as e:  # noqa: BLE001 - a shop that cannot be prepared fails like a local one does
+        db.set_shop_status(shop_id, "failed", error=str(e))
+        return
+    master = Path(job["master_path"])
+    db.create_agent_job(uuid.uuid4().hex[:12], "convert", shop_id, user_id,
+                        {"shop": job["shop"], "out_dir": job["out_dir"], "master_used": master_used,
+                         "master": {"path": str(master), "filename": master.name}})
+
+
+def _finalize_agent_convert(job: dict, entry: dict) -> None:
+    """An agent finished (or failed) a convert job: store it exactly like a local conversion result. Learned nested edits
+    (_apply_learned_nested) need an editor scene, which an agent cannot build yet, so they are skipped in remote mode."""
+    shop_id = job.get("shop_id")
+    if not shop_id or not db.get_shop(shop_id):
+        return
+    _store_convert_result(shop_id, entry, json.loads(job["payload_json"]).get("master_used") or {})
+
+
+agents.register_finalizer("convert", _finalize_agent_convert)
+
+
 def _v2_convert_worker(shop_id: str, job_id: str) -> None:
     row = db.get_shop(shop_id)
     if not row or row["status"] != "queued":
@@ -1133,7 +1265,7 @@ def _apply_sno(shop_id: str, payload: dict | None) -> None:
 
 
 @app.post("/api/v2/shops/{shop_id}/convert", responses={400: {"description": "Invalid request"}, 404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
-def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
+def v2_convert_shop(shop_id: str, request: Request, payload: dict | None = Body(default=None)):
     """Queue a conversion. An optional `master_id` in the body sets the master picked for this shop (see
     _select_shop_master). An optional body `{landscape_master_id, portrait_master_id}` (re)sets the shop's dual
     masters first: a shop row keeps the ids it was created with, so a portrait master uploaded AFTER the shop was
@@ -1162,6 +1294,10 @@ def v2_convert_shop(shop_id: str, payload: dict | None = Body(default=None)):
         _discard_board_edits(row["job_id"], shop_id)         # the saved edits and scene belong to the board being replaced
     db.set_shop_intelligence(shop_id, use_intel)
     db.set_shop_status(shop_id, "queued")
+    if _remote_mode():       # the user's Windows agent does the work: queue a job for it
+        user = getattr(request.state, "user", None) or {"id": 0}
+        _enqueue_remote_convert(shop_id, user["id"])
+        return {"status": "queued", "use_intelligence": use_intel, "queued_for_agent": True}
     with _convert_queue_lock:
         _convert_queue.append(shop_id)
     _pool.submit(_v2_convert_worker, shop_id, row["job_id"])
@@ -1212,7 +1348,7 @@ def v2_corrections():
     return {"corrections": out}
 
 
-@app.delete("/api/v2/corrections/{shop_id:path}", responses={404: {"description": "Not found"}})
+@app.delete("/api/v2/corrections/{shop_id:path}", dependencies=[Depends(auth.require_admin)], responses={404: {"description": "Not found"}})
 def v2_delete_correction(shop_id: str):
     """Forget one stored correction (a bad editor save, or a record nobody wants applied any more)."""
     if not db.get_correction(shop_id):
@@ -1259,6 +1395,11 @@ def v2_shop_status(shop_id: str):
         row["step"], row["progress_pct"] = step, pct
     else:  # "new" or "queued"
         row["progress_pct"] = 0
+        if row["status"] == "queued" and _remote_mode():
+            queued = db.active_agent_job_for_shop(shop_id)
+            if queued:
+                owners = db.list_agents(queued["user_id"])
+                row["waiting_for_agent"] = not any(agents._agent_json(a)["online"] for a in owners)
     if row["status"] != "converting":
         with _progress_lock:
             _progress_peak.pop(shop_id, None)
@@ -2209,6 +2350,7 @@ def _scene_cut_short(scene: dict) -> bool:
 
 @app.get("/api/editor/{job_id}/{shop_id}/scene", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 500: {"description": "Server error"}, 503: {"description": "Service unavailable"}})
 def editor_scene(job_id: str, shop_id: str, rebuild: bool = False, retry: bool = False):
+    _no_editor_in_remote_mode()
     _editor_shop(job_id, shop_id)
     scene_path = _scene_dir(job_id, shop_id) / _SCENE_JSON
     with _scene_lock:
@@ -2458,6 +2600,8 @@ def corel_health():
     low = free is not None and free < floor
     if engine == "mock":
         ok, message = True, "Mock engine: previews are simulated, CorelDRAW is not needed."
+    elif engine == "remote":
+        ok, message = True, "CorelDRAW runs on your Windows agent, not on this server."
     elif installs:
         ok = True
         message = f"CorelDRAW {installs[0]['version'] or ''} ready".strip() + (
@@ -2672,6 +2816,7 @@ def editor_export_estimates():
 
 @app.post("/api/editor/{job_id}/{shop_id}/export", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
 def editor_export(job_id: str, shop_id: str, body: ExportRequest):
+    _no_editor_in_remote_mode()
     _editor_shop(job_id, shop_id)
     scene = _load_scene(job_id, shop_id)
     if scene is None:
@@ -2709,6 +2854,7 @@ def editor_publish(job_id: str, shop_id: str):
     """"Save Changes" makes the saved edits the board's NEW files: queues one export (cdr, pdf, png, jpeg with the default options) of
     the shop's current edit list, so the ZIP, the print sheet and the row's downloads pick up the edited version without a manual export.
     Nothing is queued when there are no edits, or when an export of exactly these edits is already queued / running / done."""
+    _no_editor_in_remote_mode()
     _editor_shop(job_id, shop_id)
     ops = db.get_editor_ops(shop_id)
     if not ops:
@@ -2818,3 +2964,28 @@ def editor_export_file(job_id: str, shop_id: str, export_id: str, filename: str)
     if base not in p.parents or not p.is_file():
         raise HTTPException(404)
     return FileResponse(p, filename=f"{file_naming.shop_basename(shop)}{_std_ext(p)}")
+
+
+# ------------------------------------------------- the built web app (production: one process serves API + frontend)
+#
+# `npm run build` writes frontend/dist. When it exists (or SIGNAGE_FRONTEND_DIST points at one) the API serves it, so a server
+# needs no separate web server for the pages; behind Caddy/nginx the proxy can still serve it instead. Registered LAST so every
+# /api route wins; unknown /api paths stay a JSON 404 (never the HTML page); any other unknown path is a page of the single-page
+# app (React Router), so a reload on /masters or /editor/... works.
+
+FRONTEND_DIST = Path(os.environ.get("SIGNAGE_FRONTEND_DIST", Path(__file__).resolve().parents[2] / "frontend" / "dist"))
+_NO_CACHE = {"Cache-Control": "no-cache"}
+
+
+@app.get("/{spa_path:path}", include_in_schema=False)
+def serve_frontend(spa_path: str):
+    index = FRONTEND_DIST / "index.html"
+    if spa_path.startswith("api/") or spa_path == "api" or not index.is_file():
+        raise HTTPException(404, "Not Found")
+    root = FRONTEND_DIST.resolve()
+    target = (root / spa_path).resolve() if spa_path else index
+    if spa_path and root in target.parents and target.is_file():
+        # Vite names files under assets/ by content hash, so they can be cached for good; everything else must be re-checked
+        immutable = spa_path.startswith("assets/")
+        return FileResponse(target, headers={"Cache-Control": "public, max-age=31536000, immutable"} if immutable else _NO_CACHE)
+    return FileResponse(index, headers=_NO_CACHE)

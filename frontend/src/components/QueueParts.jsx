@@ -1,5 +1,6 @@
 // Pieces of the Automation page's Shops Queue, kept apart so the page component stays readable (same markup, same behaviour).
 import { useState } from "react";
+import { useAuth } from "../context/AuthContext.jsx";
 import { AnimatePresence } from "framer-motion";
 import BrandSelect from "./BrandSelect.jsx";
 import AnimatedCount from "./AnimatedCount.jsx";
@@ -131,6 +132,7 @@ function MasterThumb({ m }) {
 }
 
 function MasterRow({ m, isDefault, onRemove, onEdit }) {
+  const { isAdmin } = useAuth();   // only an administrator may edit, replace or delete a master (the server answers 403 otherwise)
   return (
     <li className="mt-row" data-master-id={m.id}>
       <MasterThumb m={m} />
@@ -141,14 +143,16 @@ function MasterRow({ m, isDefault, onRemove, onEdit }) {
         </div>
         <div className="mt-file" title={m.file_name}>{m.file_name || "master.cdr"} <span>{fmtBytes(m.file_size)}</span></div>
       </div>
-      {onEdit && (
+      {onEdit && isAdmin && (
         <button className="icon-btn mt-edit" onClick={() => onEdit(m)} title={`Edit ${m.name}`} aria-label={`Edit ${m.name}`}>
           <Pencil size={15} />
         </button>
       )}
-      <button className="icon-btn mt-del" onClick={() => onRemove(m)} title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
-        <Trash2 size={15} />
-      </button>
+      {isAdmin && (
+        <button className="icon-btn mt-del" onClick={() => onRemove(m)} title={`Delete ${m.name}`} aria-label={`Delete ${m.name}`}>
+          <Trash2 size={15} />
+        </button>
+      )}
     </li>
   );
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useAuth } from "../context/AuthContext.jsx";
 import { Loader2, Sparkles, Trash2 } from "lucide-react";
 import { ACTION_LABEL, describeShift, describeStyle, diffRects, pageLabel, pickSelection } from "../utils/correctionsView.js";
 import "./Corrections.css";
@@ -56,6 +57,7 @@ function ListItem({ record, active, onPick }) {
 }
 
 function Detail({ record, onDelete }) {
+  const { isAdmin } = useAuth();   // deleting a learned correction is an administrator action
   return (
     <div className="cr-detail">
       <header>
@@ -72,9 +74,11 @@ function Detail({ record, onDelete }) {
       </div>
       <footer>
         <span className="cr-note">Every correction is stored and applied to later boards of this size - nothing to approve.</span>
-        <button type="button" className="btn-outline-red" onClick={() => onDelete(record)}>
-          <Trash2 size={14} /> Delete this correction
-        </button>
+        {isAdmin && (
+          <button type="button" className="btn-outline-red" onClick={() => onDelete(record)}>
+            <Trash2 size={14} /> Delete this correction
+          </button>
+        )}
       </footer>
     </div>
   );

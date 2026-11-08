@@ -1,0 +1,42 @@
+/* Frosted-glass sign-in card on the launch screen (over the 3D city) */
+.gl-card {
+  width: 100%; max-width: 340px; box-sizing: border-box; display: flex; flex-direction: column; gap: 10px;
+  padding: 16px 22px 12px; border-radius: 26px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  color: #fff; animation: pcc-enter 0.3s ease-out both;
+}
+.gl-title { margin: 0; text-align: center; font-size: 20px; font-weight: 700; letter-spacing: 0.02em; }
+.gl-field { position: relative; display: block; }
+.gl-field input {
+  width: 100%; box-sizing: border-box; height: 38px; padding: 0 40px 0 18px; border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.1); color: #fff; font-size: 14px;
+  outline: none; transition: border-color 0.15s, background 0.15s;
+}
+.gl-field input::placeholder { color: rgba(255, 255, 255, 0.65); }
+/* no bright ring on focus (the global input:focus ring is switched off here): only the glass gets a little lighter */
+.gl-field input:focus { outline: none; box-shadow: none; border-color: rgba(255, 255, 255, 0.35); background: rgba(255, 255, 255, 0.18); }
+.gl-field input:-webkit-autofill { -webkit-text-fill-color: #fff; transition: background-color 9999s; }
+.gl-field svg { position: absolute; right: 16px; top: 50%; transform: translateY(-50%); color: rgba(255, 255, 255, 0.85); pointer-events: none; }
+.gl-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.gl-warning {
+  display: flex; align-items: center; gap: 8px; margin: 0; padding: 8px 12px; border-radius: 14px;
+  background: rgba(220, 38, 38, 0.28); border: 1px solid rgba(252, 165, 165, 0.6); color: #ffe4e6; font-size: 12.5px; line-height: 1.35;
+}
+.gl-warning svg { flex: none; color: #fecaca; }
+.gl-submit { width: 100%; justify-content: center; margin-top: 2px; }
+.gl-hint { margin: 0; text-align: center; font-size: 11px; color: rgba(255, 255, 255, 0.7); }
+@media (prefers-reduced-motion: reduce) { .gl-card { animation: none; } }
+
+/* the card is taller than the Connect / Start button it replaces: give the launch screen's text block more room and drop the tagline */
+.sp3-content:has(.gl-card) { max-height: 74vh; gap: 10px; }
+.sp3-content:has(.gl-card) .sp3-sub { display: none; }
+.sp3-content:has(.gl-card) .pcc-status { padding: 0; }
+
+/* "Check again" next to / instead of the download button on the agent-not-found state */
+.pcc-link, .pcc-primary-link { display: inline-flex; align-items: center; gap: 6px; }
+.pcc-primary-link { background: rgba(255, 255, 255, 0.12); border: 1px solid rgba(255, 255, 255, 0.3); color: #fff; padding: 9px 20px; border-radius: 999px; font-size: 13px; cursor: pointer; }
+.pcc-primary-link:hover:not(:disabled) { background: rgba(255, 255, 255, 0.2); }

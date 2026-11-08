@@ -3,7 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import ProfessionalConnectControl from "./ProfessionalConnectControl.jsx";
 import { FLIGHT_S } from "./cityTiming.js";
-import { checkCorelConnection, describeHealth } from "../utils/corelHealth.js";
+import { checkAgentConnection, describeAgent } from "../utils/agentHealth.js";
+import { pairLocalAgent } from "../utils/agentLocal.js";
+import { useAuth } from "../context/AuthContext.jsx";
 
 // three.js + react-three-fiber are ~1 MB: only the canvas waits for them - the title and connect button render immediately.
 // The download starts as soon as this module is evaluated, not when the component first renders.
@@ -38,16 +40,18 @@ class CanvasBoundary extends Component {
 
 /**
  * Launch screen: a 3D night street (CityScene - one Adinn hero billboard, traffic, an elevated metro), the platform title and
- * one dark-glass control that changes in place (ProfessionalConnectControl): Connect -> checking -> "Start Automation", or the
- * failure reason with Retry / Continue without CorelDRAW. The check is the real GET /api/corel/health (it never starts
- * CorelDRAW). Nothing runs or navigates by itself; Enter (or Space) presses whichever primary action is showing. Starting fades
+ * one dark-glass control that changes in place (ProfessionalConnectControl): Connect Agent -> looking for the Signage Agent on this
+ * computer -> the sign-in card ("Start Automation"), or "agent not found" with a download. After the sign-in an agent that is not
+ * connected to the account yet is paired automatically. The check is the agent's local status endpoint (utils/agentHealth.js). Nothing runs or navigates by itself; Enter (or Space) presses whichever primary action is showing. Starting fades
  * the control, flies the camera over the traffic into the billboard (~2.4 s), fades out on contact, goes to "/" and calls
  * `onStart`.
  */
 export default function SplashScreen({ onStart }) {
   const navigate = useNavigate();
+  const { user, authEnabled, needsSetup, login } = useAuth();
+  const needsLogin = authEnabled && !user; // the sign-in card replaces the Start button until somebody is signed in
   const [gl] = useState(webglAvailable);
-  const [health, setHealth] = useState({ state: "idle" }); // idle -> checking -> ok | error | offline
+  const [health, setHealth] = useState({ state: "idle" }); // idle -> checking -> ok | error | offline (utils/agentHealth.js)
   const [leaving, setLeaving] = useState(false); // the camera flight into the billboard
   const [arriving, setArriving] = useState(false); // the fade to the workspace
   const [still] = useState(reducedMotion);
@@ -71,8 +75,8 @@ export default function SplashScreen({ onStart }) {
     if (leaving || health.state === "checking") return;
     const seq = ++checkSeq.current;
     setHealth({ state: "checking" });
-    const [result] = await Promise.all([checkCorelConnection(), new Promise((r) => setTimeout(r, MIN_CHECK_MS))]);
-    if (seq === checkSeq.current) setHealth(describeHealth(result));
+    const [result] = await Promise.all([checkAgentConnection(), new Promise((r) => setTimeout(r, MIN_CHECK_MS))]);
+    if (seq === checkSeq.current) setHealth(describeAgent(result.local, result.config));
   }
 
   function finish() {
@@ -100,17 +104,43 @@ export default function SplashScreen({ onStart }) {
     else timer.current = setTimeout(finish, FLIGHT_S * 1000 + 1500); // the scene calls finish() on contact; this is the safety net
   }
 
+  // the card's submit button is "Start Automation": signed in -> the fly-in starts; refused -> the warning stays in the card
+  async function onLogin(email, password, name) {
+    const problem = await login(email, password, name);
+    if (problem) return problem;
+    await pairDetectedAgent();
+    start();
+    return null;
+  }
+
+  // a detected agent that is not connected to an account yet joins the account that just signed in (the page hands it a one-time code);
+  // a failure here never blocks the sign-in: the Agent page and its banner offer "Connect this PC" again
+  async function pairDetectedAgent() {
+    if (!health.agent || health.paired || !health.port) return;
+    try {
+      const r = await fetch("/api/agent/pairing-code", { method: "POST" });
+      if (r.ok) await pairLocalAgent(health.port, (await r.json()).code);
+    } catch {
+      /* offered again on the Agent page */
+    }
+  }
+
+  async function startSignedIn() {
+    await pairDetectedAgent();
+    start();
+  }
+
   useEffect(() => () => clearTimeout(timer.current), []);
   useEffect(() => {
     const onKey = (e) => {
-      if ((e.key !== "Enter" && e.key !== " ") || e.target.closest?.("button")) return; // a focused button handles its own Enter/Space
+      if ((e.key !== "Enter" && e.key !== " ") || e.target.closest?.("button, input, textarea")) return; // a focused button / field handles its own keys
       e.preventDefault();
-      if (health.state === "ok") start();
+      if (health.state === "ok") { if (!needsLogin) startSignedIn(); } // with a sign-in required only the card's own submit starts
       else runCheck(); // idle, or retry after a failure (ignored while a check is running)
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [health.state, leaving, cityReady]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [health.state, leaving, cityReady, needsLogin]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <motion.div
@@ -157,7 +187,8 @@ export default function SplashScreen({ onStart }) {
           <h1 id="sp3-title" className="sp3-title">Signage Automation Platform</h1>
           <p className="sp3-sub">Enterprise CorelDRAW dual-master processing engine</p>
         </header>
-        <ProfessionalConnectControl health={health} onConnect={runCheck} onStart={start} disabled={leaving} />
+        <ProfessionalConnectControl health={health} onConnect={runCheck} onStart={startSignedIn} disabled={leaving}
+          login={needsLogin ? { onLogin, needsSetup } : undefined} />
       </main>
     </motion.div>
   );

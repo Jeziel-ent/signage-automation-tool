@@ -17,6 +17,10 @@ is being built alongside it, not as a replacement yet. Engine-side work
 (layout rules, validation, tiling) is unaffected by either UI and
 continues independently - none of it was touched building the new UI.
 
+## Security + agent (2026-11-07) - newest, read before the older handoff below
+
+Login (`backend/app/auth.py`: email + password, roles admin/designer, cookie session; `SIGNAGE_AUTH=off` for local dev; first admin via `SIGNAGE_ADMIN_EMAIL/PASSWORD` or `backend/tools/create_user.py`), glass sign-in on the launch screen (`components/GlassLogin.jsx`), closed CORS, upload limit, `/healthz`, the API serves `frontend/dist`. **Windows agent**: `agent/` (`signage_agent/*`, `build.py`, tests in `agent/tests`) + `backend/app/agents.py` + `pages/Agent.jsx`, `context/AgentContext.jsx`, `components/AgentBanner.jsx`; design and status in `docs/deployment-plan.md` (Phase 4). The agent registers, heartbeats, updates itself and (2026-11-08) RUNS CONVERT JOBS: `SIGNAGE_ENGINE=remote` queues them (`agent_jobs`, `agents.py` job API, `agent/signage_agent/jobs.py`); the exe bundles `backend/app` and re-launches itself as `--corel-worker`. Verified with the mock engine only - a real-CorelDRAW run through the agent is still to do. The editor / exports are not available through the agent yet (501). Run `agent/tests` with `python -m pytest agent/tests` from the repo root.
+
 ## Continue here (handoff, 2026-10-09) - read this first on another machine
 
 **Latest round (2026-10-08/09, commit `94a4eb7`, all found on a real Hangyo board "Asian Juice bar", Tiruvannamalai batch).** Backend 1038 passed / 37 skipped, frontend 302.

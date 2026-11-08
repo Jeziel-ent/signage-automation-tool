@@ -17,3 +17,14 @@ from app import corel_util
 def _isolated_corel_tracking(tmp_path_factory, monkeypatch):
     data = tmp_path_factory.mktemp("signage_data")
     monkeypatch.setattr(corel_util, "PID_FILE", data / "corel_launched_pids.json")
+
+
+@pytest.fixture(autouse=True)
+def _login_off_by_default(monkeypatch):
+    """The API needs a login (app/auth.py); the existing API tests exercise routes, not accounts, so they run with it off.
+    test_auth.py switches it back on."""
+    monkeypatch.setenv("SIGNAGE_AUTH", "off")
+    # backend/.env is loaded into the environment (app/__init__.py): a developer's own settings must not change what the tests expect
+    for name in ("SIGNAGE_PUBLIC_BASE_URL", "SIGNAGE_ADMIN_EMAIL", "SIGNAGE_ADMIN_PASSWORD", "SIGNAGE_AGENT_REQUIRED", "SIGNAGE_CORS_ORIGINS",
+                 "SIGNAGE_MAX_UPLOAD_MB", "SIGNAGE_REQUIRE_REAL_ENGINE", "SIGNAGE_MIN_FREE_DISK_GB"):
+        monkeypatch.delenv(name, raising=False)

@@ -1278,7 +1278,19 @@ def _svg(w, h, placed) -> str:
     return "\n".join(parts)
 
 
+class RemoteEngine:
+    """SIGNAGE_ENGINE=remote: this server never runs CorelDRAW. Conversions are queued for the signed-in user's Windows agent
+    (app/agents.py, table agent_jobs); the agent runs them on its own PC and uploads the results."""
+
+    name = "remote"
+
+    def process(self, *args, **kwargs):
+        raise RuntimeError("SIGNAGE_ENGINE=remote: CorelDRAW runs on a Windows agent, not on this server")
+
+
 def get_engine(kind: str = "auto"):
+    if kind == "remote":
+        return RemoteEngine()
     if kind == "mock":
         return MockEngine()
     if kind == "corel" or (kind == "auto" and sys.platform == "win32"):

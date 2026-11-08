@@ -141,6 +141,7 @@ def test_scene_build_failure_is_reported_and_retryable(client, monkeypatch):
     assert code == 500
     monkeypatch.undo()
     monkeypatch.setenv("SIGNAGE_ENGINE", "mock")
+    monkeypatch.setenv("SIGNAGE_AUTH", "off")   # undo() also reverted the suite-wide login-off fixture
     assert client.get(f"/api/editor/{job}/{shop}/scene?retry=1").status_code in (200, 202)
     assert _scene(client, job, shop)["layers"]
 

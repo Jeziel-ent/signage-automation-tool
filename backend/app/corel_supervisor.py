@@ -49,6 +49,15 @@ def shop_timeout_s() -> float:
         return SHOP_TIMEOUT_DEFAULT_S
 
 
+def worker_command(worker_module: str, jobs_path: Path, results_path: Path) -> list[str]:
+    """The command that starts the CorelDRAW worker process. From source it is `python -m app.corel_worker ...`; inside the Windows
+    agent's PyInstaller exe there is no `-m`, so the exe is started again in worker mode (`SignageAgent.exe --corel-worker <module> ...`,
+    handled by signage_agent/__main__.py)."""
+    if getattr(sys, "frozen", False):
+        return [sys.executable, "--corel-worker", worker_module, str(jobs_path), str(results_path)]
+    return [sys.executable, "-m", worker_module, str(jobs_path), str(results_path)]
+
+
 def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | None = None,
               worker_module: str = "app.corel_worker", skip_memory_check: bool = False,
               on_progress=None, job_timeout_s: float | None = None) -> list[dict]:
@@ -92,10 +101,7 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     jobs_path.write_text(json.dumps(jobs), encoding="utf-8")
 
     backend_dir = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(
-        [sys.executable, "-m", worker_module, str(jobs_path), str(results_path)],
-        cwd=str(backend_dir),
-    )
+    proc = subprocess.Popen(worker_command(worker_module, jobs_path, results_path), cwd=str(backend_dir))
     logger.info("started CorelDRAW worker pid=%s for %d job(s); no-progress timeout=%.0fs",
                 proc.pid, len(jobs), overall_timeout_s)
 
