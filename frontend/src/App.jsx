@@ -78,8 +78,9 @@ function Shell() {
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [showSplash, setShowSplash] = useState(true); // always: no storage check, so it appears on every page load
   useEffect(clearLegacySplashFlags, []);
-  const startAutomation = () => setShowSplash(false);
-  const onOpenSplash = () => setShowSplash(true);   // the sidebar's "Welcome screen" button re-launches it without a refresh
+  const [reopened, setReopened] = useState(false); // opened by the sidebar button (go home after it) rather than by loading the page (stay where the address points)
+  const startAutomation = () => { setShowSplash(false); setReopened(false); };
+  const onOpenSplash = () => { setReopened(true); setShowSplash(true); };   // the sidebar's "Welcome screen" button re-launches it without a refresh
   const toggle = () =>
     setCollapsed((c) => {
       try {
@@ -92,7 +93,7 @@ function Shell() {
   return (
     <div className="app-shell">
       <AnimatePresence>
-        {showSplash && <SplashScreen key="splash" onStart={startAutomation} />}
+        {showSplash && <SplashScreen key="splash" onStart={startAutomation} goHome={reopened} />}
       </AnimatePresence>
       {!locked && (
         <AgentProvider>

@@ -46,7 +46,7 @@ class CanvasBoundary extends Component {
  * the control, flies the camera over the traffic into the billboard (~2.4 s), fades out on contact, goes to "/" and calls
  * `onStart`.
  */
-export default function SplashScreen({ onStart }) {
+export default function SplashScreen({ onStart, goHome = true }) {
   const navigate = useNavigate();
   const { user, authEnabled, needsSetup, login } = useAuth();
   const needsLogin = authEnabled && !user; // the sign-in card replaces the Start button until somebody is signed in
@@ -85,7 +85,7 @@ export default function SplashScreen({ onStart }) {
     clearTimeout(timer.current);
     setArriving(true);
     timer.current = setTimeout(() => {
-      navigate("/"); // the Automation workspace, whichever page the screen was opened over
+      if (goHome) navigate("/"); // the Automation workspace, whichever page the screen was reopened over (a page load keeps the address, e.g. /admin)
       onStart();
     }, still ? 0 : FADE_MS);
   }
