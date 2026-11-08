@@ -206,6 +206,12 @@ class HeartbeatBody(BaseModel):
     version: str = ""
     corel: list | None = None
     state: str = "idle"
+    fonts_hash: str = ""            # fingerprint of the fonts installed on the PC; the site asks for the list when it differs from its copy
+
+
+class FontsBody(BaseModel):
+    hash: str
+    fonts: dict                     # fonts.script_fonts() of the PC: {available, all_fonts, english_fonts, tamil_fonts, ...}
 
 
 @router.post("/api/agent/register", responses={401: {"description": "Bad or expired code"}, 429: {"description": "Too many attempts"}})
@@ -225,6 +231,17 @@ def register(body: RegisterBody, request: Request):
     return {"agent_id": agent_id, "token": token, "name": name}
 
 
+@router.post("/api/agent/fonts", responses={413: {"description": "Too large"}})
+def agent_fonts(body: FontsBody, request: Request):
+    """The agent sends the fonts installed on its PC (once, and again when they change)."""
+    agent = agent_from_request(request)
+    raw = json.dumps(body.fonts)
+    if len(raw) > 2_000_000:
+        raise HTTPException(413, "the font list is too large")
+    db.set_agent_fonts(agent["id"], body.hash, raw)
+    return {"ok": True, "fonts": len(body.fonts.get("all_fonts") or [])}
+
+
 @router.post("/api/agent/heartbeat")
 def heartbeat(body: HeartbeatBody, request: Request):
     """Called every ~15 s by the agent: proves it is alive and refreshes its version / CorelDRAW installs. Answers what the
@@ -232,7 +249,7 @@ def heartbeat(body: HeartbeatBody, request: Request):
     agent = agent_from_request(request)
     db.touch_agent(agent["id"], body.version or None, json.dumps(body.corel) if body.corel is not None else None, body.state or None)
     latest = release()
-    out = {"ok": True, "agent_id": agent["id"]}
+    out = {"ok": True, "agent_id": agent["id"], "want_fonts": bool(body.fonts_hash) and body.fonts_hash != (agent.get("fonts_hash") or "")}
     if latest:
         out.update(latest=latest["version"], min_supported=latest["min_supported"],
                    update_required=version_key(body.version) < version_key(latest["min_supported"]))

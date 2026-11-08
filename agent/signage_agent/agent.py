@@ -1,6 +1,8 @@
 """The agent's brain: pairing, the heartbeat loop and update checks. The local status server (local_server.py) reads its state."""
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import socket
@@ -17,6 +19,7 @@ log = logging.getLogger("agent")
 HEARTBEAT_S = float(os.environ.get("SIGNAGE_AGENT_HEARTBEAT_S", "15"))
 UPDATE_EVERY_S = float(os.environ.get("SIGNAGE_AGENT_UPDATE_S", str(4 * 3600)))
 COREL_CACHE_S = 60
+FONTS_EVERY_S = 3600
 
 
 class Agent:
@@ -33,6 +36,9 @@ class Agent:
         self._stop = threading.Event()
         self._last_update_check = 0.0
         self.runner = JobRunner(self, poll_s=float(os.environ.get("SIGNAGE_AGENT_JOB_POLL_S", "4")))
+        self._fonts: dict | None = None
+        self._fonts_hash = ""
+        self._fonts_at = 0.0
 
     # ---- what the local status endpoint and the heartbeat report
     def corel_installs(self) -> list[dict]:
@@ -45,9 +51,27 @@ class Agent:
             self._corel_at = time.time()
         return [{k: v for k, v in c.items() if k != "exe"} for c in self._corel]
 
+    def fonts(self) -> tuple[dict | None, str]:
+        """(this PC's fonts, their fingerprint), read once an hour in the background (reading every font file for Tamil takes seconds)."""
+        if time.time() - self._fonts_at > FONTS_EVERY_S and not getattr(self, "_fonts_busy", False):
+            self._fonts_busy = True
+
+            def load():
+                try:
+                    data = engine_bridge.fonts_report()
+                    self._fonts_hash = hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()
+                    self._fonts = data                                    # set last: whoever sees the list also sees its fingerprint
+                except Exception as e:  # noqa: BLE001 - no fonts list is not an error, the site just keeps what it has
+                    log.warning("could not read the installed fonts: %s", e)
+                finally:
+                    self._fonts_at = time.time()
+                    self._fonts_busy = False
+            threading.Thread(target=load, name="fonts", daemon=True).start()
+        return self._fonts, self._fonts_hash
+
     def status(self) -> dict:
         online = bool(self.last_ok and time.time() - self.last_ok < HEARTBEAT_S * 3 + 5)
-        return {"agent": "adinn-signage-agent", "version": AGENT_VERSION, "configured": self.config.configured,
+        return {"agent": "adinn-signage-agent", "version": AGENT_VERSION, "agent_id": self.config.agent_id, "configured": self.config.configured,
                 "server": self.config.server_url, "paired": self.config.paired, "name": self.config.name,
                 "connected": online, "state": self.state, "corel": self.corel_installs(), "last_error": self.last_error,
                 "update": self.update_status, "latest_version": self.latest_version}
@@ -73,7 +97,8 @@ class Agent:
         if not self.config.paired:
             return
         try:
-            r = client.heartbeat(self.config.server_url, self.config.token, AGENT_VERSION, self.corel_installs(), self.state)
+            fonts, fonts_hash = self.fonts()
+            r = client.heartbeat(self.config.server_url, self.config.token, AGENT_VERSION, self.corel_installs(), self.state, fonts_hash)
         except client.ApiError as e:
             self.last_error = e.detail
             if e.status == 401:
@@ -83,6 +108,11 @@ class Agent:
             return
         self.last_ok, self.last_error = time.time(), ""
         self.latest_version = r.get("latest", "")
+        if r.get("want_fonts") and fonts is not None:
+            try:
+                client.send_fonts(self.config.server_url, self.config.token, fonts_hash, fonts)
+            except client.ApiError as e:
+                log.warning("could not send the font list: %s", e)
         updater.confirm_after_update(self.config.home)
         updater.cleanup_leftovers(self.config.home)
         if r.get("update_required"):

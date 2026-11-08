@@ -21,9 +21,12 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-import win32con
-import win32gui
-import win32process
+try:                                  # Windows only: a Linux server imports this module (engines.py) but never runs a watchdog
+    import win32con
+    import win32gui
+    import win32process
+except ImportError:  # pragma: no cover - exercised on non-Windows hosts
+    win32con = win32gui = win32process = None
 
 DEFAULT_SHOT_DIR = Path(__file__).resolve().parents[1] / "dataset_analysis" / "diagnose"
 # Never treated as a dialog, whatever the CorelDRAW version: its main frame ("CorelDRAW21" in 2019, "CorelDRAW27"-style in newer

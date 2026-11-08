@@ -67,6 +67,13 @@ def mock_export(scene_path: Path, spec: dict, out_dir: Path, heartbeat: Path) ->
     return export_replay.mock_export(expected, spec["formats"], spec["options"], out_dir, spec["base_name"], heartbeat)
 
 
+def fonts_report() -> dict:
+    """The fonts installed on this PC in the shape the site's font pickers use (fonts.script_fonts): all families, which have Tamil glyphs."""
+    from app import fonts
+
+    return fonts.script_fonts(True)
+
+
 def selftest() -> dict:
     """What the bundled engine can see: imports, brand rules, example libraries, confidence bounds. `SignageAgent.exe --selftest` writes
     this to selftest.json in the agent's folder (the exe has no console), so a PC where jobs behave oddly can be checked in a second."""

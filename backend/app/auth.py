@@ -28,7 +28,7 @@ COOKIE = "signage_session"
 SESSION_TTL_S = 7 * 24 * 3600
 ROLES = ("admin", "designer")
 MIN_PASSWORD = 8
-PUBLIC_PATHS = {"/api/health", "/healthz", "/api/agent/config", "/api/agent/register", "/api/agent/heartbeat", "/api/agent/version", "/api/agent/download", "/api/corel/health", "/api/auth/login", "/api/auth/me", "/api/auth/setup", "/api/auth/logout"}
+PUBLIC_PATHS = {"/api/health", "/healthz", "/api/agent/config", "/api/agent/register", "/api/agent/heartbeat", "/api/agent/fonts", "/api/agent/version", "/api/agent/download", "/api/corel/health", "/api/auth/login", "/api/auth/me", "/api/auth/setup", "/api/auth/logout"}
 # /api/corel/health: the launch screen's "Connect CorelDRAW Engine" check runs BEFORE the sign-in (engine version and free memory only)
 PUBLIC_PREFIXES = ("/api/shared/", "/api/agent/jobs/")   # the agent job calls carry the agent's own bearer token (app/agents.py)   # unguessable share links meant for people without an account
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")

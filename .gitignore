@@ -14,6 +14,10 @@ __pycache__
 /agent/dist/
 /agent/build/
 
+# server deployment: secrets and the agent build copied next to docker-compose.yml
+deploy/server.env
+/agent-dist/
+
 # Phase 2 example-engine data - regenerable from cached dumps via build_examples.py;
 # not wired into any runtime path yet (see CLAUDE.md "Example-based layout engine" -
 # a negative result as of this writing, unlike backend/app/brand_rules/ which IS used)

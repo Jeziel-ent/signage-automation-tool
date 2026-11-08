@@ -1,6 +1,8 @@
 // Pieces of the Automation page's Shops Queue, kept apart so the page component stays readable (same markup, same behaviour).
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
+import { useAgent } from "../context/AgentContext.jsx";
+import { masterNeeds, maxCorelMajor } from "../utils/corelCompat.js";
 import { AnimatePresence } from "framer-motion";
 import BrandSelect from "./BrandSelect.jsx";
 import AnimatedCount from "./AnimatedCount.jsx";
@@ -133,6 +135,8 @@ function MasterThumb({ m }) {
 
 function MasterRow({ m, isDefault, onRemove, onEdit }) {
   const { isAdmin } = useAuth();   // only an administrator may edit, replace or delete a master (the server answers 403 otherwise)
+  const { local, agents } = useAgent();
+  const needs = masterNeeds(m, maxCorelMajor(local, agents));   // 0, or the CorelDRAW version this master was saved by when the PC has an older one
   return (
     <li className="mt-row" data-master-id={m.id}>
       <MasterThumb m={m} />
@@ -140,6 +144,9 @@ function MasterRow({ m, isDefault, onRemove, onEdit }) {
         <div className="mt-name" title={m.name}>
           {m.name}
           {isDefault && <span className="mt-default">default</span>}
+          {needs > 0 && (
+            <span className="mt-warn" title={`Saved by CorelDRAW ${needs}. The CorelDRAW on your PC is older and cannot open it: open it in CorelDRAW ${needs} and Save As an older version, or install a newer CorelDRAW.`}>needs CorelDRAW {needs}+</span>
+          )}
         </div>
         <div className="mt-file" title={m.file_name}>{m.file_name || "master.cdr"} <span>{fmtBytes(m.file_size)}</span></div>
       </div>

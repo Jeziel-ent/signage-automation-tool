@@ -1,0 +1,22 @@
+# keep the image build context small and free of client data
+.git
+.venv
+**/node_modules
+**/__pycache__
+**/.pytest_cache
+.claude
+.scannerwork
+signage_dataset
+presentations
+UT
+*.pptx
+docs
+agent
+ci
+backend/data
+backend/dataset_analysis
+backend/tests
+backend/.env
+frontend/dist
+frontend/lcov.info
+deploy/server.env

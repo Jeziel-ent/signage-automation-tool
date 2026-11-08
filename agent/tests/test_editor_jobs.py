@@ -106,3 +106,36 @@ def test_corel_intelligence_runs_end_to_end_through_the_agent(world):
     fb = json.loads(world.db.get_correction(a)["record_json"]).get("feedback", {})
     assert fb.get("boards", {}).get(b) == [1, 0]
     assert world.db.get_correction(b) is None                          # and nothing is learned from merely keeping it
+
+
+def test_the_agent_reports_its_pcs_fonts_once_and_again_when_they_change(world, monkeypatch):
+    import time
+
+    from signage_agent import client
+
+    report = {"available": True, "all_fonts": ["Arial", "Nirmala UI"], "english_fonts": ["Arial"], "tamil_fonts": ["Nirmala UI"],
+              "legacy_tamil_fonts": [], "tamil_detection": "cmap", "source": "test"}
+    sent: list[str] = []
+    real = client.send_fonts
+    monkeypatch.setattr(engine_bridge, "fonts_report", lambda: dict(report))
+    monkeypatch.setattr(client, "send_fonts", lambda *a, **k: (sent.append(a[2]), real(*a, **k))[1])
+    agent = _make_agent(world)                                          # pairing beats once; the fonts are read in the background
+
+    def beat_until(count):
+        for _ in range(60):
+            agent.beat()
+            if len(sent) >= count:
+                return
+            time.sleep(0.1)
+
+    beat_until(1)
+    assert len(sent) == 1
+    assert world.web.get("/api/v2/fonts").json()["all_fonts"] == ["Arial", "Nirmala UI"]
+    for _ in range(3):
+        agent.beat()
+    assert len(sent) == 1                                               # unchanged: not sent again
+    report["all_fonts"] = ["Arial", "Nirmala UI", "Amaranth"]
+    agent._fonts_at = 0                                                 # the hourly re-read
+    beat_until(2)
+    assert len(sent) == 2 and sent[0] != sent[1]
+    assert world.web.get("/api/v2/fonts").json()["all_fonts"] == ["Arial", "Nirmala UI", "Amaranth"]

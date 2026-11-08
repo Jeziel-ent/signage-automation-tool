@@ -451,9 +451,22 @@ def _save_master_upload(master: UploadFile, brand: str, orientation: str, master
                   master_shop_name.strip() or shop_name_from_filename(master.filename),
                   master_shop_name_local.strip() or None, master_name=name or None, default_size=default_size,
                   registered=True)
+    _record_master_info(job_id, master_path)
     preview_path, preview_error = _extract_cdr_preview(master_path)
     db.set_job_preview(job_id, str(preview_path) if preview_path else None, preview_error)
     return job_id
+
+
+def _record_master_info(job_id: str, path: Path) -> None:
+    """The master's SHA-256 and the CorelDRAW version that saved it, read from the file itself (no CorelDRAW needed): the page can warn
+    "needs CorelDRAW 25+, your PC has 21" before a conversion is attempted."""
+    import hashlib
+
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    db.set_master_info(job_id, h.hexdigest(), corel_util.cdr_core_version(path))
 
 
 _AUTO_MASTER_NAME = re.compile(r"^Master \d+$")
@@ -490,6 +503,9 @@ def _master_json(row: dict) -> dict:
         "file_size": path.stat().st_size if path.exists() else None,
         "dimensions_default": dims,
         "master_shop_name": row.get("master_shop_name"),
+        "master_hash": row.get("master_hash"),
+        "core_version": row.get("core_version"),
+        "core_major": int(row["core_version"]) if row.get("core_version") else None,        # CorelDRAW 25 = 2024; None = unreadable / pre-X4
         "preview_url": f"/api/v2/jobs/{row['id']}/preview" if row.get("preview_path") else None,
         "preview_error": row.get("preview_error"),
         "created_at": datetime.fromtimestamp(row["created_at"], timezone.utc).isoformat(),
@@ -596,6 +612,7 @@ async def replace_master_file(master_id: str, master: UploadFile = File(...)):
     await run_in_threadpool(_save_stream, master.file, tmp)
     tmp.replace(path)
     db.update_master(master_id, {"master_filename": master.filename})
+    _record_master_info(master_id, path)
     preview_path, preview_error = _extract_cdr_preview(path)
     db.set_job_preview(master_id, str(preview_path) if preview_path else None, preview_error)
     return _master_json(db.get_job(master_id))
@@ -824,15 +841,24 @@ def v2_add_shops_batch(job_id: str, payload: dict):
 
 
 @app.get("/api/v2/recent")
-def v2_recent():
+def v2_recent(request: Request, agent_id: str | None = None, mine: bool = False):
     """Every shop across every job, newest first, for the "Recently
     generated" page. `report_json` is deliberately left out (it holds every
     object's placement - large and not needed for a list view); `files`
     maps output kind -> filename, served via
     /api/v2/shops/{shop_id}/files/{filename}.
+    Per PC: `agent_id=<id>` lists only the boards that Windows agent converted, `mine=1` the boards of ALL the signed-in user's agents;
+    neither lists everything (boards converted on the server itself carry no agent).
     """
+    rows = db.list_all_shops_with_job()
+    if agent_id:
+        rows = [r for r in rows if r.get("agent_id") == agent_id]
+    elif mine:
+        user = getattr(request.state, "user", None) or {"id": 0}
+        own = {a["id"] for a in db.list_agents(user["id"])}
+        rows = [r for r in rows if r.get("agent_id") in own]
     out = []
-    for r in db.list_all_shops_with_job():
+    for r in rows:
         files = json.loads(r["files_json"]) if r.get("files_json") else None
         out.append({
             "shop_id": r["id"], "job_id": r["job_id"], "brand": r["brand"],
@@ -840,7 +866,7 @@ def v2_recent():
             "width": r["width"], "width_unit": r["width_unit"],
             "height": r["height"], "height_unit": r["height_unit"],
             "reference": r["reference"], "status": r["status"], "error": r["error"],
-            "created_at": r["created_at"], "completed_at": r["completed_at"],
+            "created_at": r["created_at"], "completed_at": r["completed_at"], "agent_id": r.get("agent_id"),
             "files": files,
             "confidence": confidence.layout_confidence(json.loads(r["layout_json"])) if r.get("layout_json") else None,
         })
@@ -1219,6 +1245,22 @@ agents.register_finalizer("export", _finalize_agent_export)
 
 
 
+def _corel_too_old_for(master_used: dict, user_id: int) -> str | None:
+    """A message when the master was saved by a newer CorelDRAW than any the user's agents report, else None. Only decided from what the
+    agents told the site (no agent online or none reported its installs = no opinion: the job just waits for one)."""
+    row = db.get_job((master_used or {}).get("job_id") or "")
+    need = int(row["core_version"]) if row and row.get("core_version") else 0
+    if not need:
+        return None
+    majors = []
+    for a in db.list_agents(user_id):
+        majors += [int(c["major"]) for c in agents._agent_json(a)["corel"] if c.get("major")]
+    if not majors or max(majors) >= need:
+        return None
+    return (f"This master was saved by CorelDRAW {need}, but the newest CorelDRAW on your PC is {max(majors)}, which cannot open files from a "
+            f"newer version. Open it in CorelDRAW {need} and 'Save As' an older version (v{max(majors)} or lower), or install CorelDRAW {need} or newer.")
+
+
 def _enqueue_remote_convert(shop_id: str, user_id: int) -> None:
     """SIGNAGE_ENGINE=remote: the conversion becomes a job in the agent queue (table agent_jobs) for the user's own agent. The payload is
     exactly what the local worker would hand to corel_worker (shop settings, chosen master), plus where the results are stored."""
@@ -1226,6 +1268,10 @@ def _enqueue_remote_convert(shop_id: str, user_id: int) -> None:
         job, master_used = _convert_job(shop_id)
     except Exception as e:  # noqa: BLE001 - a shop that cannot be prepared fails like a local one does
         db.set_shop_status(shop_id, "failed", error=str(e))
+        return
+    problem = _corel_too_old_for(master_used, user_id)
+    if problem:
+        db.set_shop_status(shop_id, "failed", error=problem)
         return
     master = Path(job["master_path"])
     db.create_agent_job(uuid.uuid4().hex[:12], "convert", shop_id, user_id,
@@ -1238,6 +1284,7 @@ def _finalize_agent_convert(job: dict, entry: dict) -> None:
     shop_id = job.get("shop_id")
     if not shop_id or not db.get_shop(shop_id):
         return
+    db.set_shop_agent(shop_id, job.get("agent_id"))          # "Recently generated" is per PC
     _store_convert_result(shop_id, entry, json.loads(job["payload_json"]).get("master_used") or {})
     if entry.get("status") == "done":
         _apply_learned_nested(shop_id)         # Corel Intelligence boards: queues the scene build whose result continues the replay
@@ -2778,10 +2825,23 @@ class FontSubstituteRequest(BaseModel):
     project_id: str | None = None          # accepted; substitutions are kept per shop
 
 
-def _installed_font_name(name: str) -> str | None:
+def _fonts_info(request: Request) -> dict:
+    """{available, all_fonts, english_fonts, tamil_fonts, legacy_tamil_fonts, tamil_detection, source}: the fonts of the PC that does the work.
+    With SIGNAGE_ENGINE=remote that is the signed-in user's agent (it reports them); otherwise this server's own fonts."""
+    if _remote_mode():
+        user = getattr(request.state, "user", None) or {"id": 0}
+        got = db.agent_fonts_for_user(user["id"])
+        if got:
+            return {**got[0], "source": f"your PC {got[1]}"}
+        return {"available": False, "all_fonts": [], "english_fonts": [], "tamil_fonts": [], "legacy_tamil_fonts": [],
+                "tamil_detection": "none", "source": "no agent has reported its fonts yet"}
+    return fonts.script_fonts()
+
+
+def _installed_font_name(name: str, info: dict | None = None) -> str | None:
     """The installed family matching `name` (case-insensitive), None if it is not installed; `name` itself when the
     installed-font list is unavailable (not Windows) - the check is skipped there, as in the editor."""
-    info = fonts.installed_fonts()
+    info = {**info, "fonts": info.get("all_fonts", [])} if info is not None else fonts.installed_fonts()
     if not info.get("available"):
         return name
     by_lower = {f.lower(): f for f in info.get("fonts", [])}
@@ -2797,7 +2857,7 @@ def font_substitutions(shop_id: str):
 
 
 @app.post("/api/fonts/substitute", responses={404: {"description": "Not found"}, 422: {"description": "Validation error"}})
-def font_substitute(body: FontSubstituteRequest):
+def font_substitute(body: FontSubstituteRequest, request: Request):
     """Save (is_permanent) a replacement for a font missing on this server: every export of this shop's board sets text
     in `original_font` to `substitute_font` in CorelDRAW (export_replay.apply_font_substitutions). A temporary choice
     lives only in the editor tab and is not stored - this answers {saved: false} for it. The substitute must be installed
@@ -2809,7 +2869,7 @@ def font_substitute(body: FontSubstituteRequest):
         raise HTTPException(422, "name both the missing font and its replacement")
     if original.lower() == wanted.lower():
         raise HTTPException(422, "the replacement must be a different font")
-    installed = _installed_font_name(wanted)
+    installed = _installed_font_name(wanted, _fonts_info(request) if _remote_mode() else None)
     if installed is None:
         raise HTTPException(422, f"{wanted!r} is not installed on this server - CorelDRAW would ignore it; pick an installed font")
     if body.is_permanent:
@@ -2828,17 +2888,20 @@ def font_substitute_delete(shop_id: str, original_font: str):
 
 
 @app.get("/api/v2/fonts")
-def api_v2_fonts(refresh: bool = False):
+def api_v2_fonts(request: Request, refresh: bool = False):
     """Installed fonts for the Shops Queue's English / Tamil font pickers: {available, all_fonts, english_fonts, tamil_fonts,
     tamil_detection}. Read from Windows (the same list CorelDRAW sees), NOT by launching CorelDRAW through COM: a Dispatch
     starts a hidden CorelDRAW (seconds and hundreds of MB) and would compete with a running conversion for the one CorelDRAW
     this app allows at a time. Tamil support is read from each font file's character map (fonts.tamil_fonts)."""
-    return fonts.script_fonts(refresh)
+    return _fonts_info(request) if _remote_mode() else fonts.script_fonts(refresh)
 
 
 @app.get("/api/fonts")
-def api_fonts(refresh: bool = False):
+def api_fonts(request: Request, refresh: bool = False):
     """Installed font families (the editor refuses to name a font CorelDRAW would silently ignore)."""
+    if _remote_mode():
+        info = _fonts_info(request)
+        return {"available": info["available"], "fonts": info["all_fonts"], "source": info["source"]}
     return fonts.installed_fonts(refresh)
 
 
@@ -2848,7 +2911,7 @@ _FONT_MEDIA = {".ttf": "font/ttf", ".otf": "font/otf", ".ttc": "font/collection"
 @app.get("/api/fonts/file", responses={404: {"description": "Not found"}})
 def api_font_file(family: str):
     """The installed font file for `family`, so the editor's live text renders in the board's real font on any browser."""
-    path = fonts.font_file(family)
+    path = None if _remote_mode() else fonts.font_file(family)      # through an agent the font file stays on the designer's PC
     if path is None:
         raise HTTPException(404, f"font {family!r} is not installed on the server")
     return FileResponse(path, media_type=_FONT_MEDIA.get(path.suffix.lower(), "application/octet-stream"),

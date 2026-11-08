@@ -1,0 +1,14 @@
+# HTTPS in front of the app. SIGNAGE_DOMAIN comes from deploy/server.env (the domain pointing at this server); with no domain set it serves
+# http://localhost, which is enough to try the stack on a laptop.
+{$SIGNAGE_DOMAIN:localhost} {
+	encode zstd gzip
+
+	# masters are 100-350 MB: allow the same ceiling as the app (SIGNAGE_MAX_UPLOAD_MB, default 1024)
+	request_body {
+		max_size 1100MB
+	}
+
+	reverse_proxy app:8000 {
+		flush_interval -1
+	}
+}

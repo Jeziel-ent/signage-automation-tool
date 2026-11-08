@@ -1,0 +1,46 @@
+# The Signage website on one Linux server (a DigitalOcean droplet): the app, Caddy for HTTPS, and a nightly database backup.
+#
+#   cp deploy/server.env.example deploy/server.env      # fill in the domain, the first administrator, the public address
+#   mkdir agent-dist                                      # copy agent/dist/* (SignageAgent.exe + latest.json) here after building it on Windows
+#   docker compose up -d --build
+#
+# Data lives in the `signage-data` volume (database, masters, boards, backups); certificates in `caddy-data`.
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    env_file: deploy/server.env
+    volumes:
+      - signage-data:/data
+      - ./agent-dist:/agent_dist:ro
+    expose:
+      - "8000"          # only Caddy reaches it; never publish this port
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    env_file: deploy/server.env
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - app
+
+  backup:                # a consistent copy of the database every 24 hours, the newest 14 kept (backend/tools/backup_db.py)
+    build: .
+    restart: unless-stopped
+    env_file: deploy/server.env
+    command: ["sh", "-c", "while true; do python tools/backup_db.py --out /data/backups --keep 14; sleep 86400; done"]
+    volumes:
+      - signage-data:/data
+    healthcheck:
+      disable: true
+
+volumes:
+  signage-data:
+  caddy-data:
+  caddy-config:

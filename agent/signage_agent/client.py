@@ -47,8 +47,12 @@ def register(server: str, code: str, hostname: str, version: str, corel: list) -
     return call(server, "/api/agent/register", {"code": code, "hostname": hostname, "version": version, "corel": corel})
 
 
-def heartbeat(server: str, token: str, version: str, corel: list, state: str) -> dict:
-    return call(server, "/api/agent/heartbeat", {"version": version, "corel": corel, "state": state}, token)
+def heartbeat(server: str, token: str, version: str, corel: list, state: str, fonts_hash: str = "") -> dict:
+    return call(server, "/api/agent/heartbeat", {"version": version, "corel": corel, "state": state, "fonts_hash": fonts_hash}, token)
+
+
+def send_fonts(server: str, token: str, fonts_hash: str, fonts: dict) -> dict:
+    return call(server, "/api/agent/fonts", {"hash": fonts_hash, "fonts": fonts}, token)
 
 
 def latest_version(server: str) -> dict:

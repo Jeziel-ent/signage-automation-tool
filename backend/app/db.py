@@ -78,7 +78,9 @@ CREATE TABLE IF NOT EXISTS agents (
     state TEXT,
     created_at REAL NOT NULL,
     last_seen REAL,
-    revoked_at REAL
+    revoked_at REAL,
+    fonts_hash TEXT,
+    fonts_json TEXT
 );
 
 -- One-time codes the website hands to a signed-in user to pair an agent with their account (10 minutes, single use).
@@ -239,6 +241,14 @@ _MIGRATIONS = [
     # orientation (landscape_master_id / portrait_master_id). main._select_shop_master falls back when it is unusable.
     ("shops", "master_id", "ALTER TABLE shops ADD COLUMN master_id TEXT"),
     ("agent_jobs", "ref", "ALTER TABLE agent_jobs ADD COLUMN ref TEXT"),
+    # the Windows agent (PC) that converted the board: "Recently generated" is per PC (NULL = converted on the server itself)
+    ("shops", "agent_id", "ALTER TABLE shops ADD COLUMN agent_id TEXT"),
+    # the fonts installed on an agent's PC (reported by the agent: the editor's font pickers and the missing-font checks use THEIR fonts)
+    # the master file's SHA-256 (the same file is recognised under any name) and the CorelDRAW version that saved it (25.1 = 2024)
+    ("jobs", "master_hash", "ALTER TABLE jobs ADD COLUMN master_hash TEXT"),
+    ("jobs", "core_version", "ALTER TABLE jobs ADD COLUMN core_version REAL"),
+    ("agents", "fonts_hash", "ALTER TABLE agents ADD COLUMN fonts_hash TEXT"),
+    ("agents", "fonts_json", "ALTER TABLE agents ADD COLUMN fonts_json TEXT"),
 ]
 
 
@@ -298,6 +308,11 @@ def create_job(job_id: str, brand: str, master_filename: str, master_path: str, 
             (job_id, brand, master_filename, master_path, orientation, master_shop_name, master_shop_name_local,
              master_name, dw, dh, du, 1 if registered else None, time.time()),
         )
+
+
+def set_master_info(job_id: str, master_hash: str | None, core_version: float | None) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE jobs SET master_hash = ?, core_version = ? WHERE id = ?", (master_hash, core_version, job_id))
 
 
 def list_masters(brand: str | None = None, orientation: str | None = None) -> list[dict]:
@@ -503,6 +518,11 @@ def fail_interrupted_work(reason: str, keep_agent_jobs: bool = False) -> tuple[i
         exports = conn.execute("UPDATE exports SET status = 'failed', error = ?, completed_at = ? "
                                "WHERE status IN ('queued', 'running')" + keep_exports, (reason, time.time())).rowcount
     return shops, exports
+
+
+def set_shop_agent(shop_id: str, agent_id: str | None) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE shops SET agent_id = ? WHERE id = ?", (agent_id, shop_id))
 
 
 def list_all_shops_with_job() -> list[dict]:
@@ -839,6 +859,19 @@ def touch_agent(agent_id: str, version: str | None, corel_json: str | None, stat
     with _conn() as conn:
         conn.execute("UPDATE agents SET last_seen = ?, version = COALESCE(?, version), corel_json = COALESCE(?, corel_json),"
                      " state = COALESCE(?, state) WHERE id = ?", (time.time(), version, corel_json, state, agent_id))
+
+
+def set_agent_fonts(agent_id: str, fonts_hash: str, fonts_json: str) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE agents SET fonts_hash = ?, fonts_json = ? WHERE id = ?", (fonts_hash, fonts_json, agent_id))
+
+
+def agent_fonts_for_user(user_id: int) -> tuple[dict, str] | None:
+    """(the fonts dict, the PC's name) of the user's most recently seen agent that has reported its fonts, else None."""
+    with _conn() as conn:
+        row = conn.execute("SELECT name, fonts_json FROM agents WHERE user_id = ? AND revoked_at IS NULL AND fonts_json IS NOT NULL"
+                           " ORDER BY last_seen DESC LIMIT 1", (user_id,)).fetchone()
+    return (json.loads(row["fonts_json"]), row["name"]) if row else None
 
 
 def list_agents(user_id: int | None = None) -> list[dict]:

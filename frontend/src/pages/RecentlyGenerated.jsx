@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { Activity, Building2, ExternalLink, RefreshCw, Search } from "lucide-react";
+import { Activity, Building2, ExternalLink, MonitorCheck, RefreshCw, Search } from "lucide-react";
 import PillSelect from "../components/PillSelect.jsx";
 import AnimatedCount from "../components/AnimatedCount.jsx";
 import { matchesSearch } from "../utils/recentFilter.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
+import { useAgent } from "../context/AgentContext.jsx";
 
 const KIND_LABELS = { cdr: "CDR", pdf: "PDF", report: "Report" };
 const STATUS_LABELS = { new: "Not converted", queued: "Queued", converting: "Converting", done: "Done", failed: "Failed" };
@@ -27,7 +28,15 @@ const isImage = (filename) => /\.(png|svg|jpe?g)$/i.test(filename);
 const dims = (r) =>
   r.width_unit === r.height_unit ? `${r.width} × ${r.height} ${r.width_unit}` : `${r.width} ${r.width_unit} × ${r.height} ${r.height_unit}`;
 
+// "This PC" / "My PCs" / "Everyone" - only offered when the site works through Windows agents (each PC keeps its own list)
+const SCOPES = [["pc", "This PC"], ["mine", "My PCs"], ["all", "Everyone"]];
+
 export default function RecentlyGenerated() {
+  const { config, local } = useAgent();
+  const perPc = !!config?.agent_required;
+  const [scope, setScope] = useState("pc");
+  const thisPc = local?.agent_id || "";
+  const query = !perPc || scope === "all" ? "" : scope === "pc" && thisPc ? `?agent_id=${encodeURIComponent(thisPc)}` : "?mine=1";
   const [rows, setRows] = useState(null); // null = loading
   const [error, setError] = useState("");
   const [searchTerm, setSearchTerm] = useState("");
@@ -38,7 +47,7 @@ export default function RecentlyGenerated() {
 
   async function load() {
     try {
-      const r = await fetch("/api/v2/recent");
+      const r = await fetch("/api/v2/recent" + query);
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setRows(await r.json());
       setError("");
@@ -54,7 +63,7 @@ export default function RecentlyGenerated() {
 
   useEffect(() => {
     load();
-  }, []);
+  }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Keep the list live while anything is still queued/converting (e.g. a
   // conversion started from the Automation page in another tab).
@@ -91,6 +100,9 @@ export default function RecentlyGenerated() {
           />
         </div>
         <div className="rg-filters">
+          {perPc && (
+            <PillSelect value={scope} options={SCOPES.map(([value, label]) => ({ value, label }))} onChange={setScope} icon={MonitorCheck} label="Whose boards" />
+          )}
           <PillSelect value={selectedBrand} options={brandOptions} onChange={setSelectedBrand} icon={Building2} label="Filter by brand" />
           <PillSelect value={selectedStatus} options={statusOptions} onChange={setSelectedStatus} icon={Activity} label="Filter by status" />
           <button className="rg-refresh" onClick={refresh} disabled={refreshing}>
