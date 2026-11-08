@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { NavLink, Route, Routes } from "react-router-dom";
-import { ChevronLeft, ChevronRight, History, Layers, LogOut, MonitorCheck, Printer, ShieldCheck, Sparkles, UserCog, Workflow } from "lucide-react";
+import { ChevronLeft, ChevronRight, History, Layers, LogOut, MonitorCheck, Printer, Server, ShieldCheck, Sparkles, UserCog, Workflow } from "lucide-react";
 import Automation from "./pages/Automation.jsx";
 import { MasterProvider } from "./context/MasterContext.jsx";
 import RecentlyGenerated from "./pages/RecentlyGenerated.jsx";
@@ -10,6 +10,7 @@ import Corrections from "./pages/Corrections.jsx";
 import Masters from "./pages/Masters.jsx";
 import Users from "./pages/Users.jsx";
 import AgentPage from "./pages/Agent.jsx";
+import ServerPage from "./pages/Server.jsx";
 import AgentBanner from "./components/AgentBanner.jsx";
 import { AgentProvider, useAgent } from "./context/AgentContext.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
@@ -61,7 +62,10 @@ const NAV = [
   { to: "/corrections", end: false, label: "Learned corrections", Icon: ShieldCheck },
   { to: "/agent", end: false, label: "Agent", Icon: MonitorCheck, dot: true },
 ];
-const ADMIN_NAV = [{ to: "/users", end: false, label: "Users", Icon: UserCog }];
+const ADMIN_NAV = [
+  { to: "/users", end: false, label: "Users", Icon: UserCog },
+  { to: "/server", end: false, label: "Server", Icon: Server },
+];
 
 const COLLAPSE_KEY = "signage.sidebarCollapsed";
 function readCollapsed() {
@@ -156,6 +160,7 @@ function Shell() {
                 <Route path="/corrections" element={<Corrections />} />
                 <Route path="/users" element={<Users />} />
                 <Route path="/agent" element={<AgentPage />} />
+                <Route path="/server" element={<ServerPage />} />
               </Routes>
             </MasterProvider>
           </main>

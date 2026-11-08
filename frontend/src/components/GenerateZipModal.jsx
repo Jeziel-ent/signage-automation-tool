@@ -3,6 +3,7 @@ import { AlertTriangle, Check, Copy, Download, ExternalLink, Link2, Loader2, Rot
 import { zipIssuesText, zipRequest } from "../utils/assetZip.js";
 import { OTP_MAX, OTP_MIN, normalizeOtp, wtProgress, wtStatusText } from "../utils/generateZip.js";
 import { fmtBytes } from "../utils/fileSize.js";
+import { useAgent } from "../context/AgentContext.jsx";
 import { motion } from "framer-motion";
 import { BACKDROP_MOTION, CARD_MOTION } from "./modalMotion.js";
 import "./ExportModal.css";
@@ -151,6 +152,7 @@ function savedEmail() {
  * server-link fallback when WeTransfer cannot be used.
  */
 function WeTransferCard({ token }) {
+  const shareOnly = !!useAgent()?.config?.share_only; // hosted server: no WeTransfer, just the server link
   const [stage, setStage] = useState("idle"); // idle | email | job
   const [email, setEmail] = useState(savedEmail);
   const [emailErr, setEmailErr] = useState("");
@@ -192,12 +194,12 @@ function WeTransferCard({ token }) {
   async function start(e) {
     e?.preventDefault();
     const address = email.trim();
-    if (!EMAIL_RE.test(address)) {
+    if (!shareOnly && !EMAIL_RE.test(address)) {
       setEmailErr("Enter a valid e-mail address, like user@company.com");
       return;
     }
     try {
-      localStorage.setItem(EMAIL_KEY, address);
+      if (!shareOnly) localStorage.setItem(EMAIL_KEY, address);
     } catch { /* private mode - just not remembered */ }
     setEmailErr("");
     setErr("");
@@ -210,7 +212,7 @@ function WeTransferCard({ token }) {
       const r = await fetch("/api/export-wetransfer", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, sender_email: address }),
+        body: JSON.stringify(shareOnly ? { token } : { token, sender_email: address }),
       });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(typeof body.detail === "string" ? body.detail : `HTTP ${r.status}`);
@@ -262,9 +264,9 @@ function WeTransferCard({ token }) {
   return (
     <div className={`gz-action gz-link${url ? " ready" : ""}`}>
       {stage === "idle" && !err && (
-        <button type="button" className="gz-link-start" onClick={() => setStage("email")}>
+        <button type="button" className="gz-link-start" onClick={() => (shareOnly ? start() : setStage("email"))}>
           <Link2 size={20} />
-          <span><strong>Generate WeTransfer Link</strong><small>Upload the ZIP and get a share link</small></span>
+          <span><strong>{shareOnly ? "Create Share Link" : "Generate WeTransfer Link"}</strong><small>{shareOnly ? "Get a download link for the ZIP" : "Upload the ZIP and get a share link"}</small></span>
         </button>
       )}
 
@@ -319,12 +321,12 @@ function WeTransferCard({ token }) {
           <span className="xm-field-label">{fallback ? "Download link (this server)" : "WeTransfer link"}</span>
           {fallback && (
             <div className={`gz-fallback${job.local_only ? " local" : ""}`} role="note">
-              <strong>Generated direct server link (WeTransfer upload fallback).</strong>{" "}
+              <strong>{shareOnly ? "Download link from this server." : "Generated direct server link (WeTransfer upload fallback)."}</strong>{" "}
               {job.local_only
                 ? "It opens only on this computer - the backend listens on 127.0.0.1. Start it with --host 0.0.0.0 to share it on the office network."
                 : "It works for anyone who can reach this server (office network or VPN), not the open internet."}
               {job.expires_at ? ` Available until ${new Date(job.expires_at * 1000).toLocaleString()}.` : ""}
-              {job.wetransfer_error && <details><summary>Why WeTransfer failed</summary><span className="gz-why">{job.wetransfer_error}</span></details>}
+              {job.wetransfer_error && !shareOnly && <details><summary>Why WeTransfer failed</summary><span className="gz-why">{job.wetransfer_error}</span></details>}
             </div>
           )}
           <div className="gz-url-row">

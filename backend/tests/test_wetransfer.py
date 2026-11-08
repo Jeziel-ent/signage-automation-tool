@@ -390,3 +390,17 @@ def test_uploader_without_a_code_callback_or_email_fails_clearly(tmp_path, monke
         wt.upload_zip_to_wetransfer(str(f), None)
     with pytest.raises(wt.WeTransferError, match="nobody can type it"):
         wt.upload_zip_to_wetransfer(str(f), EMAIL, debug_dir=tmp_path / "dbg")
+
+
+def test_hosted_server_makes_a_share_link_without_email_or_wetransfer(client, fake_uploader, monkeypatch):
+    built = _built(client)
+    monkeypatch.setenv("SIGNAGE_ENGINE", "remote")
+    r = client.post("/api/export-wetransfer", json={"token": built["token"]})            # no sender e-mail needed
+    assert r.status_code == 200
+    s = _poll(client, r.json()["job_id"])
+    assert s["status"] == "success" and s["fallback_used"] and "/api/shared/" in s["wetransfer_url"]
+    assert "failed" not in s["message"].lower()                                           # not presented as an error
+    assert fake_uploader.calls == []
+    assert client.get("/api/agent/config").json()["share_only"] is True
+    monkeypatch.setenv("SIGNAGE_ENGINE", "mock")
+    assert client.get("/api/agent/config").json()["share_only"] is False

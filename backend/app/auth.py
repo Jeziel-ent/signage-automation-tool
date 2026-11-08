@@ -22,7 +22,7 @@ import time
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel
 
-from . import db
+from . import audit, db
 
 COOKIE = "signage_session"
 SESSION_TTL_S = 7 * 24 * 3600
@@ -213,14 +213,17 @@ def login(body: LoginBody, request: Request, response: Response):
     email = (body.email or "").strip().lower()
     key = _throttle_key(request, email)
     if _locked(key):
+        audit.record("login_locked", email)
         raise HTTPException(429, "too many failed attempts - wait a few minutes and try again")
     row = db.get_user_with_hash(email)
     ok = verify_password(body.password or "", row["password_hash"] if row else _DUMMY_HASH)
     if not row or not ok or not row["active"]:
         _note_failure(key)
+        audit.record("login_failed", email)
         raise HTTPException(401, "wrong email or password")
     _clear_failures(key)
     _start_session(request, response, row)
+    audit.record("login", email, user=row)
     return {"user": _public(row)}
 
 
@@ -228,7 +231,10 @@ def login(body: LoginBody, request: Request, response: Response):
 def logout(request: Request, response: Response):
     token = request.cookies.get(COOKIE)
     if token:
+        who = db.get_session_user(_token_hash(token))
         db.delete_session(_token_hash(token))
+        if who:
+            audit.record("logout", who["email"], user=who)
     response.delete_cookie(COOKIE, path="/")
     return {"ok": True}
 
@@ -243,6 +249,7 @@ def setup(body: SetupBody, request: Request, response: Response):
     _check_password_strength(body.password)
     user = db.create_user(email, body.name.strip(), hash_password(body.password), "admin")
     _start_session(request, response, user)
+    audit.record("setup_admin", email, user=user)
     return {"user": _public(user)}
 
 
@@ -262,6 +269,7 @@ def create_user(body: UserCreate):
         user = db.create_user(email, body.name.strip(), hash_password(body.password), body.role)
     except sqlite3.IntegrityError:
         raise HTTPException(409, "that email already has an account") from None
+    audit.record("user_created", email, role=body.role)
     return {"user": _public(user)}
 
 
@@ -288,6 +296,8 @@ def update_user(user_id: int, body: UserUpdate, admin: dict = Depends(require_ad
     if losing_admin and db.count_active_admins() <= 1:
         raise HTTPException(409, "this is the last active administrator - make someone else an administrator first")
     db.update_user(user_id, fields)
+    audit.record("user_updated", target["email"], changed=sorted(k if k != "password_hash" else "password" for k in fields),
+                 **({"role": fields["role"]} if "role" in fields else {}), **({"active": bool(fields["active"])} if "active" in fields else {}))
     if "password_hash" in fields or fields.get("active") == 0 or "role" in fields:
         db.delete_user_sessions(user_id)   # the new password / role / disabling applies at once
     return {"user": _public(db.get_user(user_id))}

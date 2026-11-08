@@ -114,6 +114,19 @@ CREATE TABLE IF NOT EXISTS agent_jobs (
 CREATE INDEX IF NOT EXISTS agent_jobs_queue ON agent_jobs (state, user_id, created_at);
 CREATE INDEX IF NOT EXISTS agent_jobs_shop ON agent_jobs (shop_id);
 
+-- Who did what (app/audit.py): sign-ins, accounts, masters, corrections, agents, fonts. Never holds a password or token.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at REAL NOT NULL,
+    user_id INTEGER,
+    user_email TEXT,
+    action TEXT NOT NULL,
+    target TEXT,
+    detail_json TEXT,
+    ip TEXT
+);
+CREATE INDEX IF NOT EXISTS audit_log_at ON audit_log (at);
+
 -- Small app-wide switches (Corel Intelligence on/off).
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
@@ -1035,4 +1048,52 @@ def fail_active_agent_jobs(shop_id: str, reason: str) -> int:
     with _conn() as conn:
         return conn.execute("UPDATE agent_jobs SET state = 'failed', error = ?, finished_at = ?, lease_until = NULL"
                             " WHERE shop_id = ? AND state IN ('queued', 'claimed', 'running')", (reason, time.time(), shop_id)).rowcount
+
+
+# ------------------------------------------------------------ audit log (app/audit.py) + export clean-up
+
+def add_audit(user_id: int | None, email: str, action: str, target: str, detail: dict, ip: str) -> None:
+    with _conn() as conn:
+        conn.execute("INSERT INTO audit_log (at, user_id, user_email, action, target, detail_json, ip) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (time.time(), user_id, email, action, target or "", json.dumps(detail, default=str) if detail else None, ip))
+
+
+def list_audit(limit: int = 100, offset: int = 0, action: str = "", q: str = "") -> tuple[list[dict], int]:
+    """(entries newest first, total matching). `action` = exactly that action; `q` = text in the user, target or details."""
+    where, args = [], []
+    if action:
+        where.append("action = ?")
+        args.append(action)
+    if q:
+        where.append("(user_email LIKE ? OR target LIKE ? OR detail_json LIKE ? OR ip LIKE ?)")
+        args += [f"%{q}%"] * 4
+    clause = (" WHERE " + " AND ".join(where)) if where else ""
+    with _conn() as conn:
+        total = conn.execute(f"SELECT COUNT(*) AS n FROM audit_log{clause}", args).fetchone()["n"]
+        rows = conn.execute(f"SELECT * FROM audit_log{clause} ORDER BY at DESC, id DESC LIMIT ? OFFSET ?", args + [limit, offset]).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["detail"] = json.loads(d.pop("detail_json")) if d.get("detail_json") else {}
+        d.pop("detail_json", None)
+        out.append(d)
+    return out, total
+
+
+def audit_actions() -> list[str]:
+    with _conn() as conn:
+        return [r["action"] for r in conn.execute("SELECT DISTINCT action FROM audit_log ORDER BY action").fetchall()]
+
+
+def purge_audit(older_than_s: float) -> int:
+    with _conn() as conn:
+        return conn.execute("DELETE FROM audit_log WHERE at < ?", (time.time() - older_than_s,)).rowcount
+
+
+def delete_exports(ids: list[str]) -> int:
+    """Forget export rows whose files were cleaned up."""
+    if not ids:
+        return 0
+    with _conn() as conn:
+        return conn.execute(f"DELETE FROM exports WHERE id IN ({','.join('?' * len(ids))})", ids).rowcount
 

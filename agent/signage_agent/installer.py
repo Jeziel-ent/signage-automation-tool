@@ -15,6 +15,11 @@ from .config import APP_DIR_NAME, install_dir
 log = logging.getLogger("agent.install")
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 RUN_VALUE = "AdinnSignageAgent"
+
+
+def run_key() -> str:
+    """Where the start-with-Windows entry lives (the real Run key). SIGNAGE_AGENT_RUN_KEY points the tests at a scratch key instead."""
+    return os.environ.get("SIGNAGE_AGENT_RUN_KEY") or RUN_KEY
 EXE_NAME = "SignageAgent.exe"
 DETACHED = 0x00000008 | 0x00000200
 
@@ -53,7 +58,7 @@ def is_installed_copy() -> bool:
 def set_autostart(exe: Path) -> None:
     import winreg
 
-    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, RUN_KEY) as k:
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, run_key()) as k:
         winreg.SetValueEx(k, RUN_VALUE, 0, winreg.REG_SZ, f'"{exe}"')
 
 
@@ -61,7 +66,7 @@ def remove_autostart() -> None:
     import winreg
 
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, RUN_KEY, 0, winreg.KEY_SET_VALUE) as k:
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, run_key(), 0, winreg.KEY_SET_VALUE) as k:
             winreg.DeleteValue(k, RUN_VALUE)
     except OSError:
         pass

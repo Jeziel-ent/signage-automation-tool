@@ -59,6 +59,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--after-update", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--uninstall", action="store_true", help="remove the start-with-Windows entry")
     ap.add_argument("--version", action="store_true")
+    ap.add_argument("--tray", action="store_true", help="show the tray icon even when running from source / a test folder")
     args = ap.parse_args(argv)
 
     if args.version:
@@ -87,6 +88,10 @@ def main(argv: list[str] | None = None) -> int:
     agent = Agent(Config(home))
     if local_server.start(agent) is None:
         logging.getLogger("agent").error("could not open a local status port; the website will not detect this agent")
+    if args.tray or (frozen and not args.home and not os.environ.get("SIGNAGE_AGENT_HOME")):
+        from . import tray                                  # the installed agent shows its tray icon; tests and development runs do not
+
+        tray.start(agent)
     try:
         agent.run()
     except KeyboardInterrupt:

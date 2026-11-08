@@ -285,6 +285,21 @@ def _registry_corel_entries() -> list[dict]:
     return entries
 
 
+def openable_entries(entries: list[dict], min_major: int) -> list[dict]:
+    """The registry entries of installs that can open a file saved by CorelDRAW `min_major` (an older CorelDRAW cannot open a newer file):
+    numbered ProgIDs of that version or newer. The generic ProgID is dropped (it is "whichever version registered last" - and the numbered
+    ProgID of the same install is kept, so nothing is lost). When nothing qualifies the entries are returned unchanged, so the open fails with
+    check_file_not_newer's plain message naming both versions instead of a vague "no CorelDRAW"."""
+    if min_major <= 0:
+        return entries
+    keep = []
+    for e in entries:
+        m = _PROGID_RE.match(e.get("progid") or "")
+        if m and m.group(1) and int(m.group(1)) >= min_major:
+            keep.append(e)
+    return keep or entries
+
+
 def progid_candidates() -> list[str]:
     """ProgIDs to Dispatch, in order: SIGNAGE_COREL_PROGID alone if set, else what the registry says is installed, else the
     generic ProgID (the old behaviour) if the registry cannot be read."""
@@ -292,7 +307,11 @@ def progid_candidates() -> list[str]:
     if pinned:
         return [pinned]
     try:
-        found = rank_progids(_registry_corel_entries())
+        need = int(os.environ.get("SIGNAGE_COREL_MIN_MAJOR", "0") or 0)    # set per batch by the Windows agent: the newest version that saved a master in it
+    except ValueError:
+        need = 0
+    try:
+        found = rank_progids(openable_entries(_registry_corel_entries(), need))
     except Exception as e:
         logger.warning("could not read CorelDRAW registrations from the registry (%s); using %s", e, GENERIC_PROGID)
         found = []

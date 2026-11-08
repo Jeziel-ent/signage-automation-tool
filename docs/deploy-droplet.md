@@ -41,7 +41,7 @@ to `agent-dist/` on the droplet (`scp`). Designers download it from the site; ru
 ## Updating the site
 
 ```bash
-cd signage && git pull && docker compose up -d --build
+cd signage && sh deploy/deploy.sh      # git pull, rebuild, restart, then checks /healthz
 ```
 
 ## Backups
@@ -51,9 +51,19 @@ Copy them off the droplet too (weekly droplet backups in the DigitalOcean panel,
 Restore: `docker compose stop app`, copy a backup over `/data/signage.db` in the volume (delete `signage.db-wal` / `-shm` next to it),
 `docker compose start app`.
 
+## Running it safely (built in, all optional settings in `deploy/server.env`)
+
+- **Server page** (administrator, sidebar "Server"): problems (database, disk, designers waiting), disk use, the activity log, and "Clean up old files".
+- **Alerts**: `SIGNAGE_ALERT_WEBHOOK=<Slack/Teams/Discord incoming-webhook URL>` posts when the database or disk is in trouble, a designer waits too long, or the server raises an unhandled error (one message per problem per hour).
+- **Clean-up**: temporary files (>1 day) and debug captures (>14 days) always; finished boards older than `SIGNAGE_RETENTION_DAYS` (unset = keep forever). Masters, brands and the database are never removed.
+- **Activity log** kept `SIGNAGE_AUDIT_DAYS` (default 365).
+- **Rate limits** per signed-in user / address: `SIGNAGE_RATE_LIMIT_PER_MIN` (1500), `..._UPLOADS_PER_MIN` (90), `..._AGENT_PER_MIN` (3000), `..._PAIRING_PER_MIN` (30).
+- **Restore**: `python tools/restore_db.py <backup>` inside the app container (checks the backup first, keeps the old database beside it).
+- **Links to ZIPs**: on the hosted server the "WeTransfer" button becomes "Create Share Link" (a link served by the site, kept `SIGNAGE_SHARE_DAYS`, default 3) - no Edge or e-mail code needed.
+- **Signing the agent** (when you own a certificate): `python agent/build.py --sign` with `SIGNAGE_SIGN_PFX`, `SIGNAGE_SIGN_PASSWORD`; removes the Windows SmartScreen warning.
+
 ## Still open
 
 - Masters and boards live on the droplet's disk (volume `signage-data`). Moving them to Spaces (presigned uploads, so the droplet never carries
   a 300 MB upload) needs the bucket's access keys and CORS rule - see the storage item in `docs/deployment-plan.md`.
-- No file cleanup yet: `/healthz` turns 503 when less than `SIGNAGE_MIN_FREE_DISK_GB` is left; watch it with an uptime monitor.
-- The WeTransfer button needs Edge on a Windows PC and does not work from the droplet (the server-link fallback does).
+- `docker build` / `docker compose up` have not been run yet (see the top of this file).

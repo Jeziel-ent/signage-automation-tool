@@ -61,6 +61,19 @@ pipeline {
             }
         }
 
+        stage('Server image') {
+            // Builds the Linux server image (Dockerfile) to prove it still builds. Docker is optional on this agent: without it the build is UNSTABLE, not failed.
+            // Deploying is deploy/deploy.sh on the droplet (docs/deploy-droplet.md).
+            steps {
+                script {
+                    def rc = bat(returnStatus: true, script: 'docker build -t signage-server:ci .')
+                    if (rc != 0) {
+                        unstable('The server Docker image did not build (or Docker is not installed on this Jenkins agent)')
+                    }
+                }
+            }
+        }
+
         stage('SonarQube analysis') {
             steps {
                 script {

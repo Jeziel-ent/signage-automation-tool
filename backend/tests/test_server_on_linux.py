@@ -73,3 +73,51 @@ def test_backup_of_a_missing_database_is_an_error(tmp_path):
         assert "no database" in str(e)
     else:
         raise AssertionError("expected FileNotFoundError")
+
+
+def test_a_backup_is_checked_and_can_be_restored(tmp_path):
+    sys.path.insert(0, str(BACKEND))
+    from tools import backup_db, restore_db
+
+    data = tmp_path / "data"
+    data.mkdir()
+    db = data / "signage.db"
+    conn = sqlite3.connect(db)
+    conn.execute("PRAGMA journal_mode = WAL")
+    conn.execute("CREATE TABLE users (n TEXT)")
+    conn.executemany("INSERT INTO users VALUES (?)", [("a",), ("b",)])
+    conn.commit()
+    good = backup_db.backup(db, data / "backups", keep=3)
+    assert backup_db.verify(good) == {"tables": {"users": 2}}
+    conn.execute("INSERT INTO users VALUES ('c')")                 # the live database moves on ...
+    conn.commit()
+    conn.close()
+    (data / "signage.db-wal").write_bytes(b"stale wal")            # ... and leaves a write-ahead file that must not be replayed
+    result = restore_db.restore(good, data, now=1_800_000_000)
+    import time
+    assert result["tables"] == {"users": 2} and result["kept_old"].endswith("pre-restore-" + time.strftime("%Y%m%d-%H%M%S", time.localtime(1_800_000_000)))
+    assert sqlite3.connect(db).execute("SELECT COUNT(*) FROM users").fetchone()[0] == 2
+    assert not (data / "signage.db-wal").exists() and list(data.glob("signage.db-wal.pre-restore-*"))
+    assert sqlite3.connect(result["kept_old"]).execute("SELECT COUNT(*) FROM users").fetchone()[0] == 3     # nothing was thrown away
+
+
+def test_a_damaged_backup_is_refused_and_touches_nothing(tmp_path):
+    sys.path.insert(0, str(BACKEND))
+    from tools import backup_db, restore_db
+
+    bad = tmp_path / "signage-bad.db"
+    bad.write_bytes(b"this is not a database" * 100)
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "signage.db").write_bytes(b"live")
+    try:
+        restore_db.restore(bad, data)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a damaged backup must not be restored")
+    assert (data / "signage.db").read_bytes() == b"live" and not list(data.glob("*.pre-restore-*"))
+    try:
+        backup_db.verify(bad)
+    except ValueError as e:
+        assert "not a usable database" in str(e) or "integrity" in str(e)

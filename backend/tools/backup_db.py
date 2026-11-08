@@ -20,8 +20,24 @@ def default_db() -> Path:
     return Path(os.environ.get("SIGNAGE_DATA", Path(__file__).resolve().parents[1] / "data")) / "signage.db"
 
 
+def verify(path: Path) -> dict:
+    """SQLite's own integrity check of a database file + the row count of every table. Raises ValueError when the file is damaged."""
+    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        result = conn.execute("PRAGMA integrity_check").fetchall()
+        if result != [("ok",)]:
+            raise ValueError(f"integrity check failed: {result[:3]}")
+        tables = [r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").fetchall()]
+        return {"tables": {t: conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in tables}}
+    except sqlite3.DatabaseError as e:
+        raise ValueError(f"not a usable database: {e}") from None
+    finally:
+        conn.close()
+
+
 def backup(db_path: Path, out_dir: Path, keep: int = 14, now: float | None = None) -> Path:
-    """Write signage-YYYYmmdd-HHMMSS.db into `out_dir`, delete older backups beyond `keep`, return the new file."""
+    """Write signage-YYYYmmdd-HHMMSS.db into `out_dir` (checked: a damaged copy is deleted and ValueError raised), delete older backups
+    beyond `keep`, return the new file."""
     if not db_path.is_file():
         raise FileNotFoundError(f"no database at {db_path}")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -37,6 +53,11 @@ def backup(db_path: Path, out_dir: Path, keep: int = 14, now: float | None = Non
             dst.close()
     finally:
         src.close()
+    try:
+        verify(tmp)
+    except ValueError:
+        tmp.unlink(missing_ok=True)
+        raise
     tmp.replace(target)
     old = sorted(out_dir.glob("signage-*.db"))
     for p in old[:-keep] if keep > 0 else []:
@@ -52,7 +73,7 @@ def main() -> int:
     args = ap.parse_args()
     try:
         path = backup(args.db or default_db(), args.out, args.keep)
-    except (OSError, sqlite3.Error) as e:
+    except (OSError, sqlite3.Error, ValueError) as e:
         print(f"backup failed: {e}", file=sys.stderr)
         return 1
     print(f"backup written: {path} ({path.stat().st_size // 1024} KB)")

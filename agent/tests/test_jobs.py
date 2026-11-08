@@ -330,3 +330,26 @@ def test_the_agent_status_reports_busy_while_working(world):
     world.web.post(f"/api/v2/shops/{sid}/convert")
     JobRunner(agent, mock=True, run_mock=spy).poll_once()
     assert seen == ["busy"] and agent.status()["state"] == "idle"
+
+
+def test_the_batch_runs_with_the_newest_version_that_saved_one_of_its_masters(world, monkeypatch):
+    import os
+    agent = _make_agent(world)
+    agent.corel_installs = lambda: [{"progid": "CorelDRAW.Application.27", "major": 27}]
+    seen = []
+    inner = _fake_batch()
+
+    def spy(jobs, results_path, on_progress=None):
+        seen.append(os.environ.get("SIGNAGE_COREL_MIN_MAJOR"))
+        return inner(jobs, results_path, on_progress)
+    monkeypatch.delenv("SIGNAGE_COREL_MIN_MAJOR", raising=False)
+    runner = JobRunner(agent, run_batch=spy, mock=False)
+    for core in ("2100", "2510"):
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as z:
+            z.writestr("META-INF/metadata.xml", f"<m><CoreVersion>{core}</CoreVersion></m>")
+        _, sid = _shop(world, f"Board {core}", master_bytes=buf.getvalue())
+        world.web.post(f"/api/v2/shops/{sid}/convert")
+    assert runner.poll_once() == 2
+    assert seen == ["25"]                                               # one CorelDRAW for both: it must open the newer master
+    assert "SIGNAGE_COREL_MIN_MAJOR" not in os.environ                  # and nothing is left behind for the next batch

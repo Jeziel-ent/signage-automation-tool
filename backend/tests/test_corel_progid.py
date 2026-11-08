@@ -102,3 +102,33 @@ def test_dispatch_gives_up_with_a_clear_error_when_no_version_can_start(monkeypa
     monkeypatch.setattr(cu, "corel_pids", lambda: set())
     with pytest.raises(RuntimeError, match="no usable CorelDRAW installation"):
         cu.dispatch_corel()
+
+
+# ------------------------------------------------------------------ choosing the install per file (only versions that can open it)
+
+def test_only_installs_that_can_open_the_file_are_kept():
+    kept = cu.openable_entries(REAL, 25)
+    assert [e["progid"] for e in kept] == ["CorelDRAW.Application.27"]                 # the generic one and 2019 are out
+    assert [e["progid"] for e in cu.openable_entries(REAL, 21)] == ["CorelDRAW.Application.21", "CorelDRAW.Application.27"]
+    assert cu.openable_entries(REAL, 0) == REAL and cu.openable_entries(REAL, -3) == REAL
+
+
+def test_when_nothing_is_new_enough_the_entries_are_left_alone_so_the_error_names_both_versions():
+    old_only = [REAL[1]]
+    assert cu.openable_entries(old_only, 25) == old_only
+
+
+def test_the_agent_sets_the_minimum_through_the_environment(monkeypatch):
+    monkeypatch.delenv("SIGNAGE_COREL_PROGID", raising=False)
+    monkeypatch.setattr(cu, "_registry_corel_entries", lambda: REAL)
+    real_rank = cu.rank_progids
+    monkeypatch.setattr(cu, "rank_progids", lambda entries: real_rank(entries, all_exist))      # every server exe "exists"
+    monkeypatch.delenv("SIGNAGE_COREL_MIN_MAJOR", raising=False)
+    assert cu.progid_candidates() == ["CorelDRAW.Application", "CorelDRAW.Application.21"]      # no minimum: as before
+    monkeypatch.setenv("SIGNAGE_COREL_MIN_MAJOR", "25")
+    assert cu.progid_candidates() == ["CorelDRAW.Application.27"]                              # 2019 is never tried for a 2024 file
+    monkeypatch.setenv("SIGNAGE_COREL_MIN_MAJOR", "garbage")
+    assert "CorelDRAW.Application.21" in cu.progid_candidates()                                # a bad value means no filter
+    monkeypatch.setenv("SIGNAGE_COREL_MIN_MAJOR", "25")
+    monkeypatch.setenv("SIGNAGE_COREL_PROGID", "CorelDRAW.Application.21")                     # a pin still wins (diagnosis override)
+    assert cu.progid_candidates() == ["CorelDRAW.Application.21"]

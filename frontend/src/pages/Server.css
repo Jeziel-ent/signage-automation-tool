@@ -1,0 +1,21 @@
+.srv-page { padding: 24px; max-width: 980px; color: var(--ws-text, #e2e8f0); display: flex; flex-direction: column; gap: 16px; }
+.srv-page h2 { margin: 0; color: var(--ws-strong, #f8fafc); }
+.srv-card { padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+.srv-card h3 { margin: 0; display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.srv-card.ok h3 svg { color: #34d399; }
+.srv-card.bad { border-color: rgba(248, 113, 113, 0.6); }
+.srv-card.bad h3 svg { color: #f87171; }
+.srv-problem { margin: 0; font-size: 13.5px; }
+.srv-note { margin: 0; font-size: 12.5px; color: var(--ws-muted, #94a3b8); }
+.srv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.srv-table td { padding: 6px 8px; border-bottom: 1px solid var(--ws-line, rgba(30, 41, 59, 0.6)); vertical-align: top; }
+.srv-table td.num { text-align: right; white-space: nowrap; width: 90px; }
+.srv-table td.bar { width: 38%; }
+.srv-table td.bar span { display: block; height: 8px; border-radius: 4px; background: #ef4444; }
+.srv-table.log td.when { white-space: nowrap; color: var(--ws-muted, #94a3b8); width: 190px; }
+.srv-table.log td.ip { color: var(--ws-faint, #64748b); white-space: nowrap; width: 120px; }
+.srv-clean { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.srv-clean select, .srv-filters select, .srv-filters input { padding: 6px 9px; border-radius: 8px; border: 1px solid var(--ws-field-border, #1e293b); background: var(--ws-field, rgba(2, 6, 23, 0.55)); color: inherit; font-size: 13px; }
+.srv-clean label { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.srv-filters { display: flex; gap: 8px; flex-wrap: wrap; }
+.srv-filters input { flex: 1; min-width: 180px; }

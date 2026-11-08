@@ -92,3 +92,14 @@ def test_no_opinion_without_agent_information(world):
     sid2 = _shop_on(world, m["id"], "Second")
     _convert(world.dee, sid2)
     assert world.dee.get(f"/api/v2/shops/{sid2}/status").json()["status"] == "queued"
+
+
+def test_the_agent_is_told_the_version_that_saved_the_master(world):
+    from tests.test_agent_queue import Agent
+    h, aid = _pair(world.dee, "PC")
+    agent = Agent(world.dee, h, aid)
+    m = _upload(world.dee, _cdr("2510"))
+    sid = _shop_on(world, m["id"])
+    _convert(world.dee, sid)
+    job = agent.claim()[0]
+    assert job["master"]["core_major"] == 25

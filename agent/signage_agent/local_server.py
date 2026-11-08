@@ -83,6 +83,7 @@ def make_handler(agent: Agent):
             self._send(404, {"detail": "not found"})
 
         def do_POST(self):  # noqa: N802
+            body = self._read_json()          # always read the body first: replying to an unread request makes Windows reset the connection
             if not self._host_ok():
                 return self._send(403, {"detail": "bad host"})
             path = self.path.split("?")[0]
@@ -93,7 +94,7 @@ def make_handler(agent: Agent):
             if path == "/unpair":
                 agent.unpair()
                 return self._send(200, {"ok": True})
-            code = str(self._read_json().get("code", "")).strip()
+            code = str(body.get("code", "")).strip()
             if not code:
                 return self._send(400, {"detail": "no pairing code"})
             try:

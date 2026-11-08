@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 import threading
 import time
@@ -132,10 +133,21 @@ class JobRunner:
         runs = [r for _, r in prepared]
         results_path = work / "batch.json"
         pump.heartbeat = engine_bridge.heartbeat_path(results_path)
+        # of the CorelDRAW installs on this PC only those that can open the masters in this batch are tried (a file saved by CorelDRAW 25
+        # cannot be opened by 21): the worker process inherits this and corel_util.progid_candidates filters by it
+        need = max([int((j.get("master") or {}).get("core_major") or 0) for j, _ in prepared] or [0])
+        previous = os.environ.get("SIGNAGE_COREL_MIN_MAJOR")
+        if need:
+            os.environ["SIGNAGE_COREL_MIN_MAJOR"] = str(need)
         try:
             results = self._run_batch(runs, results_path)
         except Exception as e:  # noqa: BLE001 - e.g. RefusedToStart (not enough free RAM): every job fails with the reason
             return [{"status": "error", "error": str(e)} for _ in runs]
+        finally:
+            if previous is None:
+                os.environ.pop("SIGNAGE_COREL_MIN_MAJOR", None)
+            else:
+                os.environ["SIGNAGE_COREL_MIN_MAJOR"] = previous
         # a batch member that failed after the first is retried alone in a fresh worker + CorelDRAW (it may have failed only because the
         # reused instance did) - the same rule the website's own conversions follow
         for i, entry in enumerate(results):

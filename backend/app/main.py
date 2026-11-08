@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
-from . import agents, auth, confidence, corrections, file_naming
+from . import admin, agents, alerts, audit, auth, confidence, corrections, file_naming, ratelimit, retention
 from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename, strip_copy_suffix
 from .engines import get_engine
 from .layout import to_mm
@@ -109,6 +109,36 @@ async def _expire_agent_jobs_loop() -> None:
             logger.exception("agent job expiry failed")
 
 
+def _housekeeping_once() -> None:
+    """Temporary leftovers always; old exports / editor scenes when SIGNAGE_RETENTION_DAYS is set; audit entries past SIGNAGE_AUDIT_DAYS."""
+    result = admin.do_cleanup(admin.retention_days(), dry_run=False)
+    if result["deleted"]:
+        logger.info("clean-up: removed %d item(s), %.1f MB (%s)", result["deleted"], result["bytes"] / 1e6, result["by_category"])
+        audit.record("cleanup", "automatic", deleted=result["deleted"], bytes=result["bytes"])
+    db.purge_audit(audit.keep_days() * 86400)
+
+
+async def _housekeeping_loop() -> None:
+    """A minute after start and then every 6 hours."""
+    await asyncio.sleep(60)
+    while True:
+        try:
+            await run_in_threadpool(_housekeeping_once)
+        except Exception:  # noqa: BLE001 - the loop must survive a bad round
+            logger.exception("housekeeping failed")
+        await asyncio.sleep(6 * 3600)
+
+
+async def _watchdog_loop() -> None:
+    """Every minute: problems on right now go to the alert webhook (once per cooldown), and 'recovered' when they clear."""
+    while True:
+        await asyncio.sleep(60)
+        try:
+            await run_in_threadpool(alerts.check_and_notify, DATA)
+        except Exception:  # noqa: BLE001
+            logger.exception("watchdog failed")
+
+
 def _refuse_mock_engine_in_production() -> None:
     """SIGNAGE_REQUIRE_REAL_ENGINE=1 (set it on a production machine): refuse to start when the engine is the MOCK one. `auto` falls
     back to the mock engine on any computer without Windows or CorelDRAW, and its placeholder files would otherwise be handed to
@@ -125,12 +155,16 @@ async def _lifespan(_app):
     auth.bootstrap_admin()
     _recover_interrupted_work()
     _archive_previous_masters()
-    expiry = asyncio.create_task(_expire_agent_jobs_loop()) if _remote_mode() else None
+    tasks = [asyncio.create_task(_housekeeping_loop())]
+    if _remote_mode():
+        tasks.append(asyncio.create_task(_expire_agent_jobs_loop()))
+    if alerts.webhook():
+        tasks.append(asyncio.create_task(_watchdog_loop()))
     try:
         yield
     finally:
-        if expiry:
-            expiry.cancel()
+        for t in tasks:
+            t.cancel()
 
 
 MSG_NOT_CDR = "Master file must be a .cdr"
@@ -171,6 +205,33 @@ app = FastAPI(title="signage-automation-tool", lifespan=_lifespan, dependencies=
 app.add_middleware(CORSMiddleware, allow_origins=_cors_origins(), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(auth.router)
 app.include_router(agents.router)
+app.include_router(admin.router)
+
+
+@app.middleware("http")
+async def _guard(request: Request, call_next):
+    """Rate limits (app/ratelimit.py) and the request context the audit log reads."""
+    token = audit.current_request.set(request)
+    try:
+        caller = ratelimit.caller_key(request.cookies.get(auth.COOKIE), request.headers.get("authorization"),
+                                      request.client.host if request.client else None)
+        for bucket in ratelimit.buckets_for(request.method, request.url.path, caller, request.headers.get("content-type", "")):
+            allowed, wait = ratelimit.check(caller, bucket)
+            if not allowed:
+                return JSONResponse({"detail": f"too many requests - wait {wait} seconds and try again"}, status_code=429,
+                                    headers={"Retry-After": str(wait)})
+        return await call_next(request)
+    finally:
+        audit.current_request.reset(token)
+
+
+@app.exception_handler(Exception)
+async def _unhandled(request: Request, exc: Exception):
+    """An error nobody planned for: logged with its traceback, reported to the alert webhook (once per route per 10 minutes)."""
+    logger.exception("unhandled error on %s %s", request.method, request.url.path)
+    alerts.notify(f"error:{request.method} {request.url.path}", "Server error",
+                  f"{request.method} {request.url.path}: {type(exc).__name__}: {exc}", cooldown_s=600)
+    return JSONResponse({"detail": "internal server error"}, status_code=500)
 
 
 @app.middleware("http")
@@ -520,6 +581,7 @@ async def v2_upload(master: UploadFile = File(...), brand: str = Form(...), orie
     the shop name in a designer-style file name ("<code> - W X H unit - type - SHOP NAME.cdr"). The master is also
     added to the registry (/api/masters) under a default "Master N" name."""
     job_id = _save_master_upload(master, brand, orientation, master_shop_name, master_shop_name_local)
+    audit.record("master_uploaded", f"{brand} / {master.filename}", job_id=job_id)
     job = db.get_job(job_id)
     return {
         "id": job_id,
@@ -550,6 +612,7 @@ async def upload_master(master: UploadFile = File(...), brand: str = Form(...), 
     `dimensions_default` (JSON {width, height, unit})."""
     default_size = _parse_default_size(dimensions_default)
     job_id = _save_master_upload(master, brand, orientation, master_shop_name, master_shop_name_local, name, default_size)
+    audit.record("master_uploaded", f"{brand} / {master.filename}", job_id=job_id, orientation=orientation)
     return _master_json(db.get_job(job_id))
 
 
@@ -563,7 +626,13 @@ def delete_master(master_id: str):
     if db.count_active_shops_using_master(master_id):
         raise HTTPException(409, "a shop using this master is converting - try again when it has finished")
     db.delete_master(master_id)
+    audit.record("master_deleted", f"{row['brand']} / {row['master_filename']}", job_id=master_id)
     return {"deleted": master_id}
+
+
+def _live_row_label(master_id: str) -> str:
+    row = db.get_job(master_id) or {}
+    return f"{row.get('brand', '?')} / {row.get('master_filename', master_id)}"
 
 
 def _live_master(master_id: str) -> dict:
@@ -597,6 +666,7 @@ def update_master(master_id: str, payload: dict):
         fields["default_width"], fields["default_height"], fields["default_unit"] = size or (None, None, None)
     if fields:
         db.update_master(master_id, fields)
+        audit.record("master_edited", f"{_live_row_label(master_id)}", job_id=master_id, fields=sorted(fields))
     return _master_json(db.get_job(master_id))
 
 
@@ -612,6 +682,7 @@ async def replace_master_file(master_id: str, master: UploadFile = File(...)):
     await run_in_threadpool(_save_stream, master.file, tmp)
     tmp.replace(path)
     db.update_master(master_id, {"master_filename": master.filename})
+    audit.record("master_file_replaced", f"{row['brand']} / {master.filename}", job_id=master_id, was=row["master_filename"])
     _record_master_info(master_id, path)
     preview_path, preview_error = _extract_cdr_preview(path)
     db.set_job_preview(master_id, str(preview_path) if preview_path else None, preview_error)
@@ -801,6 +872,7 @@ def v2_delete_shop(shop_id: str):
     if row["status"] in ("queued", "converting"):
         raise HTTPException(409, "shop is converting")
     db.delete_shop(shop_id)
+    audit.record("shop_deleted", f"{row['name']} ({shop_id})")
     return {"deleted": shop_id}
 
 
@@ -1274,9 +1346,11 @@ def _enqueue_remote_convert(shop_id: str, user_id: int) -> None:
         db.set_shop_status(shop_id, "failed", error=problem)
         return
     master = Path(job["master_path"])
+    row = db.get_job((master_used or {}).get("job_id") or "")
+    core_major = int(row["core_version"]) if row and row.get("core_version") else None
     db.create_agent_job(uuid.uuid4().hex[:12], "convert", shop_id, user_id,
                         {"shop": job["shop"], "out_dir": job["out_dir"], "master_used": master_used,
-                         "master": {"path": str(master), "filename": master.name}})
+                         "master": {"path": str(master), "filename": master.name, "core_major": core_major}})
 
 
 def _finalize_agent_convert(job: dict, entry: dict) -> None:
@@ -1547,6 +1621,7 @@ def v2_delete_correction(shop_id: str):
     if not db.get_correction(shop_id):
         raise HTTPException(404, "No such correction")
     db.delete_correction(shop_id)
+    audit.record("correction_deleted", shop_id)
     return {"deleted": shop_id}
 
 
@@ -2272,6 +2347,9 @@ def _share_base(server: tuple | None) -> dict:
     return {"base": f"http://{host}:{port}", "local_only": False}  # NOSONAR - LAN share link on a local server
 
 
+HOSTED_SKIP = "WeTransfer is not used on the hosted server; this is a link served by the server"
+
+
 def _wt_worker(job_id: str, token: str, share: dict, skip_reason: str | None = None,
                sender_email: str | None = None) -> None:
     """Upload to WeTransfer; on ANY failure (or `skip_reason` - no Playwright, too big) make a server link instead, so
@@ -2331,8 +2409,9 @@ def _wt_worker(job_id: str, token: str, share: dict, skip_reason: str | None = N
         update(status="success", fallback_used=True, progress=100, step="done", wetransfer_error=reason,
                wetransfer_url=f"{share['base']}/api/shared/{shared['id']}/{asset_zip.ZIP_NAME}",
                local_only=share["local_only"], expires_at=shared["expires_at"],
-               message=f"WeTransfer automated link creation failed, so this is a download link served by this server "
-                       f"instead (kept {days:g} day{'' if days == 1 else 's'}). {where}")
+               message=(f"Download link served by this server (kept {days:g} day{'' if days == 1 else 's'}). {where}" if reason == HOSTED_SKIP else
+                        f"WeTransfer automated link creation failed, so this is a download link served by this server "
+                        f"instead (kept {days:g} day{'' if days == 1 else 's'}). {where}"))
     finally:
         with _wt_lock:
             _wt_codes.pop(job_id, None)
@@ -2362,14 +2441,17 @@ def export_wetransfer(body: WeTransferRequest, request: Request):
     email = (body.sender_email or "").strip() or None
     try:
         from . import wetransfer_uploader as wt_check
-        if email is not None and not wt_check.valid_email(email):
+        if email is not None and not _remote_mode() and not wt_check.valid_email(email):
             raise HTTPException(422, "that sender e-mail address does not look valid")
     except ImportError:
         pass
     path = _zip_path(token)
     size = path.stat().st_size
-    skip = None if email else "no sender e-mail was given - WeTransfer requires one for a link transfer"
+    hosted = _remote_mode()                 # the hosted server has no Edge/Playwright: always the server link
+    skip = HOSTED_SKIP if hosted else (None if email else "no sender e-mail was given - WeTransfer requires one for a link transfer")
     try:
+        if hosted:
+            raise ImportError("hosted")
         from . import wetransfer_uploader as wt
         wt.check_available()
         if skip is None and size > wt.max_bytes():
@@ -2874,6 +2956,7 @@ def font_substitute(body: FontSubstituteRequest, request: Request):
         raise HTTPException(422, f"{wanted!r} is not installed on this server - CorelDRAW would ignore it; pick an installed font")
     if body.is_permanent:
         db.set_font_substitution(body.shop_id, original, installed)
+        audit.record("font_substituted", f"{original} -> {installed}", shop_id=body.shop_id)
     return {"saved": body.is_permanent, "original_font": original, "substitute_font": installed,
             "substitutions": db.get_font_substitutions(body.shop_id)}
 

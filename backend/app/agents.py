@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
-from . import auth, db
+from . import audit, auth, db
 
 ONLINE_S = 60                 # an agent that called in within this many seconds is "online"
 CODE_TTL_S = 600
@@ -117,7 +117,8 @@ def agent_config(request: Request):
     engine = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto")).name
     required = os.environ.get("SIGNAGE_AGENT_REQUIRED", "").strip().lower() in ("1", "true", "yes") or engine != "corel"
     return {"agent_required": required, "download_available": latest is not None, "latest_version": latest["version"] if latest else None,
-            "size": latest["size"] if latest else None, "engine": engine}
+            "size": latest["size"] if latest else None, "engine": engine,
+            "share_only": os.environ.get("SIGNAGE_ENGINE", "auto").strip().lower() == "remote"}
 
 
 @router.post("/api/agent/pairing-code")
@@ -147,6 +148,7 @@ def revoke(agent_id: str, request: Request):
     if a["user_id"] != user["id"] and user["role"] != "admin":
         raise HTTPException(403, "this agent belongs to another user")
     db.revoke_agent(agent_id)
+    audit.record("agent_revoked", f"{a['name']} ({agent_id})")
     return {"revoked": agent_id}
 
 
@@ -228,6 +230,8 @@ def register(body: RegisterBody, request: Request):
     agent_id, token = uuid.uuid4().hex[:12], secrets.token_urlsafe(32)
     name = (body.hostname or "Windows PC").strip()[:60]
     db.create_agent(agent_id, user_id, name, _hash(token), body.version or None, json.dumps(body.corel))
+    owner = db.get_user(user_id) or {}
+    audit.record("agent_paired", f"{name} ({agent_id})", user=owner or None, version=body.version)
     return {"agent_id": agent_id, "token": token, "name": name}
 
 
@@ -354,7 +358,7 @@ def claim_jobs(body: ClaimBody, request: Request):
                 missing = "the master file is missing on the server"
             else:
                 entry.update(shop=payload["shop"], master={"filename": payload["master"]["filename"], "key": _master_key(master),
-                                                           "size": master.stat().st_size})
+                                                           "size": master.stat().st_size, "core_major": payload["master"].get("core_major")})
         else:
             inputs = {}
             for name, src in (payload.get("inputs") or {}).items():
