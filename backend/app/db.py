@@ -794,6 +794,37 @@ def list_users() -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def designer_usage(since: float) -> list[dict]:
+    """Every account with what it did since `since` (agent jobs: boards converted / exported / failed) and when it was last seen."""
+    now = time.time()
+    out = []
+    with _conn() as conn:
+        for u in conn.execute(f"SELECT {_USER_COLS} FROM users ORDER BY id").fetchall():
+            uid = u["id"]
+            seen = conn.execute("SELECT MAX(CASE WHEN action = 'login' THEN at END) AS last_login, MAX(at) AS last_active, "
+                                "COALESCE(SUM(CASE WHEN action = 'login' AND at >= ? THEN 1 ELSE 0 END), 0) AS logins "
+                                "FROM audit_log WHERE user_id = ?", (since, uid)).fetchone()
+            jobs = {(r["kind"], r["state"]): r["n"] for r in conn.execute(
+                "SELECT kind, state, COUNT(*) AS n FROM agent_jobs WHERE user_id = ? AND created_at >= ? GROUP BY kind, state", (uid, since))}
+            last_job = conn.execute("SELECT MAX(created_at) FROM agent_jobs WHERE user_id = ?", (uid,)).fetchone()[0]
+            signed_in = conn.execute("SELECT COUNT(*) FROM sessions WHERE user_id = ? AND expires_at > ?", (uid, now)).fetchone()[0]
+            out.append({**dict(u), "last_login": seen["last_login"], "last_active": max(filter(None, [seen["last_active"], last_job]), default=None),
+                        "logins": seen["logins"], "signed_in": bool(signed_in),
+                        "converted": jobs.get(("convert", "done"), 0), "exported": jobs.get(("export", "done"), 0),
+                        "failed": sum(n for (k, s), n in jobs.items() if s == "failed")})
+    return out
+
+
+def delete_user(user_id: int) -> None:
+    """Remove the account for good: sessions go, its PCs are disconnected, its waiting jobs fail. The activity log keeps the e-mail."""
+    with _conn() as conn:
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("UPDATE agents SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL", (time.time(), user_id))
+        conn.execute("UPDATE agent_jobs SET state = 'failed', error = 'the account was deleted' WHERE user_id = ? AND state IN ('queued', 'claimed', 'running')", (user_id,))
+        conn.execute("DELETE FROM agent_pairing_codes WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+
 def count_active_admins() -> int:
     with _conn() as conn:
         return conn.execute("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1").fetchone()["n"]

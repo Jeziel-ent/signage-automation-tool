@@ -273,6 +273,20 @@ def create_user(body: UserCreate):
     return {"user": _public(user)}
 
 
+@router.delete("/api/users/{user_id}", responses={404: {"description": "Not found"}, 409: {"description": "Not allowed"}})
+def delete_user(user_id: int, admin: dict = Depends(require_admin)):
+    target = db.get_user(user_id)
+    if not target:
+        raise HTTPException(404, "user not found")
+    if target["id"] == admin["id"]:
+        raise HTTPException(409, "you cannot delete the account you are signed in with")
+    if target["role"] == "admin" and target["active"] and db.count_active_admins() <= 1:
+        raise HTTPException(409, "this is the last active administrator")
+    db.delete_user(user_id)
+    audit.record("user_deleted", target["email"], role=target["role"])
+    return {"deleted": target["email"]}
+
+
 @router.patch("/api/users/{user_id}", responses={404: {"description": "Not found"}, 409: {"description": "Last administrator"},
                                                  422: {"description": "Invalid input"}})
 def update_user(user_id: int, body: UserUpdate, admin: dict = Depends(require_admin)):

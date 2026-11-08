@@ -1,16 +1,15 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
-import { NavLink, Route, Routes } from "react-router-dom";
-import { ChevronLeft, ChevronRight, History, Layers, LogOut, MonitorCheck, Printer, Server, ShieldCheck, Sparkles, UserCog, Workflow } from "lucide-react";
+import { NavLink, Navigate, Route, Routes } from "react-router-dom";
+import { ChevronLeft, ChevronRight, History, Layers, LogOut, MonitorCheck, Printer, ShieldCheck, Sparkles, Workflow } from "lucide-react";
 import Automation from "./pages/Automation.jsx";
 import { MasterProvider } from "./context/MasterContext.jsx";
 import RecentlyGenerated from "./pages/RecentlyGenerated.jsx";
 import CreatePrintFile from "./pages/CreatePrintFile.jsx";
 import Corrections from "./pages/Corrections.jsx";
 import Masters from "./pages/Masters.jsx";
-import Users from "./pages/Users.jsx";
 import AgentPage from "./pages/Agent.jsx";
-import ServerPage from "./pages/Server.jsx";
+import AdminPage from "./pages/Admin.jsx";
 import AgentBanner from "./components/AgentBanner.jsx";
 import { AgentProvider, useAgent } from "./context/AgentContext.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
@@ -62,10 +61,6 @@ const NAV = [
   { to: "/corrections", end: false, label: "Learned corrections", Icon: ShieldCheck },
   { to: "/agent", end: false, label: "Agent", Icon: MonitorCheck, dot: true },
 ];
-const ADMIN_NAV = [
-  { to: "/users", end: false, label: "Users", Icon: UserCog },
-  { to: "/server", end: false, label: "Server", Icon: Server },
-];
 
 const COLLAPSE_KEY = "signage.sidebarCollapsed";
 function readCollapsed() {
@@ -78,7 +73,7 @@ function readCollapsed() {
 
 // Full-viewport workspace: the sidebar is pinned (never scrolls) and only the main pane scrolls.
 function Shell() {
-  const { user, authEnabled, isAdmin, logout } = useAuth();
+  const { user, authEnabled, logout } = useAuth();
   const locked = authEnabled && !user; // signing in happens on the launch screen; until then nothing else loads (no API calls)
   const [collapsed, setCollapsed] = useState(readCollapsed);
   const [showSplash, setShowSplash] = useState(true); // always: no storage check, so it appears on every page load
@@ -107,7 +102,7 @@ function Shell() {
               <span className="sidebar-label">Signage Automation</span>
             </div>
             <nav>
-              {[...NAV, ...(authEnabled && isAdmin ? ADMIN_NAV : [])].map(({ to, end, label, Icon, dot }) => (
+              {NAV.map(({ to, end, label, Icon, dot }) => (
                 <NavLink
                   key={to}
                   to={to}
@@ -158,9 +153,10 @@ function Shell() {
                 <Route path="/recent" element={<RecentlyGenerated />} />
                 <Route path="/print-file" element={<CreatePrintFile />} />
                 <Route path="/corrections" element={<Corrections />} />
-                <Route path="/users" element={<Users />} />
+                <Route path="/admin" element={<AdminPage />} />
+                <Route path="/users" element={<Navigate to="/admin" replace />} />
                 <Route path="/agent" element={<AgentPage />} />
-                <Route path="/server" element={<ServerPage />} />
+                <Route path="/server" element={<Navigate to="/admin" replace />} />
               </Routes>
             </MasterProvider>
           </main>

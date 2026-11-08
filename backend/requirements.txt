@@ -19,3 +19,5 @@ scipy>=1.11
 # "Generate WeTransfer Link" (app/wetransfer_uploader.py) drives the installed Microsoft Edge through Playwright; imported
 # lazily - without it the server starts and only that route answers 503. No `playwright install` needed (uses Edge).
 playwright>=1.47
+psutil>=5.9
+boto3>=1.34

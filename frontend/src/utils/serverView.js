@@ -15,7 +15,7 @@ const ACTIONS = {
   master_uploaded: "uploaded the master", master_edited: "edited the master", master_file_replaced: "replaced the file of the master",
   master_deleted: "deleted the master", correction_deleted: "deleted the learned correction", shop_deleted: "deleted the shop",
   agent_paired: "connected the PC", agent_revoked: "disconnected the PC", font_substituted: "set a font replacement",
-  cleanup: "cleaned up the server disk",
+  cleanup: "cleaned up the server disk", user_deleted: "deleted the account",
 };
 
 export const actionLabel = (a) => ACTIONS[a] || a.replaceAll("_", " ");

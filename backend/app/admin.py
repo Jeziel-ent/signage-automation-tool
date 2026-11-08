@@ -7,7 +7,9 @@ import shutil
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from . import alerts, audit, auth, db, retention
+import time
+
+from . import agents, alerts, audit, auth, db, retention, spaces, sysmetrics
 
 router = APIRouter(dependencies=[Depends(auth.require_admin)])
 
@@ -60,6 +62,41 @@ def storage():
     free = shutil.disk_usage(_data()).free
     return {"bytes": report, "total_bytes": sum(report.values()), "free_bytes": free, "retention_days": days,
             "cleanable": retention.summarize(plan)}
+
+
+@router.get("/api/admin/health")
+def health():
+    """Live strength of the server: CPU, memory, disk, load, uptime, and how busy the job queue is."""
+    snap = sysmetrics.snapshot(_data())
+    with db._conn() as conn:
+        queued = conn.execute("SELECT COUNT(*) FROM agent_jobs WHERE state = 'queued'").fetchone()[0]
+        running = conn.execute("SELECT COUNT(*) FROM agent_jobs WHERE state IN ('claimed', 'running')").fetchone()[0]
+        failed_day = conn.execute("SELECT COUNT(*) FROM agent_jobs WHERE state = 'failed' AND created_at >= ?", (time.time() - 86400,)).fetchone()[0]
+    online = [a for a in db.list_agents() if agents._agent_json(a)["online"]]
+    db_path = db.DB_PATH
+    return {**snap, "queue": {"queued": queued, "running": running, "failed_24h": failed_day}, "agents_online": len(online),
+            "agents_total": len(db.list_agents()), "database_bytes": db_path.stat().st_size if db_path.exists() else 0,
+            "engine": os.environ.get("SIGNAGE_ENGINE", "auto")}
+
+
+@router.get("/api/admin/spaces")
+def spaces_usage(refresh: bool = False):
+    return spaces.usage(force=refresh)
+
+
+@router.get("/api/admin/designers")
+def designers(days: int = Query(30, ge=1, le=365)):
+    """Every account with its usage over the last `days`, and its connected PCs."""
+    rows = db.designer_usage(time.time() - days * 86400)
+    pcs: dict[int, list] = {}
+    for a in db.list_agents():
+        j = agents._agent_json(a)
+        pcs.setdefault(a["user_id"], []).append({"name": j["name"], "online": j["online"], "last_seen": j["last_seen"], "version": j["version"],
+                                                 "corel": [c.get("major") for c in j["corel"]]})
+    for r in rows:
+        r["pcs"] = pcs.get(r["id"], [])
+        r["active"] = bool(r["active"])
+    return {"days": days, "users": rows}
 
 
 class CleanupBody(BaseModel):

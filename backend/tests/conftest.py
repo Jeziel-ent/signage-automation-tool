@@ -24,9 +24,12 @@ def _login_off_by_default(monkeypatch):
     """The API needs a login (app/auth.py); the existing API tests exercise routes, not accounts, so they run with it off.
     test_auth.py switches it back on."""
     monkeypatch.setenv("SIGNAGE_AUTH", "off")
-    from app import alerts, ratelimit               # in-memory state must not leak from one test into the next
+    from app import alerts, ratelimit, spaces       # in-memory state must not leak from one test into the next
     ratelimit.reset()
     alerts.reset()
+    spaces.reset()
+    for name in ("SIGNAGE_SPACES_KEY", "SIGNAGE_SPACES_SECRET", "SIGNAGE_SPACES_BUCKET", "SIGNAGE_SPACES_REGION", "SIGNAGE_SPACES_QUOTA_GB"):
+        monkeypatch.delenv(name, raising=False)
     for name in ("SIGNAGE_ALERT_WEBHOOK", "SIGNAGE_RETENTION_DAYS", "SIGNAGE_RATE_LIMIT_PER_MIN", "SIGNAGE_RATE_LIMIT_UPLOADS_PER_MIN",
                  "SIGNAGE_RATE_LIMIT_AGENT_PER_MIN", "SIGNAGE_RATE_LIMIT_PAIRING_PER_MIN"):
         monkeypatch.delenv(name, raising=False)

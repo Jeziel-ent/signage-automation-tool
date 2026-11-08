@@ -53,7 +53,8 @@ Restore: `docker compose stop app`, copy a backup over `/data/signage.db` in the
 
 ## Running it safely (built in, all optional settings in `deploy/server.env`)
 
-- **Server page** (administrator, sidebar "Server"): problems (database, disk, designers waiting), disk use, the activity log, and "Clean up old files".
+- **Admin page** (administrators only, open `https://<your domain>/admin` - it is not in the sidebar; anyone else is sent to the home page): server health (CPU, memory, disk, queue), every designer with their usage (sign-ins, boards, exports, failures, PCs online), create / disable / delete a user, Spaces storage used, problems, disk use, the activity log and "Clean up old files".
+- **Spaces usage** on that page: set `SIGNAGE_SPACES_KEY`, `SIGNAGE_SPACES_SECRET`, `SIGNAGE_SPACES_BUCKET` (+ `SIGNAGE_SPACES_REGION`, default `sgp1`, and `SIGNAGE_SPACES_QUOTA_GB` for a percentage); it only reads the bucket, counted at most every 10 minutes.
 - **Alerts**: `SIGNAGE_ALERT_WEBHOOK=<Slack/Teams/Discord incoming-webhook URL>` posts when the database or disk is in trouble, a designer waits too long, or the server raises an unhandled error (one message per problem per hour).
 - **Clean-up**: temporary files (>1 day) and debug captures (>14 days) always; finished boards older than `SIGNAGE_RETENTION_DAYS` (unset = keep forever). Masters, brands and the database are never removed.
 - **Activity log** kept `SIGNAGE_AUDIT_DAYS` (default 365).

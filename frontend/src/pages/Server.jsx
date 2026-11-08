@@ -11,7 +11,7 @@ const PAGE = 50;
 const fmtTime = (t) => new Date(t * 1000).toLocaleString(undefined, { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
 
 /** Administrator page: problems on right now, what fills the disk (and a clean-up), and the audit log. */
-export default function ServerPage() {
+export default function ServerPage({ embedded = false }) {
   const { isAdmin } = useAuth();
   const [status, setStatus] = useState(null);
   const [storage, setStorage] = useState(null);
@@ -64,7 +64,7 @@ export default function ServerPage() {
   const problems = status?.problems || [];
 
   return (
-    <div className="srv-page">
+    <div className={"srv-page" + (embedded ? " embedded" : "")}>
       <h2>Server</h2>
 
       <section className={"ws-card srv-card " + (problems.length ? "bad" : "ok")} aria-live="polite">
