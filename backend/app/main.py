@@ -2908,10 +2908,66 @@ def api_fonts(request: Request, refresh: bool = False):
 _FONT_MEDIA = {".ttf": "font/ttf", ".otf": "font/otf", ".ttc": "font/collection"}
 
 
+FONT_CACHE = DATA / "agent_fonts"                       # font files fetched from designers' PCs (agent job font_files), shared by every board
+_FONT_EXTS = (".ttf", ".otf", ".ttc")
+_FONT_MISSING_S = 3600                                  # a family no PC could supply is not asked for again for an hour
+
+
+def _font_key(family: str) -> str:
+    import hashlib
+
+    return hashlib.sha1(family.strip().lower().encode()).hexdigest()[:20]
+
+
+def _cached_font(family: str) -> Path | None:
+    key = _font_key(family)
+    return next((p for ext in _FONT_EXTS if (p := FONT_CACHE / f"{key}{ext}").is_file()), None)
+
+
+def _font_recently_missing(family: str) -> bool:
+    marker = FONT_CACHE / f"{_font_key(family)}.missing"
+    return marker.is_file() and time.time() - marker.stat().st_mtime < _FONT_MISSING_S
+
+
+def _finalize_agent_font_files(job: dict, entry: dict) -> None:
+    """The agent sent the font files it found (family -> file name) and listed the families it has no file for: cache the files, remember the
+    misses so the editor does not ask again and again."""
+    payload = json.loads(job["payload_json"])
+    out_dir = Path(payload["out_dir"])
+    families = payload["spec"]["families"]
+    FONT_CACHE.mkdir(parents=True, exist_ok=True)
+    found: dict = {}
+    if entry.get("status") == "done":
+        found = entry["result"].get("files") or {}
+        for family, name in found.items():
+            src = out_dir / name
+            if src.is_file() and src.suffix.lower() in _FONT_EXTS and src.stat().st_size > 0:
+                shutil.move(str(src), str(FONT_CACHE / f"{_font_key(family)}{src.suffix.lower()}"))
+    for family in families:
+        if _cached_font(family) is None:
+            (FONT_CACHE / f"{_font_key(family)}.missing").write_text(family, encoding="utf-8")
+    shutil.rmtree(out_dir, ignore_errors=True)
+
+
+agents.register_finalizer("font_files", _finalize_agent_font_files)
+
+
 @app.get("/api/fonts/file", responses={404: {"description": "Not found"}})
-def api_font_file(family: str):
-    """The installed font file for `family`, so the editor's live text renders in the board's real font on any browser."""
-    path = None if _remote_mode() else fonts.font_file(family)      # through an agent the font file stays on the designer's PC
+def api_font_file(family: str, request: Request):
+    """The installed font file for `family`, so the editor's live text renders in the board's real font on any browser.
+    Through an agent the file is on the designer's PC: the first request queues a job that fetches it (answer 404 with `X-Font-Pending: 1`,
+    the editor asks again in a couple of seconds); once cached it is served like any other."""
+    if _remote_mode():
+        cached = _cached_font(family)
+        if cached:
+            return FileResponse(cached, media_type=_FONT_MEDIA.get(cached.suffix.lower(), "application/octet-stream"),
+                                headers={"Cache-Control": "public, max-age=86400"})
+        if _font_recently_missing(family) or not family.strip() or len(family) > 120:
+            raise HTTPException(404, f"font {family!r} could not be fetched from your PC")
+        user = getattr(request.state, "user", None) or {"id": 0}
+        db.queue_font_request(user["id"], family.strip(), str(FONT_CACHE / "_incoming"))
+        return JSONResponse({"detail": f"font {family!r} is being fetched from your PC"}, status_code=404, headers={"X-Font-Pending": "1"})
+    path = fonts.font_file(family)
     if path is None:
         raise HTTPException(404, f"font {family!r} is not installed on the server")
     return FileResponse(path, media_type=_FONT_MEDIA.get(path.suffix.lower(), "application/octet-stream"),

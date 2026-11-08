@@ -139,3 +139,32 @@ def test_the_agent_reports_its_pcs_fonts_once_and_again_when_they_change(world, 
     beat_until(2)
     assert len(sent) == 2 and sent[0] != sent[1]
     assert world.web.get("/api/v2/fonts").json()["all_fonts"] == ["Arial", "Nirmala UI", "Amaranth"]
+
+
+def test_the_agent_hands_over_the_font_files_the_editor_asks_for(world, monkeypatch, tmp_path):
+    arial = tmp_path / "ARIAL.TTF"
+    arial.write_bytes(b"REAL-ARIAL-BYTES")
+    monkeypatch.setattr(engine_bridge, "font_file", lambda family: arial if family == "Arial" else None)
+    agent = _make_agent(world)
+    runner = JobRunner(agent, mock=True)
+    first = world.web.get("/api/fonts/file", params={"family": "Arial"})
+    assert first.status_code == 404 and first.headers["X-Font-Pending"] == "1"      # the site is fetching it from this PC
+    assert world.web.get("/api/fonts/file", params={"family": "Papyrus"}).headers["X-Font-Pending"] == "1"
+    assert runner.poll_once() == 1                                                  # ONE job for both families
+    got = world.web.get("/api/fonts/file", params={"family": "Arial"})
+    assert got.status_code == 200 and got.content == b"REAL-ARIAL-BYTES"           # the PC's own file, byte for byte
+    none = world.web.get("/api/fonts/file", params={"family": "Papyrus"})
+    assert none.status_code == 404 and "X-Font-Pending" not in none.headers        # this PC has no such font: the editor stops waiting
+
+
+def test_a_font_file_that_is_too_large_is_not_sent(world, monkeypatch, tmp_path):
+    from signage_agent import jobs
+
+    big = tmp_path / "HUGE.TTF"
+    big.write_bytes(b"x" * 2048)
+    monkeypatch.setattr(jobs, "MAX_FONT_BYTES", 1024)
+    monkeypatch.setattr(engine_bridge, "font_file", lambda family: big)
+    agent = _make_agent(world)
+    world.web.get("/api/fonts/file", params={"family": "Huge"})
+    JobRunner(agent, mock=True).poll_once()
+    assert world.web.get("/api/fonts/file", params={"family": "Huge"}).status_code == 404

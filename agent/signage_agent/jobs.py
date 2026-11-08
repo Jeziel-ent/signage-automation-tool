@@ -21,6 +21,7 @@ KEEPALIVE_S = 20
 PUMP_S = 1.5
 CACHE_KEEP = 15            # masters kept for the next conversion (a master is 100-350 MB)
 UPLOAD_TRIES = 3
+MAX_FONT_BYTES = 40 * 1024 * 1024        # a font file bigger than this (a few CJK fonts) is not sent
 
 
 class JobRunner:
@@ -161,6 +162,8 @@ class JobRunner:
                 self._scene_build(job, inputs, work, pump)
             elif job["kind"] == "export":
                 self._export(job, inputs, work, pump)
+            elif job["kind"] == "font_files":
+                self._font_files(job)
             else:
                 self._fail(job, f"this agent cannot do {job['kind']!r} jobs - update the agent")
         except Exception as e:  # noqa: BLE001 - whatever went wrong is the job's failure, with the reason
@@ -218,6 +221,18 @@ class JobRunner:
                 raise RuntimeError(entry.get("error", "export failed"))
             report = entry["report"]
         self._send_files(job, {kind: out_dir / name for kind, name in (report.get("files") or {}).items()}, report)
+
+    def _font_files(self, job: dict) -> None:
+        """The editor asked for the font FILES of some families (to draw text in the board's real font): send the ones this PC has."""
+        found: dict[str, Path] = {}
+        missing: list[str] = []
+        for family in (job.get("spec") or {}).get("families") or []:
+            path = engine_bridge.font_file(family)
+            if path is not None and Path(path).is_file() and Path(path).stat().st_size <= MAX_FONT_BYTES:
+                found[family] = Path(path)
+            else:
+                missing.append(family)
+        self._send_files(job, found, {"missing": missing})
 
     def _send_files(self, job: dict, files: dict[str, Path], report: dict) -> None:
         """Upload the named files of a finished scene build / export, then report it done."""

@@ -3,6 +3,7 @@ import { AlignCenter, AlignJustify, AlignLeft, AlignRight } from "lucide-react";
 import { CHAR_SPACING_RANGE, LINE_SPACING_RANGE, buildIndex } from "./ops.js";
 import { insidePowerclip, unionBox } from "./model.js";
 import { fromUnit, toUnit, trimZeros, UNITS } from "./units.js";
+import FontCombobox from "./FontCombobox.jsx";
 
 const FONTS = ["Arial", "Nirmala UI", "Yu Gothic Medium", "Segoe UI", "Times New Roman", "Calibri", "Verdana"];
 
@@ -215,25 +216,18 @@ function TextFields({ node, locked, onCommit, fonts, onTextPreview }) {
       <div className="ed-grid2">
         <label className="ed-field">
           <span>Font</span>
-          <input list="ed-fonts" value={font} disabled={locked} onChange={(e) => {
-            const v = e.target.value;
+          {/* every font of the designer's PC (what CorelDRAW offers), each drawn in its own face; a pick is checked and committed at once */}
+          <FontCombobox fonts={fonts?.available ? fonts.fonts : FONTS} value={font} disabled={locked} label="Font" onChange={(v) => {
             setFont(v);
-            // Immediate, uncommitted live preview - the canvas can't re-typeset CorelDRAW's
-            // own render, but it can overlay the shape's text in the chosen font (an actual
-            // SVG <text> with that font-family) so a pick is seen right away, not only after
-            // blur commits the real `text` op.
-            preview({ font: v });
-          }} onBlur={() => {
             clearPreview();
-            if (!font || font === t.font) return setFontError("");
-            if (!installed(font)) {
-              setFontError(`"${font}" is not installed on this machine - CorelDRAW would silently ignore it and keep the old font. Pick an installed font.`);
+            if (!v || v === t.font) return setFontError("");
+            if (!installed(v)) {
+              setFontError(`"${v}" is not installed on this machine - CorelDRAW would silently ignore it and keep the old font. Pick an installed font.`);
               return;
             }
             setFontError("");
-            push({ font });
-          }} onKeyDown={(e) => e.key === "Enter" && e.currentTarget.blur()} />
-          <datalist id="ed-fonts">{(fonts?.available ? fonts.fonts : FONTS).map((n) => <option key={n} value={n} />)}</datalist>
+            push({ font: v });
+          }} />
         </label>
         <label className="ed-field">
           <span>Size pt</span>

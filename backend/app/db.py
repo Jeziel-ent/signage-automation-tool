@@ -1005,6 +1005,32 @@ def expire_agent_jobs(now: float | None = None) -> list[dict]:
     return changed
 
 
+def queue_font_request(user_id: int, family: str, incoming_base: str) -> str:
+    """Ask the user's agent for the font FILE of `family` (the editor needs it to draw text in the board's real font). A family already
+    asked for - queued, claimed or running - is not asked twice, and families asked for close together share ONE job (the agent polls every
+    few seconds; one job per family would take that long each). Returns the job id."""
+    import os
+    import uuid
+
+    with _conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for row in conn.execute("SELECT id, state, payload_json FROM agent_jobs WHERE kind = 'font_files' AND user_id = ?"
+                                " AND state IN ('queued', 'claimed', 'running') ORDER BY created_at", (user_id,)).fetchall():
+            payload = json.loads(row["payload_json"])
+            families = payload["spec"]["families"]
+            if family in families:
+                return row["id"]
+            if row["state"] == "queued":
+                families.append(family)
+                conn.execute("UPDATE agent_jobs SET payload_json = ? WHERE id = ?", (json.dumps(payload), row["id"]))
+                return row["id"]
+        job_id = uuid.uuid4().hex[:12]
+        payload = {"spec": {"families": [family]}, "out_dir": os.path.join(incoming_base, job_id)}
+        conn.execute("INSERT INTO agent_jobs (id, kind, user_id, payload_json, created_at) VALUES (?, 'font_files', ?, ?, ?)",
+                     (job_id, user_id, json.dumps(payload), time.time()))
+    return job_id
+
+
 def fail_active_agent_jobs(shop_id: str, reason: str) -> int:
     with _conn() as conn:
         return conn.execute("UPDATE agent_jobs SET state = 'failed', error = ?, finished_at = ?, lease_until = NULL"

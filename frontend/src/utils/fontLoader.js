@@ -167,13 +167,37 @@ function serverFamilies() {
   return serverList;
 }
 
+/**
+ * The font file from the site, as bytes (or null). Through a Windows agent the file is on the designer's PC: the first request makes the site
+ * fetch it (404 + `X-Font-Pending: 1`), so ask again every `waitMs` for up to `tries` times. A plain 404 means there is no such font.
+ */
+export async function fetchServerFont(url, { fetchImpl = (u) => fetch(u), sleep = (ms) => new Promise((r) => setTimeout(r, ms)), tries = 15, waitMs = 2000 } = {}) {
+  for (let i = 0; i < tries; i++) {
+    let r;
+    try {
+      r = await fetchImpl(url);
+    } catch {
+      return null;
+    }
+    if (r.ok) return r.arrayBuffer();
+    if (r.status === 404 && r.headers?.get?.("X-Font-Pending") === "1") {
+      await sleep(waitMs);
+      continue;
+    }
+    return null;
+  }
+  return null;
+}
+
 async function fromServer(family) {
   if (typeof FontFace === "undefined") return false;
   const list = await serverFamilies();
   if (list && !list.has(family.toLowerCase())) return false; // not installed there: skip the request (and its console 404)
   try {
-    const face = new FontFace(family, `url("${serverFontUrl(family)}")`);
-    await face.load(); // rejects on 404 or a file the browser can't parse
+    const data = await fetchServerFont(serverFontUrl(family));
+    if (!data) return false;
+    const face = new FontFace(family, data);
+    await face.load(); // rejects on a file the browser can't parse
     document.fonts.add(face);
     return true;
   } catch {

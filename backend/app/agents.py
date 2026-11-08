@@ -316,7 +316,7 @@ def _master_key(path: Path) -> str:
     return f"{st.st_size}-{int(st.st_mtime)}"
 
 
-KINDS = ("convert", "scene_build", "export")
+KINDS = ("convert", "scene_build", "export", "font_files")
 
 
 class ClaimBody(BaseModel):

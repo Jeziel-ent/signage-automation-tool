@@ -78,7 +78,7 @@ def download_exe(server: str, token: str, dest: Path, expected_sha256: str, expe
 
 # ------------------------------------------------------------------ the job queue
 
-KINDS = ["convert", "scene_build", "export"]       # what this agent can do (an older agent only asked for "convert")
+KINDS = ["convert", "scene_build", "export", "font_files"]       # what this agent can do (an older agent only asked for "convert")
 
 
 def claim_jobs(server: str, token: str, limit: int = 5, kinds: list[str] | None = None) -> list[dict]:

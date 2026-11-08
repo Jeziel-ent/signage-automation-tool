@@ -47,9 +47,74 @@ def test_another_users_pc_fonts_are_not_used(world):
     assert world.boss.get("/api/v2/fonts").json()["available"] is False
 
 
-def test_font_files_stay_on_the_pc(world):
-    _send(_agent(world))
-    assert world.dee.get("/api/fonts/file?family=Arial").status_code == 404      # the editor falls back to web fonts
+ALL = ["convert", "scene_build", "export", "font_files"]
+
+
+def _font_job(agent):
+    jobs = agent.claim(kinds=ALL)
+    assert len(jobs) == 1 and jobs[0]["kind"] == "font_files"
+    return jobs[0]
+
+
+def test_a_font_file_is_fetched_from_the_pc_on_first_request_then_served(world):
+    a = _agent(world)
+    first = world.dee.get("/api/fonts/file?family=Nirmala%20UI")
+    assert first.status_code == 404 and first.headers["X-Font-Pending"] == "1"           # being fetched: the editor asks again
+    assert world.dee.get("/api/fonts/file?family=Amaranth").headers["X-Font-Pending"] == "1"
+    job = _font_job(a)                                                                    # both families share ONE job
+    assert job["spec"]["families"] == ["Nirmala UI", "Amaranth"] and job["inputs"] == {}
+    assert a.upload(job["id"], "nirmala.ttf", b"TTF-BYTES").status_code == 200
+    done = a.result(job["id"], status="done", files={"Nirmala UI": "nirmala.ttf"}, report={"missing": ["Amaranth"]})
+    assert done.status_code == 200
+    ok = world.dee.get("/api/fonts/file?family=nirmala%20ui")                             # any spelling of the family name
+    assert ok.status_code == 200 and ok.content == b"TTF-BYTES" and ok.headers["content-type"] == "font/ttf"
+    assert "max-age" in ok.headers["cache-control"]
+    gone = world.dee.get("/api/fonts/file?family=Amaranth")
+    assert gone.status_code == 404 and "X-Font-Pending" not in gone.headers               # no PC has it: do not wait, do not ask again
+    assert a.claim(kinds=ALL) == []
+
+
+def test_a_family_already_being_fetched_is_not_asked_for_twice(world):
+    a = _agent(world)
+    world.dee.get("/api/fonts/file?family=Arial")
+    job = _font_job(a)                                                                    # claimed: running on the PC now
+    world.dee.get("/api/fonts/file?family=Arial")
+    world.dee.get("/api/fonts/file?family=Arial")
+    assert a.claim(kinds=ALL) == []
+    assert job["spec"]["families"] == ["Arial"]
+
+
+def test_a_family_asked_for_while_a_job_runs_gets_its_own_job(world):
+    a = _agent(world)
+    world.dee.get("/api/fonts/file?family=Arial")
+    _font_job(a)
+    world.dee.get("/api/fonts/file?family=Calibri")
+    assert _font_job(a)["spec"]["families"] == ["Calibri"]
+
+
+def test_an_older_agent_is_not_given_font_jobs(world):
+    a = _agent(world)
+    world.dee.get("/api/fonts/file?family=Arial")
+    assert a.claim() == []                                                                # default kinds = convert only
+    assert len(a.claim(kinds=ALL)) == 1
+
+
+def test_a_failed_font_job_marks_the_families_missing_for_a_while(world):
+    a = _agent(world)
+    world.dee.get("/api/fonts/file?family=Papyrus")
+    job = _font_job(a)
+    a.result(job["id"], status="error", error="the PC could not read its fonts")
+    r = world.dee.get("/api/fonts/file?family=Papyrus")
+    assert r.status_code == 404 and "X-Font-Pending" not in r.headers
+    assert a.claim(kinds=ALL) == []
+
+
+def test_a_font_name_cannot_reach_other_files(world):
+    _agent(world)
+    for evil in ("../../signage.db", "a" * 200, "  "):
+        r = world.dee.get("/api/fonts/file", params={"family": evil})
+        assert r.status_code == 404                                   # never a file: the cache is keyed by a hash of the name
+    assert not [p for p in world.main.FONT_CACHE.glob("*") if ".." in p.name] if world.main.FONT_CACHE.exists() else True
 
 
 def test_a_missing_font_choice_is_checked_against_the_pcs_fonts(world):
