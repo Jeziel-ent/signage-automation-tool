@@ -55,6 +55,12 @@ box's middle. Verified LIVE (CorelDRAW 27, the real board's 26 ops, scratch outp
 editor screenshot, verification ok (49 objects). Exports run on the AGENT in remote mode: needs agent 0.3.6. A Save Changes with an unchanged
 op list reuses the old export - use the row's Download icon for a fresh one.
 
+**Follow-up (2026-11-13, agent 0.3.7):** the designer still got the old layout because (1) Save Changes with an unchanged op list reused the
+export agent 0.3.5 had made - exports now carry `report.replay_version` (`export_replay.REPLAY_VERSION` = 2) and `editor_publish` never reuses
+an older one; bump it whenever the replay draws the same ops differently; (2) Recently generated's CDR / PDF / PNG links served the CONVERSION
+files - `/api/v2/shops/{id}/files/{name}` now gives the edited export's file when the current edits were exported (`_single_sources`, same rule
+as the row's Download and the ZIP). Tests in `test_publish.py`.
+
 ## Admin page (2026-11-08)
 
 `/admin` (`pages/Admin.jsx`, `utils/adminView.js`) - administrators only, NOT in the sidebar (a designer who types it is sent to `/`; `/users` and `/server` redirect to it). Server health (`GET /api/admin/health`, `sysmetrics.py`, needs psutil), designers + usage (`GET /api/admin/designers?days=`, `db.designer_usage`: sign-ins from the audit log, boards/exports/failures from `agent_jobs`), create/disable/reset/delete user (`DELETE /api/users/{id}`, `db.delete_user`: sessions removed, PCs disconnected, waiting jobs fail, the audit log keeps the e-mail; never yourself or the last admin), Spaces usage (`GET /api/admin/spaces`, `spaces.py`, read-only, needs boto3 + `SIGNAGE_SPACES_*`, cached 10 min), plus the old Server sections (`Server.jsx embedded`). Verified in the browser pane on a scratch server with the real agent exe. Tests: `test_admin_page.py`, `adminView.test.mjs`. Spaces counting is only unit-tested with a fake client (no real bucket yet).

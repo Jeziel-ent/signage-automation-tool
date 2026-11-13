@@ -271,6 +271,9 @@ def _line_count(text) -> int:
 
 
 EDITOR_LINE_EM = 1.2       # the editor's line height at 100 % spacing, in font sizes (frontend/src/editor/textFormat.js DEFAULT_LINE_EM)
+# bumped whenever the replay draws the same ops differently; "Save Changes" never reuses an export made by an older replay
+# (2 = edited text sized and placed like the editor, agent 0.3.6)
+REPLAY_VERSION = 2
 PT_TO_MM = 25.4 / 72.0
 FIT_MIN_FRAC = 0.7         # a text kept inside a learned width (`fit_w`) is never made smaller than this share of its intended line height
 
@@ -1098,7 +1101,8 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
     warnings: list[str] = []
     timings: dict[str, float] = {}
     files: dict[str, str] = {}
-    report: dict = {"formats": formats, "options": opts, "ops": len(ops), "warnings": warnings, "timings_s": timings}
+    report: dict = {"formats": formats, "options": opts, "ops": len(ops), "warnings": warnings, "timings_s": timings,
+                    "replay_version": REPLAY_VERSION}
     # the caller passes the standard file stem ("76 - 125 X 48 Inch - Nonlit - SHOP", file_naming.py); spaces are kept
     from .file_naming import safe_filename
     base = safe_filename(base_name) or safe_name(base_name)
@@ -1236,7 +1240,7 @@ def mock_export(expected: dict, formats: list[str], opts: dict, out_dir: Path, b
         files[fmt] = p.name
         timings[fmt] = 0.25
     return {
-        "mock": True, "formats": formats, "options": opts, "files": files, "timings_s": timings,
+        "mock": True, "formats": formats, "options": opts, "files": files, "timings_s": timings, "replay_version": REPLAY_VERSION,
         "file_bytes": {k: (out_dir / v).stat().st_size for k, v in files.items()},
         "verification": {"ok": True, "compared": 0, "mismatches": []}, "warnings": ["Mock engine: placeholder files, not a CorelDRAW export."],
     }

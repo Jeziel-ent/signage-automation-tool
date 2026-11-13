@@ -1752,8 +1752,16 @@ def v2_shop_file(shop_id: str, filename: str):
         raise HTTPException(404)
     # downloaded under the standard name ("76 - 125 X 48 Inch - Nonlit - SHOP.cdr"), also for boards converted before
     # the on-disk files were named that way; the report JSON keeps its own name
+    # the board's own cdr / pdf / png link gives its EDITED version when the designer's current edits were exported (Save Changes),
+    # like the row's Download, the ZIP and the previews - the conversion's file only when there are no exported edits
+    files = json.loads(row["files_json"]) if row.get("files_json") else {}
+    kind = next((k for k in ("cdr", "pdf") if files.get(k) == p.name), None) or ("png" if files.get("preview") == p.name else None)
+    if kind and p.suffix.lower() in (".cdr", ".pdf", ".png"):
+        picked = _single_sources(row, kind).get("path")
+        if picked is not None and Path(picked).is_file():
+            p = Path(picked)
     name = p.name if p.name.endswith("_report.json") else f"{file_naming.shop_basename(row)}{p.suffix}"
-    return FileResponse(p, filename=name)
+    return FileResponse(p, filename=name, headers={"Cache-Control": "no-cache"})
 
 
 def _single_sources(row: dict, fmt: str) -> dict:
@@ -3209,6 +3217,13 @@ def editor_export(job_id: str, shop_id: str, body: ExportRequest):
     return {"export_id": export_id, "plan": plan, "raster": size, "sizes": sizes, "ops": len(ops)}
 
 
+def _export_replay_version(e: dict) -> int:
+    try:
+        return int((json.loads(e["report_json"]) if e.get("report_json") else {}).get("replay_version") or 1)
+    except (ValueError, TypeError):
+        return 1
+
+
 @app.post("/api/editor/{job_id}/{shop_id}/publish", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}, 503: {"description": "Service unavailable"}})
 def editor_publish(job_id: str, shop_id: str):
     """"Save Changes" makes the saved edits the board's NEW files: queues one export (cdr, pdf, png, jpeg with the default options) of
@@ -3221,6 +3236,8 @@ def editor_publish(job_id: str, shop_id: str):
     for listed in db.list_exports(shop_id, limit=20):
         e = db.get_export(listed["id"])
         same = json.loads(e["ops_json"]) == ops and set(export_replay.ALL_FORMATS) <= set(json.loads(e["formats_json"]))
+        if same and e["status"] == "done" and _export_replay_version(e) < export_replay.REPLAY_VERSION:
+            continue                     # made by an older replay (e.g. before the edited-text fix): build it again
         if same and e["status"] in ("queued", "running", "done"):
             return {"status": "ready" if e["status"] == "done" else "building", "export_id": e["id"]}
     queued = editor_export(job_id, shop_id, ExportRequest(formats=list(export_replay.ALL_FORMATS), options=None))

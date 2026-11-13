@@ -80,3 +80,36 @@ def test_the_zip_says_when_the_edited_files_are_still_being_built(tmp_path):
     assert "still being built" in note
     failed = [{"id": "e", "status": "failed", "files": {}, "ops": ops}]
     assert "not exported" in az.pick_sources(out, {"cdr": "b.cdr"}, failed, ops)["notes"][0]
+
+
+def test_an_export_made_by_an_older_replay_is_built_again(client):  # noqa: F811
+    """Found on a real board: Save Changes kept reusing an export made before the edited-text fix (agent 0.3.5), so the files
+    still showed the old text layout. An export without the current replay_version is never reused."""
+    import json as _json
+
+    from app import db
+    job, shop = _converted_shop(client)
+    _save_a_move(client, job, shop)
+    first = client.post(f"/api/editor/{job}/{shop}/publish").json()
+    _wait_export(client, job, shop, first["export_id"])
+    row = db.get_export(first["export_id"])
+    rep = _json.loads(row["report_json"])
+    rep.pop("replay_version")
+    with db._conn() as conn:
+        conn.execute("UPDATE exports SET report_json = ? WHERE id = ?", (_json.dumps(rep), first["export_id"]))
+    again = client.post(f"/api/editor/{job}/{shop}/publish").json()
+    assert again["status"] == "building" and again["export_id"] != first["export_id"]
+
+
+def test_the_board_file_links_give_the_edited_files(client):  # noqa: F811
+    """Recently generated's CDR / PDF / PNG links are the shop's conversion file names; once the edits are exported they serve
+    the edited files (the conversion's only without exported edits)."""
+    job, shop = _converted_shop(client)
+    files = client.get(f"/api/v2/shops/{shop}/status").json()["files"]
+    name = files["cdr"]
+    before = client.get(f"/api/v2/shops/{shop}/files/{name}").content
+    _save_a_move(client, job, shop)
+    r = client.post(f"/api/editor/{job}/{shop}/publish").json()
+    _wait_export(client, job, shop, r["export_id"])
+    after = client.get(f"/api/v2/shops/{shop}/files/{name}")
+    assert after.status_code == 200 and after.content != before
