@@ -270,29 +270,61 @@ def _line_count(text) -> int:
     return len(_NEWLINE.split(str(text or ""))) if str(text or "") else 1
 
 
+EDITOR_LINE_EM = 1.2       # the editor's line height at 100 % spacing, in font sizes (frontend/src/editor/textFormat.js DEFAULT_LINE_EM)
+PT_TO_MM = 25.4 / 72.0
 FIT_MIN_FRAC = 0.7         # a text kept inside a learned width (`fit_w`) is never made smaller than this share of its intended line height
+
+
+def _plain_height(shape, story) -> float:
+    """The text's height at 100 % line spacing - what the editor sizes by (textFormat.fitTransform subtracts the extra / missing spacing
+    before scaling). Measured by setting 100 % for a moment and putting the designer's spacing back."""
+    spacing = _safe(lambda: float(story.LineSpacing))
+    kind = _safe(lambda: int(story.LineSpacingType))
+    # only "% of character height" spacing is compared to 100 % (the editor's line_spacing); LineSpacingType itself cannot be written
+    # through COM ("can not be set", found live), so a text with another spacing type is measured as it is
+    if spacing is None or kind != scene_export.LINE_SPACING_PERCENT_OF_CHAR_HEIGHT or abs(spacing - 100.0) < 0.01:
+        return float(shape.SizeHeight)
+    try:
+        story.LineSpacing = 100.0
+        return float(shape.SizeHeight)
+    except Exception:
+        return float(shape.SizeHeight)
+    finally:
+        _safe(lambda: setattr(story, "LineSpacing", spacing))
 
 
 def _set_edited_text_bbox(shape, node: dict, orig_lines: int = 1, max_w: float | None = None, fit_w: float | None = None,
                           notes: list | None = None) -> bool:
-    """A text whose content / font the designer edited is drawn by the editor as live text (LiveText.jsx), never stretched: ONE line of it is as
-    tall as the box was for the ORIGINAL text (`orig_lines` lines - a name that grows from one line to two grows downwards, it does not
-    shrink to stay inside the box), its width follows the glyphs, and it is centred in the box. CorelDRAW's SetSize would stretch the text to the
-    box width instead (a two-line Tamil name came out with its letters spread far apart in the exported files, unlike the editor). So the font
-    size is scaled uniformly until one line is that tall, and the text is centred on the box. `max_w` (the usable page width) caps the width:
-    the editor draws the text in a browser font whose glyphs are narrower than the real (or a missing, substituted) font's, so the same line
-    height can come out far wider in CorelDRAW - the text is then scaled down uniformly until it fits, never past the page. False when that
-    cannot be done (not an edited text, heights unknown): the caller then falls back to SetSize."""
+    """A text whose content / font / formatting the designer edited is drawn by the editor as live text (LiveText.jsx +
+    textFormat.fitTransform), never stretched. The export follows the SAME rule, so the files look like the editor:
+      * letters are never distorted: a stretch left by an earlier resize of a GROUP holding the text is cleared first;
+      * size: ONE line, at 100 % line spacing, is as tall as one line of the ORIGINAL text was in the box (`orig_lines` lines) -
+        a name that grows from one line to two grows past its box, it does not shrink to stay inside it. Measuring at 100 % matters:
+        CorelDRAW's height includes the designer's line spacing, and dividing a tightly spaced (80-95 %) two-line height by two
+        read as smaller letters and scaled the font UP (found on a real board: the Tamil name's second line ran into the English
+        name and "BAR" fell off the board);
+      * place: horizontally by the text's alignment (left edge / centre / right edge of the box), vertically the 100 %-spacing block is
+        centred on the box - tighter or looser spacing moves the lines from the top, as in the editor.
+    `max_w` (the usable page width) caps the width (the editor's browser font can be narrower than CorelDRAW's); `fit_w` is a learned
+    width (Corel Intelligence) kept by CorelDRAW's real measurement. False when it cannot be done (not an edited text, sizes unknown):
+    the caller then falls back to SetSize."""
     if not (node.get("stale") and node.get("type") == "text"):
         return False
     try:
         story = shape.Text.Story
+        _safe(lambda: shape.ClearTransformations())     # undo a group resize's stretch: the editor never distorts glyphs
+        lines = _line_count(story.Text)
         line_h = max(float(node["h"]), 0.01) / max(int(orig_lines), 1)
+        plain = _plain_height(shape, story)
         h, w = float(shape.SizeHeight), float(shape.SizeWidth)
-        now_line = h / _line_count(story.Text)
-        if now_line <= 0.01 or w <= 0.01:
+        if plain <= 0.01 or w <= 0.01:
             return False
-        k = line_h / now_line
+        # The editor draws one line at 100 % spacing as DEFAULT_LINE_EM (1.2) x the font size (textFormat.js), so the font size it shows
+        # is line_h / 1.2: set exactly that (by the ratio to CorelDRAW's own size). Glyph outlines are not the browser's line box - sizing by
+        # them came out 15-25 % off on a real board. Only when CorelDRAW does not report a sane size: fall back to the outline per line.
+        size_mm = _safe(lambda: float(story.Size)) or 0.0
+        size_mm *= PT_TO_MM
+        k = (line_h / EDITOR_LINE_EM) / size_mm if size_mm > 0.01 else line_h / (plain / lines)
         if fit_w and w * k > fit_w:
             # closed loop: `w` is CorelDRAW's REAL measured width, so a learned width (Corel Intelligence) is kept exactly instead of estimated;
             # never below FIT_MIN_FRAC of the intended line height - a text that still does not fit is reported, not silently shrunk further
@@ -304,10 +336,13 @@ def _set_edited_text_bbox(shape, node: dict, orig_lines: int = 1, max_w: float |
             k = max_w / w                    # a wider font than the editor's preview: keep the text on the page (still one factor both ways)
         if abs(k - 1.0) > 1e-4:
             shape.SetSize(w * k, h * k)      # the SAME factor both ways: CorelDRAW scales the font size (reading Story.Size back after a resize is unreliable)
-        cx = float(node["x"]) + float(node["w"]) / 2
-        cy = float(node["y"]) + float(node["h"]) / 2
-        shape.LeftX = cx - float(shape.SizeWidth) / 2
-        shape.BottomY = cy - float(shape.SizeHeight) / 2
+        x, y, bw, bh = (float(node[key]) for key in ("x", "y", "w", "h"))
+        align = (node.get("text") or {}).get("align")
+        width = float(shape.SizeWidth)
+        left = x if align in ("left", "justify") else x + bw - width if align == "right" else x + bw / 2 - width / 2
+        top = y + bh / 2 + plain * k / 2     # the 100 %-spacing block centred on the box (y is up in CorelDRAW)
+        shape.LeftX = left
+        shape.BottomY = top - float(shape.SizeHeight)
     except Exception:
         return False
     return True
@@ -347,6 +382,7 @@ class Replayer:
         self._check_scene_matches_doc(scene)
         self.sid = {int(s.StaticID): nid for nid, s in self.shapes.items()}
         self.ghosts: dict = {}
+        self.fit_w: dict[str, float] = {}
         self.warnings: list[str] = []
         self.on_progress = on_progress or (lambda i, n: None)
         # where a swap_image/update_product_slot asset's `path` (a bare filename) resolves against -
@@ -371,6 +407,7 @@ class Replayer:
                 raise
             except Exception as e:  # a COM call failed
                 raise ReplayError(f"operation #{i} ({op.get('op')}) failed in CorelDRAW: {e}") from e
+        self._fit_edited_texts()
         self._finish_deletions()
         return {"applied": n, "warnings": self.warnings}
 
@@ -454,6 +491,15 @@ class Replayer:
         for i in scene_ops._top_ids(before, op["ids"]):
             self._shape(i).Move(float(op["dx"]), float(op["dy"]))
 
+    def _fit_edited_texts(self) -> None:
+        """After the last edit, every edited text gets the editor's sizing and place once more (_set_edited_text_bbox), from its FINAL box:
+        a text edited and then resized only as part of a group, or given new line spacing after its last resize, was otherwise left as
+        CorelDRAW had it (stretched by the group's SetSize, or at a spacing the size was not worked out for)."""
+        for node in scene_ops.iter_nodes(self.shadow):
+            if node.get("stale") and node.get("type") == "text" and node["id"] in self.shapes and node["id"] not in self.ghosts:
+                _set_edited_text_bbox(self._shape(node["id"]), node, self.orig_lines.get(node["id"], 1), self._max_text_width(),
+                                      self.fit_w.get(node["id"]), None)
+
     def _max_text_width(self) -> float:
         """The widest an edited text may be: the page width less a 2 % margin (see _set_edited_text_bbox)."""
         return float(self.shadow["page"]["width"]) * 0.98
@@ -462,6 +508,8 @@ class Replayer:
         after = scene_ops._index(self.shadow)
         for i in scene_ops._top_ids(before, op["ids"]):
             node = after[i]["node"]
+            if op.get("fit_w"):
+                self.fit_w[i] = op["fit_w"]           # a learned width (Corel Intelligence) also holds in the final pass
             if not _set_edited_text_bbox(self._shape(i), node, self.orig_lines.get(i, 1), self._max_text_width(),
                                          op.get("fit_w"), self.warnings):
                 _set_bbox(self._shape(i), node)
@@ -853,7 +901,8 @@ def verify(page, expected: dict, limit: int = 20) -> dict:
                 # glyph metrics of the new content (side bearings, descenders) shift the box by a few mm
                 tol = max(TEXT_TOL_MM, 0.03 * max(gw, ww))
                 ok_x = any(abs(a - b) <= tol for a, b in ((gx, wx), (gx + gw / 2, wx + ww / 2), (gx + gw, wx + ww)))
-                ok_y = any(abs(a - b) <= tol for a, b in ((gy, wy), (gy + gh / 2, wy + wh / 2), (gy + gh, wy + wh)))
+                # vertically it grows around its box like the editor (the 100 %-spacing block centred on it): it must cover the middle
+                ok_y = gy - tol <= wy + wh / 2 <= gy + gh + tol
                 if not (ok_x and ok_y):
                     note(f"{here} (text): now at {gx:.1f},{gy:.1f} mm, expected near {wx:.1f},{wy:.1f} (no left/centre/right anchor matches)")
             elif w["kind"] == "group" and _holds_edited_text(w):

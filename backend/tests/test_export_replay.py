@@ -491,6 +491,8 @@ def test_text_whose_size_changed_with_its_content_still_verifies_by_anchor():
     ops = [{"op": "text", "id": t, "content": "MUCH LONGER SHOP NAME"}]
     doc, r, expected, _ = run(ops, doc, scene)
     shape = doc.ActivePage._layers[1]._kids[0]
+    # (the final text fit resized this fake - its 20 pt font is not consistent with its 40 mm box; put a known geometry back)
+    shape._x, shape._y, shape._w, shape._h = 500.0, 20.0, 200.0, 40.0
     shape._w = 320.0                                    # CorelDRAW widened it; right-anchored -> left edge moved
     shape._x -= 120.0
     assert er.verify(doc.ActivePage, expected)["ok"]
@@ -1197,3 +1199,91 @@ def test_a_learned_width_is_kept_from_the_real_measured_width_but_never_below_th
     free = _TextShape(w=300.0, h=100.0, text="NAME")
     assert er._set_edited_text_bbox(free, node, orig_lines=1, fit_w=552.0)
     assert free.SizeWidth == pytest.approx(300.0)                             # already narrower than the cap: the usual line height
+
+
+class _SpacedText(_TextShape):
+    """A text whose height depends on its line spacing like CorelDRAW's: 2 lines of 40 mm letters, 48 mm apart at 100 %."""
+
+    def __init__(self, spacing=100.0, letters=40.0, text="A" + chr(13) + "B", stretched=False):
+        self.letters, self.lines = letters, text.count(chr(13)) + 1
+        story = type("S", (), {})()
+        story.Text, story.LineSpacing, story.LineSpacingType = text, spacing, 0
+        self.Text = type("T", (), {"Story": story})()
+        self.cleared = False
+        self.stretched = stretched
+        self.LeftX = self.BottomY = 0.0
+        self.SizeWidth = 300.0 * (1.6 if stretched else 1.0)
+
+    @property
+    def SizeHeight(self):
+        gap = self.letters * 1.2 * self.Text.Story.LineSpacing / 100.0
+        return self.letters + (self.lines - 1) * gap
+
+    def SetSize(self, w, h):
+        k = h / self.SizeHeight
+        self.letters *= k
+        self.SizeWidth = w
+
+    def ClearTransformations(self):
+        self.cleared = True
+        if self.stretched:
+            self.SizeWidth /= 1.6
+            self.stretched = False
+
+
+def test_tight_line_spacing_does_not_make_an_edited_text_bigger():
+    """Found on a real board: at 80 % spacing CorelDRAW's two-line height is smaller, and the old rule read that as smaller letters."""
+    node = {"stale": True, "type": "text", "x": 0.0, "y": 0.0, "w": 400.0, "h": 60.0}
+    normal, tight = _SpacedText(spacing=100.0), _SpacedText(spacing=80.0)
+    assert er._set_edited_text_bbox(normal, node, orig_lines=1) and er._set_edited_text_bbox(tight, node, orig_lines=1)
+    assert tight.letters == pytest.approx(normal.letters)           # the same letter size whatever the spacing (as in the editor)
+    assert tight.Text.Story.LineSpacing == 80.0                     # the designer's spacing is put back after measuring
+    plain_top = 30.0 + (normal.SizeHeight) / 2                     # the 100 % block centred on the box...
+    assert normal.BottomY + normal.SizeHeight == pytest.approx(plain_top)
+    assert tight.BottomY + tight.SizeHeight == pytest.approx(plain_top)   # ...and tighter lines hang from the same top
+
+
+def test_an_edited_text_is_placed_by_its_alignment_and_a_group_stretch_is_cleared():
+    base = {"stale": True, "type": "text", "x": 100.0, "y": 0.0, "w": 800.0, "h": 60.0}
+    left, right = _SpacedText(stretched=True), _SpacedText()
+    assert er._set_edited_text_bbox(left, {**base, "text": {"align": "left"}}, 1)
+    assert left.cleared and left.LeftX == pytest.approx(100.0)
+    assert left.SizeWidth / left.SizeHeight == pytest.approx(300.0 / 88.0)       # back to undistorted proportions
+    assert er._set_edited_text_bbox(right, {**base, "text": {"align": "right"}}, 1)
+    assert right.LeftX + right.SizeWidth == pytest.approx(900.0)
+
+
+def test_the_final_pass_fits_a_text_that_was_only_resized_through_its_group():
+    replayer = er.Replayer.__new__(er.Replayer)
+    shape = _SpacedText(stretched=True)
+    node = {"id": "s51", "stale": True, "type": "text", "x": 10.0, "y": 20.0, "w": 500.0, "h": 70.0}
+    replayer.shadow = {"page": {"width": 3000.0, "height": 900.0}, "layers": [{"id": "L1", "children": [node]}]}
+    replayer.shapes, replayer.ghosts, replayer.fit_w, replayer.orig_lines, replayer.warnings = {"s51": shape}, {}, {}, {"s51": 1}, []
+    replayer._shape = lambda i: replayer.shapes[i]
+    replayer._fit_edited_texts()
+    assert shape.cleared
+    assert shape.SizeHeight / 2 == pytest.approx(70.0)              # one line (at 100 %, its share of the leading included) = the old box
+
+
+class _SizedText(_SpacedText):
+    """Like CorelDRAW: reports its font size (pt), and LineSpacingType cannot be written through COM (found live)."""
+
+    def __init__(self, size_pt=100.0, **kw):
+        super().__init__(**kw)
+        self.letters = size_pt * er.PT_TO_MM * 0.7
+        story = self.Text.Story
+        story_cls = type("S", (), {
+            "Text": story.Text, "LineSpacing": story.LineSpacing,
+            "Size": property(lambda st: self.letters / (er.PT_TO_MM * 0.7)),
+            "LineSpacingType": property(lambda st: 0, lambda st, v: (_ for _ in ()).throw(AttributeError("can not be set"))),
+        })
+        self.Text = type("T", (), {"Story": story_cls()})()
+
+
+def test_an_edited_text_gets_the_editors_font_size_line_height_over_1_2():
+    """The editor draws one line at 100 % as 1.2 x the font size: a 249 mm box per line = a 207.5 mm font, whatever the spacing."""
+    node = {"stale": True, "type": "text", "x": 0.0, "y": 0.0, "w": 967.0, "h": 249.0, "text": {"align": "center"}}
+    shape = _SizedText(size_pt=285.3, spacing=80.0, text="ASIAN JUICE " + chr(13) + "BAR")
+    assert er._set_edited_text_bbox(shape, node, orig_lines=1)
+    assert shape.Text.Story.Size * er.PT_TO_MM == pytest.approx(249.0 / er.EDITOR_LINE_EM)
+    assert shape.Text.Story.LineSpacing == 80.0

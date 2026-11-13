@@ -41,6 +41,20 @@ by its updater inherited PyInstaller's `_PYI_*` variables and every CorelDRAW wo
 (3) a second double-click of the downloaded exe said "Permission denied" - `installer._in_use` opens for writing (renaming a running exe
 succeeds on Windows). Published agent 0.3.5, `min_supported` 0.3.5. Tests: `backend/tests/test_stop_conversion.py`, `agent/tests/test_installer.py`.
 
+## Edited text: export = editor (2026-11-13, agent 0.3.6)
+
+Found on a real board (Asian Juice bar, 16x3 ft): names edited to two lines with 80-95 % line spacing came out in the export with the Tamil
+second line on top of "ASIAN JUICE" and "BAR" off the board. Causes: (1) `export_replay._set_edited_text_bbox` raised on EVERY call -
+`Story.LineSpacingType` cannot be written through COM ("can not be set") - so the replay fell back to SetSize and stretched the text to its box;
+(2) a text resized only as part of a GROUP was never re-fitted; (3) sizing by CorelDRAW's outline height (which includes the line spacing) is
+not the editor's measure. Now: `_set_edited_text_bbox` clears a group stretch (`ClearTransformations`), sets the font size the editor draws
+(`line height / EDITOR_LINE_EM 1.2`, line height = box h / original line count; outline-per-line only as a fallback), places it by alignment
+with the 100 %-spacing block centred on the box (`_plain_height` sets LineSpacing 100 for the measurement only), and `Replayer._fit_edited_texts`
+runs it once more for every edited text after the last op (learned `fit_w` kept). `verify` accepts an edited text vertically when it covers the
+box's middle. Verified LIVE (CorelDRAW 27, the real board's 26 ops, scratch output): line heights within ~0.01 of the board height of the
+editor screenshot, verification ok (49 objects). Exports run on the AGENT in remote mode: needs agent 0.3.6. A Save Changes with an unchanged
+op list reuses the old export - use the row's Download icon for a fresh one.
+
 ## Admin page (2026-11-08)
 
 `/admin` (`pages/Admin.jsx`, `utils/adminView.js`) - administrators only, NOT in the sidebar (a designer who types it is sent to `/`; `/users` and `/server` redirect to it). Server health (`GET /api/admin/health`, `sysmetrics.py`, needs psutil), designers + usage (`GET /api/admin/designers?days=`, `db.designer_usage`: sign-ins from the audit log, boards/exports/failures from `agent_jobs`), create/disable/reset/delete user (`DELETE /api/users/{id}`, `db.delete_user`: sessions removed, PCs disconnected, waiting jobs fail, the audit log keeps the e-mail; never yourself or the last admin), Spaces usage (`GET /api/admin/spaces`, `spaces.py`, read-only, needs boto3 + `SIGNAGE_SPACES_*`, cached 10 min), plus the old Server sections (`Server.jsx embedded`). Verified in the browser pane on a scratch server with the real agent exe. Tests: `test_admin_page.py`, `adminView.test.mjs`. Spaces counting is only unit-tested with a fake client (no real bucket yet).

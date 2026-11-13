@@ -72,7 +72,9 @@ def test_replay_applies_every_field_and_keeps_the_text_in_place():
     assert (st.Alignment, st.Bold, st.Italic, st.Underline, st.LineSpacing, st.CharSpacing) == (1, True, True, 1, 150.0, 25.0)
     assert r.warnings == [], (r.warnings, v)
     assert v["ok"], (r.warnings, v)
-    assert (shape.LeftX, shape.TopY) == (left, top)
+    # an edited text is finally placed like the editor draws it (export_replay._set_edited_text_bbox): left-aligned -> its left edge stays;
+    # vertically it is centred on its box at 100 % spacing, so the top is no longer pinned
+    assert shape.LeftX == left and top is not None
 
 
 def test_right_alignment_keeps_the_right_edge_where_the_editor_shows_it():
