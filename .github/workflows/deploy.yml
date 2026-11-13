@@ -61,24 +61,77 @@ jobs:
     needs: test                  # only after every test passed
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    outputs:
+      seconds: ${{ steps.ship.outputs.seconds }}
+      health: ${{ steps.check.outputs.health }}
     steps:
       - name: Deploy to the droplet
+        id: ship
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
         run: |
+          start=$(date +%s)
           install -m 700 -d ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           # the key's forced command runs deploy/deploy.sh: git pull, docker compose up -d --build, wait for /healthz
           ssh -T -i ~/.ssh/deploy_key -o BatchMode=yes -o StrictHostKeyChecking=yes root@142.93.219.72
+          echo "seconds=$(( $(date +%s) - start ))" >> "$GITHUB_OUTPUT"
 
       - name: Check the live site
+        id: check
         run: |
           for i in 1 2 3 4 5 6; do
-            if curl -fsS https://sat.adinntechnologies.com/healthz; then echo; echo "Live site is up"; exit 0; fi
+            code=$(curl -s -o /dev/null -w '%{http_code}' https://sat.adinntechnologies.com/healthz || true)
+            if [ "$code" = "200" ]; then echo "health=$code" >> "$GITHUB_OUTPUT"; echo "Live site is up"; exit 0; fi
             sleep 10
           done
+          echo "health=${code:-no answer}" >> "$GITHUB_OUTPUT"
           echo "The live site did not answer /healthz" >&2
           exit 1
+
+  notify:
+    # a message in the Google Chat space "Adinn Deployment" after every run: success, failed tests or a failed deploy.
+    # Secret GCHAT_WEBHOOK_URL = the space's incoming webhook (space > Apps & integrations > Webhooks). No secret = no message.
+    needs: [test, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Message the Google Chat space
+        env:
+          WEBHOOK: ${{ secrets.GCHAT_WEBHOOK_URL }}
+          TEST_RESULT: ${{ needs.test.result }}
+          DEPLOY_RESULT: ${{ needs.deploy.result }}
+          SECONDS_TAKEN: ${{ needs.deploy.outputs.seconds }}
+          HEALTH: ${{ needs.deploy.outputs.health }}
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+          COMMIT_AUTHOR: ${{ github.event.head_commit.author.name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          EVENT: ${{ github.event_name }}
+          BRANCH: ${{ github.ref_name }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_NO: ${{ github.run_number }}
+        run: |
+          if [ -z "$WEBHOOK" ]; then echo "GCHAT_WEBHOOK_URL is not set - no message sent"; exit 0; fi
+          if [ "$DEPLOY_RESULT" = "success" ]; then head="✅ *Signage Automation Tool* — SUCCESS"
+          elif [ "$TEST_RESULT" != "success" ]; then head="❌ *Signage Automation Tool* — TESTS FAILED (not deployed, the live site is unchanged)"
+          else head="❌ *Signage Automation Tool* — DEPLOY FAILED"; fi
+          title=$(printf '%s' "${COMMIT_MSG:-manual run}" | head -n 1)
+          text="$head
+          Environment: Production
+          Branch: $BRANCH · Run #$RUN_NO
+          Commit: ${SHA:0:7} — $title (${COMMIT_AUTHOR:-$ACTOR})
+          Tests: $TEST_RESULT · Deploy: $DEPLOY_RESULT${SECONDS_TAKEN:+ in ${SECONDS_TAKEN} sec}
+          Deployed at: $(TZ=Asia/Kolkata date '+%d %b %Y, %H:%M:%S IST')
+          Server: 142.93.219.72 (DigitalOcean BLR1)
+          Health: https://sat.adinntechnologies.com/healthz -> ${HEALTH:-not checked}
+          URL: https://sat.adinntechnologies.com
+          Triggered: $EVENT by $ACTOR
+          <$RUN_URL|Open the run>"
+          text=$(printf '%s\n' "$text" | sed 's/^ *//')
+          jq -n --arg t "$text" '{text: $t}' | curl -fsS -X POST -H 'Content-Type: application/json; charset=UTF-8' --data-binary @- "$WEBHOOK" > /dev/null
+          echo "Message sent"
