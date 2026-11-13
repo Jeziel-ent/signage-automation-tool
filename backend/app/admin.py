@@ -79,6 +79,58 @@ def health():
             "engine": os.environ.get("SIGNAGE_ENGINE", "auto")}
 
 
+SERIES_DAYS = 14
+
+
+def _day(ts: float) -> str:
+    return time.strftime("%Y-%m-%d", time.gmtime(ts))
+
+
+@router.get("/api/admin/overview")
+def overview():
+    return build_overview(time.time())
+
+
+def build_overview(now: float) -> dict:
+    """The monitor's activity panels, all read from the database (nothing estimated):
+    `series` - one row per day (UTC) for the last SERIES_DAYS days: boards converted / failed / stopped and exports done, by the day
+    the job ended; `live` - every job waiting or running now; `recent` - the last finished jobs with how long they took;
+    `counts` - masters, brands, users, shops; `median_convert_s` - the median time of the last 7 days' finished conversions."""
+    since = now - SERIES_DAYS * 86400
+    days = [_day(now - i * 86400) for i in range(SERIES_DAYS - 1, -1, -1)]
+    series = {d: {"day": d, "converted": 0, "failed": 0, "stopped": 0, "exported": 0} for d in days}
+    with db._conn() as conn:
+        for r in conn.execute("SELECT kind, state, COALESCE(finished_at, created_at) AS t FROM agent_jobs "
+                              "WHERE COALESCE(finished_at, created_at) >= ? AND state IN ('done', 'failed', 'cancelled')", (since,)):
+            row = series.get(_day(r["t"]))
+            if row is None:
+                continue
+            if r["kind"] == "convert":
+                row[{"done": "converted", "failed": "failed", "cancelled": "stopped"}[r["state"]]] += 1
+            elif r["kind"] == "export" and r["state"] == "done":
+                row["exported"] += 1
+        job_cols = ("SELECT j.id, j.kind, j.state, j.step, j.error, j.created_at, j.claimed_at, j.finished_at, s.name AS shop, "
+                    "u.email AS user_email, a.name AS pc FROM agent_jobs j LEFT JOIN shops s ON s.id = j.shop_id "
+                    "LEFT JOIN users u ON u.id = j.user_id LEFT JOIN agents a ON a.id = j.agent_id ")
+        live = [dict(r) for r in conn.execute(job_cols + "WHERE j.state IN ('queued', 'claimed', 'running') ORDER BY j.created_at LIMIT 50")]
+        recent = [dict(r) for r in conn.execute(job_cols + "WHERE j.state IN ('done', 'failed', 'cancelled') "
+                                                "ORDER BY COALESCE(j.finished_at, j.created_at) DESC LIMIT 12")]
+        took = sorted(r[0] - r[1] for r in conn.execute(
+            "SELECT finished_at, claimed_at FROM agent_jobs WHERE kind = 'convert' AND state = 'done' AND finished_at >= ? "
+            "AND claimed_at IS NOT NULL", (now - 7 * 86400,)))
+        counts = {
+            "masters": conn.execute("SELECT COUNT(*) FROM jobs WHERE registered = 1 AND deleted_at IS NULL").fetchone()[0],
+            "brands": conn.execute("SELECT COUNT(*) FROM brands").fetchone()[0],
+            "users": conn.execute("SELECT COUNT(*) FROM users WHERE active = 1").fetchone()[0],
+            "shops": conn.execute("SELECT COUNT(*) FROM shops").fetchone()[0],
+        }
+    for r in recent:
+        r["seconds"] = round(r["finished_at"] - r["claimed_at"], 1) if r["finished_at"] and r["claimed_at"] else None
+    median = took[len(took) // 2] if took else None
+    return {"now": now, "series": list(series.values()), "live": live, "recent": recent, "counts": counts,
+            "median_convert_s": round(median, 1) if median is not None else None}
+
+
 @router.get("/api/admin/spaces")
 def spaces_usage(refresh: bool = False):
     return spaces.usage(force=refresh)

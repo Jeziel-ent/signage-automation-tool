@@ -1602,11 +1602,12 @@ def _stop_shop(shop_id: str) -> bool:
 @app.post("/api/v2/shops/{shop_id}/stop", responses={404: {"description": "Not found"}})
 def v2_stop_shop(shop_id: str):
     """The X on a row that is waiting or converting."""
-    if not db.get_shop(shop_id):
+    row = db.get_shop(shop_id)
+    if not row:
         raise HTTPException(404, _SHOP_NOT_FOUND)
     stopped = _stop_shop(shop_id)
     if stopped:
-        audit.record("conversion_stopped", shop_id)
+        audit.record("conversion_stopped", f"{row['name']} ({shop_id})")
     return {"stopped": stopped, "status": db.get_shop(shop_id)["status"]}
 
 

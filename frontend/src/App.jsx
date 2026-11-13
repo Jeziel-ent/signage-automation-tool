@@ -41,6 +41,8 @@ export default function App() {
           top-level route with no sidebar shell around it - see the
           "Editor" button in the shops table. */}
       <Route path="/editor/:jobId/:shopId" element={<Suspense fallback={<div className="editor-route-fallback" />}><EditorPage /></Suspense>} />
+      {/* the administrators' monitor: a full-screen page of its own, no sidebar (it signs people in itself) */}
+      <Route path="/admin" element={<AdminPage />} />
       <Route path="/*" element={<Shell />} />
     </Routes>
   );
@@ -154,7 +156,6 @@ function Shell() {
                 <Route path="/recent" element={<RecentlyGenerated />} />
                 <Route path="/print-file" element={<CreatePrintFile />} />
                 <Route path="/corrections" element={<Corrections />} />
-                <Route path="/admin" element={<AdminPage />} />
                 <Route path="/users" element={<Navigate to="/admin" replace />} />
                 <Route path="/agent" element={<AgentPage />} />
                 <Route path="/server" element={<Navigate to="/admin" replace />} />

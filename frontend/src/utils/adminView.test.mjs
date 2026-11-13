@@ -36,3 +36,38 @@ test("spacesPct needs an allowance and never passes 100", () => {
   assert.equal(spacesPct({ bytes: 25, quota_bytes: 100 }), 25);
   assert.equal(spacesPct({ bytes: 500, quota_bytes: 100 }), 100);
 });
+
+import { niceMax, sparkPath, fmtSeconds, jobResult, seriesTotals } from "./adminView.js";
+
+test("niceMax rounds up to 1/2/5 steps and never below 4", () => {
+  assert.equal(niceMax(0), 5);
+  assert.equal(niceMax(3), 5);
+  assert.equal(niceMax(7), 10);
+  assert.equal(niceMax(13), 20);
+  assert.equal(niceMax(48), 50);
+  assert.equal(niceMax(120), 200);
+});
+
+test("sparkPath draws a 0-100 series into its box", () => {
+  assert.equal(sparkPath([50], 100, 20), "");
+  assert.equal(sparkPath([0, 100], 100, 20), "M0.0,20.0 L100.0,0.0");
+  assert.equal(sparkPath([0, 150, null, 50], 90, 10), "M0.0,10.0 L45.0,0.0 L90.0,5.0");
+});
+
+test("fmtSeconds", () => {
+  assert.equal(fmtSeconds(null), "-");
+  assert.equal(fmtSeconds(8.43), "8.4 s");
+  assert.equal(fmtSeconds(42), "42 s");
+  assert.equal(fmtSeconds(125), "2 min 05 s");
+});
+
+test("jobResult: a stop is not a failure", () => {
+  assert.equal(jobResult({ state: "done" }).label, "Done");
+  assert.equal(jobResult({ state: "cancelled" }).label, "Stopped");
+  assert.equal(jobResult({ state: "failed" }).label, "Failed");
+});
+
+test("seriesTotals adds every day", () => {
+  assert.deepEqual(seriesTotals([{ converted: 2, failed: 1, stopped: 0, exported: 3 }, { converted: 1, failed: 0, stopped: 2, exported: 0 }]),
+    { converted: 3, failed: 1, stopped: 2, exported: 3 });
+});

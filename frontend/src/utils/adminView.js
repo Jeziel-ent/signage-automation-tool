@@ -43,3 +43,50 @@ export function spacesPct(spaces) {
 }
 
 export const DAY_CHOICES = [7, 30, 90, 365];
+
+// ---- the monitor dashboard (pages/Admin.jsx)
+
+/** A round top for a count axis: the smallest of 1/2/5 x 10^n that is >= max (at least 4, so a near-empty chart still has ticks). */
+export function niceMax(max) {
+  const m = Math.max(4, max || 0);
+  const p = 10 ** Math.floor(Math.log10(m));
+  for (const f of [1, 2, 5, 10]) if (f * p >= m) return f * p;
+  return 10 * p;
+}
+
+/** SVG path for a sparkline of `values` (0-100 scale) in a w x h box; "" with fewer than two readings. */
+export function sparkPath(values, w, h, max = 100) {
+  const v = (values || []).filter((x) => x != null);
+  if (v.length < 2) return "";
+  const dx = w / (v.length - 1);
+  return v.map((y, i) => `${i ? "L" : "M"}${(i * dx).toFixed(1)},${(h - (Math.min(max, Math.max(0, y)) / max) * h).toFixed(1)}`).join(" ");
+}
+
+/** "8.4 s" / "2 min 05 s" / "-" for a duration in seconds. */
+export function fmtSeconds(s) {
+  if (s == null) return "-";
+  if (s < 60) return `${s.toFixed(s < 10 ? 1 : 0)} s`;
+  const m = Math.floor(s / 60);
+  return `${m} min ${String(Math.round(s % 60)).padStart(2, "0")} s`;
+}
+
+/** "12 Nov" for a "2026-11-12" day key (the server buckets by UTC day). */
+export function dayLabel(day) {
+  const [y, m, d] = day.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d)).toLocaleDateString(undefined, { day: "numeric", month: "short", timeZone: "UTC" });
+}
+
+export const JOB_KINDS = { convert: "Board", scene_build: "Editor scene", export: "Export", font_files: "Fonts" };
+
+/** A finished agent job as the page words it: done / failed / stopped (a stopped job is not an error). */
+export function jobResult(job) {
+  if (job.state === "done") return { key: "good", label: "Done" };
+  if (job.state === "cancelled") return { key: "warn", label: "Stopped" };
+  return { key: "bad", label: "Failed" };
+}
+
+/** Totals over the daily series. */
+export function seriesTotals(series) {
+  return (series || []).reduce((t, d) => ({ converted: t.converted + d.converted, failed: t.failed + d.failed, stopped: t.stopped + d.stopped,
+    exported: t.exported + d.exported }), { converted: 0, failed: 0, stopped: 0, exported: 0 });
+}
