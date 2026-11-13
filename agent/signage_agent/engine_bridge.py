@@ -25,14 +25,14 @@ def mock_mode() -> bool:
     return os.environ.get("SIGNAGE_ENGINE", "").strip().lower() == "mock"
 
 
-def run_batch(jobs: list[dict], results_path: Path, on_progress=None) -> list[dict]:
+def run_batch(jobs: list[dict], results_path: Path, on_progress=None, should_cancel=None) -> list[dict]:
     """Run a batch of convert jobs through the real worker (one hidden CorelDRAW instance, hang watchdog, RAM floor). Same limits as the
-    website's own local conversions."""
+    website's own local conversions. `should_cancel(index)`: True once the user stopped that job on the website (CorelDRAW is killed)."""
     from app import corel_supervisor
 
     limit = corel_supervisor.shop_timeout_s()
     limits = {"job_timeout_s": limit, "overall_timeout_s": max(120.0, 2 * limit)} if limit > 0 else {}
-    return corel_supervisor.run_batch(jobs, results_path, on_progress=on_progress, **limits)
+    return corel_supervisor.run_batch(jobs, results_path, on_progress=on_progress, should_cancel=should_cancel, **limits)
 
 
 def run_mock(job: dict) -> dict:

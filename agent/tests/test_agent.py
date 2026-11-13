@@ -330,3 +330,25 @@ def test_cleanup_removes_leftover_exes_but_not_while_an_update_is_pending(tmp_pa
     (tmp_path / "update_pending.json").unlink()
     updater.cleanup_leftovers(tmp_path)
     assert exe.exists() and not any((tmp_path / n).exists() for n in ("SignageAgent.old.exe", "SignageAgent.bad.exe", "SignageAgent.new.exe"))
+
+
+def test_swap_works_while_an_older_copy_still_holds_the_old_exe(tmp_path, monkeypatch):
+    """Found live: a launcher of the previous version kept running from SignageAgent.old.exe, so the next update failed with
+    'Access is denied'. The swap now keeps the current exe under a unique old name instead."""
+    exe, new = tmp_path / "SignageAgent.exe", tmp_path / "SignageAgent.new.exe"
+    exe.write_bytes(b"current")
+    new.write_bytes(b"newest")
+    (tmp_path / "SignageAgent.old.exe").write_bytes(b"still running")
+    real_unlink = Path.unlink
+
+    def locked(self, missing_ok=False):
+        if self.name == "SignageAgent.old.exe":
+            raise PermissionError(5, "Access is denied")
+        return real_unlink(self, missing_ok=missing_ok)
+    monkeypatch.setattr(Path, "unlink", locked)
+    monkeypatch.setattr(updater, "start_new", lambda p: None)
+    monkeypatch.setattr(updater.os, "_exit", lambda code: None)
+    updater.swap_in(exe, new, tmp_path, previous_version="1.0.0", target_version="2.0.0")
+    kept = list(tmp_path.glob("SignageAgent.old-*.exe"))
+    assert exe.read_bytes() == b"newest" and len(kept) == 1 and kept[0].read_bytes() == b"current"
+    assert json.loads((tmp_path / "update_pending.json").read_text())["old"] == str(kept[0])

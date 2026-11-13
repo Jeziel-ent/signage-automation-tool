@@ -149,7 +149,7 @@ def _fake_batch(calls=None, fail_index=None, fail_once=False):
     """Stands in for corel_supervisor.run_batch: writes the output files like a real conversion and answers one entry per job."""
     seen = {"retried": False}
 
-    def run(jobs, results_path, on_progress=None):
+    def run(jobs, results_path, on_progress=None, **_kw):
         if calls is not None:
             calls.append([j["shop"]["name"] for j in jobs])
         out = []
@@ -227,7 +227,7 @@ def test_the_refusal_to_start_fails_every_job_with_the_reason(world):
     agent = _make_agent(world)
     agent.corel_installs = lambda: [{"progid": "CorelDRAW.Application.27", "major": 27}]
 
-    def refuse(jobs, results_path, on_progress=None):
+    def refuse(jobs, results_path, on_progress=None, **_kw):
         raise RuntimeError("refusing to start CorelDRAW batch: only 0.9 GB free RAM")
     runner = JobRunner(agent, run_batch=refuse, mock=False)
     _, sid = _shop(world)
@@ -339,7 +339,7 @@ def test_the_batch_runs_with_the_newest_version_that_saved_one_of_its_masters(wo
     seen = []
     inner = _fake_batch()
 
-    def spy(jobs, results_path, on_progress=None):
+    def spy(jobs, results_path, on_progress=None, **_kw):
         seen.append(os.environ.get("SIGNAGE_COREL_MIN_MAJOR"))
         return inner(jobs, results_path, on_progress)
     monkeypatch.delenv("SIGNAGE_COREL_MIN_MAJOR", raising=False)
@@ -353,3 +353,52 @@ def test_the_batch_runs_with_the_newest_version_that_saved_one_of_its_masters(wo
     assert runner.poll_once() == 2
     assert seen == ["25"]                                               # one CorelDRAW for both: it must open the newer master
     assert "SIGNAGE_COREL_MIN_MAJOR" not in os.environ                  # and nothing is left behind for the next batch
+
+
+# ------------------------------------------------------------------ the X on the website: stopping a job the agent is running
+
+def test_a_job_stopped_on_the_website_kills_its_conversion_and_sends_nothing(world, monkeypatch):
+    from signage_agent import jobs as jobs_module
+    monkeypatch.setattr(jobs_module, "PUMP_S", 0.1)
+    monkeypatch.setattr(jobs_module, "STOP_CHECK_S", 0.1)
+    agent = _make_agent(world)
+    agent.corel_installs = lambda: [{"progid": "CorelDRAW.Application.27", "major": 27}]
+    _, stopped = _shop(world, "Stop me")
+    _, kept = _shop(world, "Keep me")
+    for sid in (stopped, kept):
+        world.web.post(f"/api/v2/shops/{sid}/convert")
+    seen = {"asked": False}
+    inner = _fake_batch()
+
+    def run(jobs, results_path, on_progress=None, should_cancel=None, **_kw):
+        if len(jobs) == 1:                                               # the retry of "Keep me" after the kill
+            return inner(jobs, results_path)
+        engine_bridge.heartbeat_path(results_path).write_text(json.dumps({"step": "open", "job_index": 0}))
+        assert world.web.post(f"/api/v2/shops/{stopped}/stop").json()["stopped"] is True
+        deadline = time.time() + 10
+        while time.time() < deadline and not should_cancel(0):           # what corel_supervisor asks on every poll
+            time.sleep(0.05)
+        seen["asked"] = should_cancel(0)
+        return [{"status": "error", "error": "Stopped by the user"}, {"status": "error", "error": "not started - worker was killed"}]
+
+    runner = JobRunner(agent, run_batch=run, mock=False)
+    assert runner.poll_once() == 2
+    assert seen["asked"] is True                                          # the site's 410 reached the batch runner
+    st = _status(world, stopped)
+    assert st["status"] == "failed" and st["error"] == "Stopped by the user" and not st.get("files")
+    assert _status(world, kept)["status"] == "done"                       # the job behind it still ran, alone
+
+
+def test_the_pump_marks_a_job_stopped_only_on_410(monkeypatch):
+    from signage_agent import jobs as jobs_module
+    answers = {"a": client.ApiError(410, "Stopped by the user"), "b": client.ApiError(409, "lease"), "c": None}
+
+    def report(_server, _token, job_id, _step=""):
+        if answers[job_id]:
+            raise answers[job_id]
+    monkeypatch.setattr(client, "report_progress", report)
+    pump = jobs_module._Pump("http://x", "t", ["a", "b", "c"])
+    for i in range(3):
+        pump.step_for(i, "open")
+    assert [pump.is_stopped(i) for i in range(3)] == [True, False, False]
+    assert pump.is_stopped(7) is False

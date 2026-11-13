@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -28,6 +29,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_OVERALL_TIMEOUT_S = 600.0  # 10 minutes of *no progress* (any heartbeat/job completion resets this)
 POLL_INTERVAL_S = 1.0
 MIN_FREE_RAM_GB = 1.5
+STOPPED_ERROR = "Stopped by the user"   # the result of a job whose worker was killed because the user pressed its X
 
 
 class RefusedToStart(Exception):
@@ -58,9 +60,20 @@ def worker_command(worker_module: str, jobs_path: Path, results_path: Path) -> l
     return [sys.executable, "-m", worker_module, str(jobs_path), str(results_path)]
 
 
+def worker_env(base: dict | None = None) -> dict:
+    """The worker's environment. Inside the agent's PyInstaller exe the worker is a NEW copy of the exe, so it must not inherit the
+    parent's PyInstaller bookkeeping (_PYI_* / _MEIPASS*): PYINSTALLER_RESET_ENVIRONMENT=1 makes it unpack and start as its own app.
+    Found live: an agent that had restarted itself after an update passed those variables on, and every worker it started hung at
+    launch with no CPU and no heartbeat. From source nothing changes."""
+    env = dict(os.environ if base is None else base)
+    if getattr(sys, "frozen", False):
+        env["PYINSTALLER_RESET_ENVIRONMENT"] = "1"
+    return env
+
+
 def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | None = None,
               worker_module: str = "app.corel_worker", skip_memory_check: bool = False,
-              on_progress=None, job_timeout_s: float | None = None) -> list[dict]:
+              on_progress=None, job_timeout_s: float | None = None, should_cancel=None) -> list[dict]:
     """jobs: list of {"master_path", "shop", "out_dir"} (JSON-safe strings).
     Returns one result dict per job, in order - any job the worker never
     reached (because it was killed) gets a synthetic error result naming
@@ -78,6 +91,10 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     worker's whole process tree (and so its CorelDRAW) killed, even if it keeps beating - a hidden modal dialog, a
     file lock or a hung COM call inside one step otherwise holds the queue for the full per-step timeout. The jobs
     the killed worker never reached come back as "not started"; the caller retries them in a fresh worker.
+
+    `should_cancel(index)` (optional) is asked on every poll about the job the worker is on (the first one without a result):
+    True = the user stopped it, so the worker's process tree and its CorelDRAW are killed at once. That job comes back with
+    STOPPED_ERROR, the ones after it as "not started" (the caller retries those alone, as after any kill).
 
     `worker_module` and `skip_memory_check` exist for tests (a fake worker
     that just hangs, to exercise the timeout/kill path without needing real
@@ -101,7 +118,7 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     jobs_path.write_text(json.dumps(jobs), encoding="utf-8")
 
     backend_dir = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(worker_command(worker_module, jobs_path, results_path), cwd=str(backend_dir))
+    proc = subprocess.Popen(worker_command(worker_module, jobs_path, results_path), cwd=str(backend_dir), env=worker_env())
     logger.info("started CorelDRAW worker pid=%s for %d job(s); no-progress timeout=%.0fs",
                 proc.pid, len(jobs), overall_timeout_s)
 
@@ -146,11 +163,23 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
 
     killed_for = None
     timed_out = None  # (job index, seconds) when the per-job limit killed the worker
+    stopped = None    # index of the job the user stopped
     while True:
         if _check_progress():
             last_progress_at = time.time()
 
         if proc.poll() is not None:
+            break
+
+        current = progress_state["count"]
+        if should_cancel is not None and current < len(jobs) and _asks_stop(should_cancel, current):
+            stopped = current
+            logger.info("worker pid=%s: job %d was stopped by the user; killing the worker and its CorelDRAW", proc.pid, current)
+            _kill_tree(proc.pid)
+            try:
+                proc.wait(timeout=15)
+            except Exception:
+                pass
             break
 
         idx, started = progress_state["job_index"], progress_state["job_started_at"]
@@ -188,7 +217,9 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     if len(results) < len(jobs):
         stuck_index = len(results)
         for i in range(stuck_index, len(jobs)):
-            if i == stuck_index and timed_out:
+            if i == stuck_index and stopped is not None:
+                reason = STOPPED_ERROR
+            elif i == stuck_index and timed_out:
                 step = (killed_for or {}).get("step")
                 reason = (f"timed out after {timed_out[1]:.0f}s" + (f" at step '{step}'" if step else "")
                           + " - CorelDRAW was stopped (a hidden dialog, a locked file or a hung COM call); convert again")
@@ -207,6 +238,13 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     for p in (heartbeat_path, done_path, jobs_path):
         p.unlink(missing_ok=True)
     return results
+
+
+def _asks_stop(should_cancel, index: int) -> bool:
+    try:
+        return bool(should_cancel(index))
+    except Exception:  # a broken check must never kill a healthy conversion
+        return False
 
 
 def _read_json(path: Path):

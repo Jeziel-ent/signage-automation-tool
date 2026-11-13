@@ -25,6 +25,22 @@ Login (`backend/app/auth.py`: email + password, roles admin/designer, cookie ses
 
 Backend: `ratelimit.py` (sliding windows, env `SIGNAGE_RATE_LIMIT_*`), `audit.py` (activity log, `GET /api/admin/audit`), `alerts.py` (`SIGNAGE_ALERT_WEBHOOK`, problems list), `retention.py` + `admin.py` (`/api/admin/status|storage|cleanup`; never deletes masters/boards/db), `tools/backup_db.py` (verified backups) + `tools/restore_db.py`; admin page `pages/Server.jsx`. In `SIGNAGE_ENGINE=remote` the ZIP "WeTransfer" button is a plain server share link (`/api/agent/config` -> `share_only`; `main.HOSTED_SKIP`). Agent 0.3.x: tray icon (`tray.py`, needs pystray), `build.py --sign`, per-PC CorelDRAW choice, `local_server` reads a POST body before any reply (Windows reset the connection otherwise). Deploy: `deploy/deploy.sh`, Jenkins "Server image" stage (UNSTABLE without Docker). NOT verified: `docker build`, the tray icon by eye, learning-loop thresholds on real designer data, code signing (no certificate). Still not built: DigitalOcean Spaces storage (needs the owner's keys). Details: `docs/deploy-droplet.md`.
 
+## Droplet live + Stop buttons (2026-11-12)
+
+Site live at `https://142-93-219-72.sslip.io` (DigitalOcean BLR1, Premium Intel 2 vCPU / 4 GB / 120 GB, code in `/opt/signage`, copied from
+this PC with `git ls-files | tar` - not a git clone; `deploy/server.env` uses the free sslip.io name because Chrome lets only HTTPS sites
+reach the local agent on 127.0.0.1). **Stop (X) buttons**: per row (Pending / Waiting for agent / Converting) and on the Convert All banner
+(`StopButton`, `stopShops`, `stopBatch` in `pages/Automation.jsx`); `POST /api/v2/shops/{id}/stop` and `POST /api/v2/shops/stop {ids}`
+(`main._stop_shop`): shop -> `failed` with "Stopped by the user" (row shows "Stopped" + Retry), agent jobs -> state `cancelled`
+(`db.cancel_active_agent_jobs`), the agent's next progress call gets **410** (`agents.job_progress`) and `corel_supervisor.run_batch(should_cancel=)`
+kills the worker + CorelDRAW; local mode uses `_stopped_shops`. Verified LIVE (agent 0.3.5, CorelDRAW 27): stop pressed at the `open` step,
+CorelDRAW killed 2.4 s later, the other board of the batch retried alone and finished. **Agent fixes found doing it:** (1) an agent restarted
+by its updater inherited PyInstaller's `_PYI_*` variables and every CorelDRAW worker it started HUNG at launch (0 CPU, no heartbeat) -
+`corel_supervisor.worker_env` / `updater.fresh_env` set `PYINSTALLER_RESET_ENVIRONMENT=1`; (2) the old launcher then kept
+`SignageAgent.old.exe` locked and the next update failed "Access is denied" - `updater.swap_in` falls back to `SignageAgent.old-<time>.exe`;
+(3) a second double-click of the downloaded exe said "Permission denied" - `installer._in_use` opens for writing (renaming a running exe
+succeeds on Windows). Published agent 0.3.5, `min_supported` 0.3.5. Tests: `backend/tests/test_stop_conversion.py`, `agent/tests/test_installer.py`.
+
 ## Admin page (2026-11-08)
 
 `/admin` (`pages/Admin.jsx`, `utils/adminView.js`) - administrators only, NOT in the sidebar (a designer who types it is sent to `/`; `/users` and `/server` redirect to it). Server health (`GET /api/admin/health`, `sysmetrics.py`, needs psutil), designers + usage (`GET /api/admin/designers?days=`, `db.designer_usage`: sign-ins from the audit log, boards/exports/failures from `agent_jobs`), create/disable/reset/delete user (`DELETE /api/users/{id}`, `db.delete_user`: sessions removed, PCs disconnected, waiting jobs fail, the audit log keeps the e-mail; never yourself or the last admin), Spaces usage (`GET /api/admin/spaces`, `spaces.py`, read-only, needs boto3 + `SIGNAGE_SPACES_*`, cached 10 min), plus the old Server sections (`Server.jsx embedded`). Verified in the browser pane on a scratch server with the real agent exe. Tests: `test_admin_page.py`, `adminView.test.mjs`. Spaces counting is only unit-tested with a fake client (no real bucket yet).

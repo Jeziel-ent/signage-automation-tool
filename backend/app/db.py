@@ -1075,6 +1075,14 @@ def queue_font_request(user_id: int, family: str, incoming_base: str) -> str:
     return job_id
 
 
+def cancel_active_agent_jobs(shop_id: str, reason: str) -> int:
+    """The user stopped this shop: its waiting / running agent jobs become `cancelled` (not `failed` - a stop is not an error, and the
+    agent that holds one is told so on its next progress call and stops CorelDRAW)."""
+    with _conn() as conn:
+        return conn.execute("UPDATE agent_jobs SET state = 'cancelled', error = ?, finished_at = ?, lease_until = NULL"
+                            " WHERE shop_id = ? AND state IN ('queued', 'claimed', 'running')", (reason, time.time(), shop_id)).rowcount
+
+
 def fail_active_agent_jobs(shop_id: str, reason: str) -> int:
     with _conn() as conn:
         return conn.execute("UPDATE agent_jobs SET state = 'failed', error = ?, finished_at = ?, lease_until = NULL"

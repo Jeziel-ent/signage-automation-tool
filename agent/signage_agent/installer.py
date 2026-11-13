@@ -88,23 +88,33 @@ def install_and_launch() -> bool:
         if target.exists() and _in_use(target):          # an installed agent is already running: it updates itself
             message("The Signage Agent is already installed and running on this computer.\n\nGo back to the website.")
             return True
-        shutil.copy2(src, target)
+        try:
+            shutil.copy2(src, target)
+        except PermissionError:
+            if target.exists() and _in_use(target):      # it started running between the check and the copy
+                message("The Signage Agent is already installed and running on this computer.\n\nGo back to the website.")
+                return True
+            raise
         shutil.copy2(cfg_src, dest / "config.json")
         if not _test_mode():
             set_autostart(target)
     except OSError as e:
         message(f"Could not install the agent: {e}", error=True)
         return False
-    subprocess.Popen([str(target), "--installed"], close_fds=True, creationflags=DETACHED)  # noqa: S603
+    from .updater import fresh_env
+    subprocess.Popen([str(target), "--installed"], close_fds=True, env=fresh_env(), creationflags=DETACHED)  # noqa: S603
     message("The Signage Agent is installed and running.\n\nGo back to the website - it will detect the agent and ask you to "
             "connect this PC.")
     return True
 
 
 def _in_use(path: Path) -> bool:
+    """True when Windows will not let us overwrite `path` because the exe is running. Renaming a file onto itself is NOT a test:
+    Windows allows renaming a running exe, so the old check said "free" and the copy then failed with Permission denied
+    (seen on a PC where the agent was already installed and running). Opening it for writing fails while it runs."""
     try:
-        path.rename(path)
-        return False
+        with open(path, "r+b"):
+            return False
     except OSError:
         return True
 

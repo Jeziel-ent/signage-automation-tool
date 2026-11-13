@@ -20,6 +20,7 @@ from . import client, engine_bridge
 log = logging.getLogger("agent.jobs")
 KEEPALIVE_S = 20
 PUMP_S = 1.5
+STOP_CHECK_S = 4           # the running job's step is re-sent this often: the reply tells the agent when the user pressed Stop (410)
 CACHE_KEEP = 15            # masters kept for the next conversion (a master is 100-350 MB)
 UPLOAD_TRIES = 3
 MAX_FONT_BYTES = 40 * 1024 * 1024        # a font file bigger than this (a few CJK fonts) is not sent
@@ -96,6 +97,9 @@ class JobRunner:
             pump.ids = [j["id"] for j, _ in prepared]
             entries = self._convert(prepared, work, pump)
             for (job, run), entry in zip(prepared, entries):
+                if job["id"] in pump.stopped:
+                    log.info("job %s was stopped by the user; its results are dropped", job["id"])
+                    continue
                 self._deliver(job, run, entry)
         finally:
             pump.stop()
@@ -125,6 +129,9 @@ class JobRunner:
             out = []
             for i, (job, run) in enumerate(prepared):
                 pump.step_for(i, "converting")
+                if job["id"] in pump.stopped:
+                    out.append({"status": "error", "error": "stopped by the user"})
+                    continue
                 try:
                     out.append({"status": "done", "result": self._run_mock(run)})
                 except Exception as e:  # noqa: BLE001
@@ -142,7 +149,8 @@ class JobRunner:
         if need:
             os.environ["SIGNAGE_COREL_MIN_MAJOR"] = str(need)
         try:
-            results = self._run_batch(runs, results_path)
+            # the X on the website: the supervisor asks before every poll whether the job it is on was stopped, and kills CorelDRAW if so
+            results = self._run_batch(runs, results_path, should_cancel=lambda k: pump.is_stopped(k))
         except Exception as e:  # noqa: BLE001 - e.g. RefusedToStart (not enough free RAM): every job fails with the reason
             return [{"status": "error", "error": str(e)} for _ in runs]
         finally:
@@ -153,12 +161,12 @@ class JobRunner:
         # a batch member that failed after the first is retried alone in a fresh worker + CorelDRAW (it may have failed only because the
         # reused instance did) - the same rule the website's own conversions follow
         for i, entry in enumerate(results):
-            if i > 0 and entry.get("status") != "done":
+            if i > 0 and entry.get("status") != "done" and not pump.is_stopped(i):
                 log.warning("job %s failed in a batch (%s); retrying it alone", prepared[i][0]["id"], entry.get("error"))
                 single = work / f"retry{i}.json"
                 pump.heartbeat, pump.offset = engine_bridge.heartbeat_path(single), i
                 try:
-                    results[i] = self._run_batch([runs[i]], single)[0]
+                    results[i] = self._run_batch([runs[i]], single, should_cancel=lambda _k, n=i: pump.is_stopped(n))[0]
                 except Exception as e:  # noqa: BLE001
                     results[i] = {"status": "error", "error": str(e)}
         return results
@@ -294,6 +302,9 @@ class JobRunner:
             if e.status == 409:                      # the lease ran out and the job went back to the queue: another round redoes it
                 log.warning("job %s was taken back by the site before the results arrived", job["id"])
                 return
+            if e.status == 410:                      # stopped on the website just as it finished: nothing to deliver
+                log.info("job %s was stopped by the user; its results are dropped", job["id"])
+                return
             self._fail(job, f"could not upload the results: {e.detail}")
 
     def _upload(self, job_id: str, path: Path) -> None:
@@ -325,12 +336,17 @@ class _Pump(threading.Thread):
         self.server, self.token, self.ids = server, token, ids
         self.heartbeat: Path | None = None
         self.offset = 0
+        self.stopped: set[str] = set()       # job ids the site answered 410 for: the user pressed Stop
         self._done = threading.Event()
         self._last_step: tuple[int, str] | None = None
+        self._last_sent = 0.0
         self._last_keep = time.time()
 
     def stop(self) -> None:
         self._done.set()
+
+    def is_stopped(self, index: int) -> bool:
+        return 0 <= index < len(self.ids) and self.ids[index] in self.stopped
 
     def step_for(self, index: int, step: str) -> None:
         self._send(index, step)
@@ -339,8 +355,12 @@ class _Pump(threading.Thread):
         if 0 <= index < len(self.ids):
             try:
                 client.report_progress(self.server, self.token, self.ids[index], step)
-            except client.ApiError:
-                pass                                 # a missed beat is not an error; the next one extends the lease
+            except client.ApiError as e:
+                if e.status == 410:                  # stopped on the website: the batch runner kills CorelDRAW for it
+                    if self.ids[index] not in self.stopped:
+                        log.info("job %s was stopped on the website", self.ids[index])
+                    self.stopped.add(self.ids[index])
+                # any other error is a missed beat, not a failure; the next one extends the lease
 
     def run(self) -> None:
         while not self._done.wait(PUMP_S):
@@ -352,10 +372,10 @@ class _Pump(threading.Thread):
                 except (OSError, ValueError):
                     pass
             now = time.time()
-            if step and (idx, step) != self._last_step:
-                self._last_step = (idx, step)
+            if step and ((idx, step) != self._last_step or now - self._last_sent >= STOP_CHECK_S):
+                self._last_step, self._last_sent = (idx, step), now
                 self._send(idx, step)
             if now - self._last_keep >= KEEPALIVE_S:             # every claimed job, so a long step never lets a lease run out
-                for i in range(len(self.ids)):
+                for i in range(len(self.ids)):                   # (and a stop of a job still waiting in this batch is learned here)
                     self._send(i, "")
                 self._last_keep = now

@@ -47,8 +47,15 @@ def _skipped(home: Path) -> str | None:
         return None
 
 
+def fresh_env() -> dict:
+    """The environment for starting the agent exe as a NEW app (after an update, after installing): without
+    PYINSTALLER_RESET_ENVIRONMENT=1 the new exe inherits this process's PyInstaller variables and its own CorelDRAW workers hung."""
+    return {**os.environ, "PYINSTALLER_RESET_ENVIRONMENT": "1"}
+
+
 def start_new(exe: Path) -> None:
-    subprocess.Popen([str(exe), "--after-update"], close_fds=True, creationflags=DETACHED if sys.platform == "win32" else 0)  # noqa: S603
+    subprocess.Popen([str(exe), "--after-update"], close_fds=True, env=fresh_env(),  # noqa: S603
+                     creationflags=DETACHED if sys.platform == "win32" else 0)
 
 
 def check_and_apply(server: str, token: str, current: str, home: Path, *, idle: bool, force: bool = False, swap=None) -> str:
@@ -84,7 +91,10 @@ def check_and_apply(server: str, token: str, current: str, home: Path, *, idle: 
 
 def swap_in(exe: Path, new: Path, home: Path, previous_version: str, target_version: str = "") -> None:
     old = exe.with_name("SignageAgent.old.exe")
-    old.unlink(missing_ok=True)
+    try:
+        old.unlink(missing_ok=True)
+    except OSError:               # an older copy is still running from it (seen live after a restart that kept its launcher alive)
+        old = exe.with_name(f"SignageAgent.old-{int(time.time())}.exe")
     exe.rename(old)
     try:
         new.rename(exe)
@@ -117,9 +127,10 @@ def cleanup_leftovers(home: Path) -> None:
     exe = exe_path()
     if exe is None or _pending(home).exists():
         return
-    for name in ("SignageAgent.old.exe", "SignageAgent.bad.exe", "SignageAgent.new.exe"):
+    leftovers = [exe.with_name(n) for n in ("SignageAgent.old.exe", "SignageAgent.bad.exe", "SignageAgent.new.exe")]
+    for f in leftovers + sorted(exe.parent.glob("SignageAgent.old-*.exe")):
         try:
-            exe.with_name(name).unlink(missing_ok=True)
+            f.unlink(missing_ok=True)
         except OSError:
             pass                      # still in use: next heartbeat
 

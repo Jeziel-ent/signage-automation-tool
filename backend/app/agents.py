@@ -404,11 +404,14 @@ def job_input(job_id: str, name: str, request: Request):
     return FileResponse(src["path"], media_type="application/octet-stream", filename=src["filename"])
 
 
-@router.post("/api/agent/jobs/{job_id}/progress", responses={409: {"description": "Not held"}})
+@router.post("/api/agent/jobs/{job_id}/progress", responses={409: {"description": "Not held"}, 410: {"description": "Stopped by the user"}})
 def job_progress(job_id: str, body: ProgressBody, request: Request):
     """The agent reports the step it is on (launch, open, tile_resize, saveas, pdf, png, uploading...): extends the lease and drives
-    the progress bar of the shop."""
+    the progress bar of the shop. 410 = the user stopped this job: the agent stops CorelDRAW and drops it."""
     agent = agent_from_request(request)
+    stopped = db.get_agent_job(job_id)
+    if stopped and stopped["agent_id"] == agent["id"] and stopped["state"] == "cancelled":
+        raise HTTPException(410, stopped.get("error") or "stopped by the user")
     job = _held_job(job_id, agent)
     db.touch_agent_job(job_id, agent["id"], LEASE_S, step=body.step or None)
     if job["kind"] == "convert" and job["shop_id"] and body.step and db.get_shop(job["shop_id"]):

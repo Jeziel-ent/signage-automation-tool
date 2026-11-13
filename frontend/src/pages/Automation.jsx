@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { finishedNotice, savedNotice, waitForExport } from "../utils/publishEdits.js";
 import { learnedCount, nothingLearnedNotice, sparkleTitle } from "../utils/correctionsView.js";
-import { CheckCircle2, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Play, Plus, Sparkles, Trash2 } from "lucide-react";
+import { CheckCircle2, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Play, Plus, Sparkles, Trash2, X } from "lucide-react";
 import "../components/MasterPanels.css";
 import { useMasters } from "../context/MasterContext.jsx";
 import { boardOrientation, fallbackWarning, masterCount as countMasters, masterFallback, masterLabel, mastersOf, primaryMaster, pickedMasterId, rowMasterIdsAuto } from "../utils/masters.js";
@@ -44,6 +44,9 @@ export const CONVERT_STEPS = [
   { key: "pdf", endPct: 88 },
   { key: "png", endPct: 97 },
 ];
+
+// what the server stores as the error of a board the user stopped (main.STOPPED_MSG): shown as "Stopped", not as a failure
+const STOPPED_TEXT = "Stopped by the user";
 
 export default function Automation() {
   const [brand, setBrand] = useState("");
@@ -428,12 +431,45 @@ export default function Automation() {
     // one after another: saving drafts numbers the shops (seq_no), which must not race. The server then converts
     // the queued shops one at a time.
     const gen = masterGen.current;
+    const stop = stopGen.current;
     for (const id of todo) {
       if (gen !== masterGen.current) return; // a master changed mid-batch: the queue was reset, stop queuing
+      if (stop !== stopGen.current) return; // the banner's X: queue nothing more
       const realId = await convertShop(id);
       if (gen !== masterGen.current) return;
+      if (stop !== stopGen.current) { // stopped while this one was being queued: stop it too
+        if (realId) stopShops([realId]);
+        return;
+      }
       setBatch((b) => (!b ? b : realId ? { ...b, ids: [...b.ids, realId] } : { ...b, notStarted: b.notStarted + 1 }));
     }
+  }
+
+  // ---- the X buttons: stop one row, or the whole running conversion (the server stops CorelDRAW for a board it is on)
+  const stopGen = useRef(0);
+  async function stopShops(ids) {
+    if (!ids.length) return;
+    setShops((s) => s.map((x) => (ids.includes(x.id) ? { ...x, status: "failed", error: STOPPED_TEXT, step: null } : x)));
+    const r = await fetch("/api/v2/shops/stop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    });
+    if (!r.ok) setShopError(await apiDetail(r, "Could not stop the conversion"));
+    ids.forEach((id) => pollShop(id)); // the row then shows what the server really has
+  }
+
+  function stopBatch() {
+    stopGen.current += 1;
+    const running = shops.filter((x) => !isDraft(x) && (x.status === "queued" || x.status === "converting")).map((x) => x.id);
+    const mine = batch ? shops.filter((x) => batch.ids.includes(x.id)) : [];
+    const done = mine.filter((x) => x.status === "done").length;
+    // every board of this batch that did not finish because of an X: the ones stopped now plus rows stopped one by one before
+    const stopped = new Set([...running, ...mine.filter((x) => x.error === STOPPED_TEXT).map((x) => x.id)]).size;
+    setIsBatchConverting(false);
+    setBatch(null);
+    setBatchSummary(`Conversion stopped - ${done} board${done === 1 ? "" : "s"} finished, ${stopped} stopped.`);
+    stopShops(running);
   }
 
   useEffect(() => {
@@ -610,6 +646,7 @@ export default function Automation() {
                         onExport={() => setDownloadShop({ ...s, no: rowSno(s, i) })}
                         onPreview={() => setGalleryShop(s)}
                         onIntelligence={() => applyIntelligence(s.id)}
+                        onStop={() => stopShops([s.id])}
                         intelCount={intelAvail[s.id] || 0}
                         stepEstimates={stepEstimates}
                       />
@@ -625,6 +662,7 @@ export default function Automation() {
                     index={currentShopIndex}
                     total={batch?.total ?? 0}
                     remaining={batchView.eta ? batchView.eta.value : null}
+                    onStop={stopBatch}
                   />
                 ) : null}
                 summary={batchSummary}
@@ -691,7 +729,7 @@ function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportCli
 // One editable row: name, width, height and the shared unit are live inputs (disabled while the shop is queued or
 // converting, or once it is done - its output would no longer match the row); text/number fields save on blur, the unit
 // on change.
-function ShopRow({ shop, index, masters, onEdit, onSave, onDelete, onConvert, onOpen, onExport, onPreview, onIntelligence, intelCount, stepEstimates }) {
+function ShopRow({ shop, index, masters, onEdit, onSave, onDelete, onConvert, onOpen, onExport, onPreview, onIntelligence, onStop, intelCount, stepEstimates }) {
   const locked = shop.status === "queued" || shop.status === "converting" || shop.status === "done";
   const field = (key, label, extra = {}) => (
     <input
@@ -758,7 +796,7 @@ function ShopRow({ shop, index, masters, onEdit, onSave, onDelete, onConvert, on
         <MasterCell shop={shop} masters={masters} locked={locked} onChoose={(id) => onEdit({ master_id: id })} />
       </td>
       <td>
-        <ConvertCell shop={shop} onConvert={onConvert} onExport={onExport} onPreview={onPreview} onIntelligence={onIntelligence}
+        <ConvertCell shop={shop} onConvert={onConvert} onExport={onExport} onPreview={onPreview} onIntelligence={onIntelligence} onStop={onStop}
           intelCount={intelCount} stepEstimates={stepEstimates} />
       </td>
       <td>
@@ -952,7 +990,7 @@ function NewShopRow({ seqNo, form, setForm, onAdd, onCancel }) {
 }
 
 // The Convert column: a button while a shop is new, then a status badge (queued / processing with the eased % / completed).
-function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, intelCount = 0, stepEstimates }) {
+function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, onStop, intelCount = 0, stepEstimates }) {
   // Called unconditionally (hooks can't be conditional) - it's a no-op
   // until `shop.status === "converting"` actually starts reporting steps.
   const smoothedPct = useSteppedProgress(CONVERT_STEPS, shop.step, shop.status === "done", stepEstimates);
@@ -964,14 +1002,15 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, int
       </button>
     );
   }
+  const stopBtn = <StopButton label={`Stop converting ${shop.name}`} onClick={onStop} />;
   if (shop.status === "queued" && shop.waiting_for_agent) {
-    return <span className="badge badge-failed" title="None of your Signage Agents is online - start the agent on your PC and this board will convert (see the Agent page)">Waiting for agent</span>;
+    return <span className="stop-cell"><span className="badge badge-failed" title="None of your Signage Agents is online - start the agent on your PC and this board will convert (see the Agent page)">Waiting for agent</span>{stopBtn}</span>;
   }
-  if (shop.status === "queued") return <span className="badge badge-queued" title="Waiting its turn - CorelDRAW converts one board at a time">Pending</span>;
+  if (shop.status === "queued") return <span className="stop-cell"><span className="badge badge-queued" title="Waiting its turn - CorelDRAW converts one board at a time">Pending</span>{stopBtn}</span>;
   if (shop.status === "converting") {
     // Eased toward (but capped just below) the next real step threshold - never a straight jump to the backend's
     // last-polled value, and never 100% here (that only happens once status flips to "done").
-    return <span className="badge badge-processing">Converting... {smoothedPct}%</span>;
+    return <span className="stop-cell"><span className="badge badge-processing">Converting... {smoothedPct}%</span>{stopBtn}</span>;
   }
   if (shop.status === "done") {
     return (
@@ -1006,20 +1045,29 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, int
     return (
       <div>
         <span className="badge badge-failed" title={shop.error}>
-          Failed
+          {shop.error === STOPPED_TEXT ? "Stopped" : "Failed"}
         </span>{" "}
         <button className="btn small" onClick={onConvert}>
           Retry
         </button>
-        {shop.error && <div className="err small-text" style={{ maxWidth: 260 }}>{shop.error}</div>}
+        {shop.error && shop.error !== STOPPED_TEXT && <div className="err small-text" style={{ maxWidth: 260 }}>{shop.error}</div>}
       </div>
     );
   }
   return null;
 }
 
+// The round X that stops a waiting / converting board (one row, or the whole batch on the banner).
+function StopButton({ label, onClick, big = false }) {
+  return (
+    <button type="button" className={"icon-btn stop-btn" + (big ? " big" : "")} onClick={onClick} title={label} aria-label={label}>
+      <X size={big ? 16 : 13} strokeWidth={2.5} />
+    </button>
+  );
+}
+
 // Replaces the Convert All button while a batch runs: circular % loader, "Converting i of n" + time estimate, linear bar.
-function BatchBanner({ progress, index, total, remaining }) {
+function BatchBanner({ progress, index, total, remaining, onStop }) {
   const R = 22;
   const C = 2 * Math.PI * R;
   return (
@@ -1044,6 +1092,7 @@ function BatchBanner({ progress, index, total, remaining }) {
           <div className="batch-bar-fill" style={{ width: `${progress}%` }} />
         </div>
       </div>
+      <StopButton big label="Stop the whole conversion" onClick={onStop} />
     </div>
   );
 }

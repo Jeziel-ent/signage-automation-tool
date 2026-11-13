@@ -377,6 +377,16 @@ a.btn { text-decoration: none; display: inline-block; }
 .batch-bar { height: 6px; margin-top: 8px; border-radius: 999px; background: #e2e8f0; overflow: hidden; }
 .batch-bar-fill { height: 100%; border-radius: 999px; background-image: linear-gradient(to right, #dc2626, #e11d48); transition: width 0.6s ease; }
 
+/* the X that stops a waiting / converting board (row) or the whole Convert All (banner) */
+.stop-cell { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.icon-btn.stop-btn {
+  flex: none; width: 22px; height: 22px; padding: 0; border-radius: 999px;
+  display: inline-flex; align-items: center; justify-content: center;
+  color: #64748b; background: #f1f5f9; border: 1px solid #e2e8f0;
+}
+.icon-btn.stop-btn.big { width: 32px; height: 32px; }
+.icon-btn.stop-btn:hover:not(:disabled), .icon-btn.stop-btn:focus-visible { color: #fff; background: #dc2626; border-color: #dc2626; }
+
 /* column sizing: the shop name gets the slack, width/height stay compact */
 .ws-card .shops-table { table-layout: auto; }
 /* the two shop-name columns share the spare width equally, so Tamil names (which run wider than English) are not squeezed */

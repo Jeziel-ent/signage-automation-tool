@@ -29,6 +29,10 @@ docker compose ps                                       # app, caddy, backup sho
 curl https://signage.yourdomain.com/healthz             # {"ok": true, "engine": "remote", ...}
 ```
 
+The Python libraries are installed by the image build from `backend/requirements-server.txt` (nothing is pip-installed on the droplet by hand).
+Check them with `docker compose exec app python -c "import fastapi, uvicorn, PIL, psutil, boto3; print('ok')"`; after changing that file run
+`docker compose up -d --build` again.
+
 Open the domain, **Connect Agent**, sign in with the administrator from `server.env`, add the designers on the Users page (or
 `docker compose exec app python tools/create_user.py designer@adinn.com`).
 

@@ -6,3 +6,5 @@ uvicorn[standard]>=0.29
 python-multipart>=0.0.9
 Pillow>=10.1            # the print sheet, thumbnails and the mock engine
 python-dotenv>=1.0      # backend/.env (the Docker image reads real environment variables instead)
+psutil>=5.9             # /admin server health (app/sysmetrics.py)
+boto3>=1.34             # /admin Spaces usage (app/spaces.py); needs SIGNAGE_SPACES_* in deploy/server.env

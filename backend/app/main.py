@@ -1078,6 +1078,10 @@ CONVERT_BATCH_MAX = 5
 _convert_queue: list[str] = []            # shop ids in the order Convert was pressed (only shops still "queued" count)
 _convert_queue_lock = threading.Lock()
 _batch_slots: dict[str, tuple[Path, int]] = {}  # shop id -> (its batch's heartbeat file, its index in that batch)
+# shops the user stopped while a local worker still had them: the supervisor kills CorelDRAW for the one it is on, and no result
+# of a stopped shop is stored (it stays "failed" with STOPPED_MSG). An id leaves the set when the shop is converted again.
+_stopped_shops: set[str] = set()
+STOPPED_MSG = corel_supervisor.STOPPED_ERROR
 
 
 def _learned_records(shop_row: dict, job_row: dict, master_used: dict, w_mm: float, h_mm: float) -> list[dict]:
@@ -1158,6 +1162,8 @@ def _attach_master_used(report: dict, master_used: dict) -> None:
 
 
 def _store_convert_result(shop_id: str, entry: dict, master_used: dict) -> None:
+    if shop_id in _stopped_shops:          # stopped by the user while it ran: its (partial) result is not kept
+        return
     if entry.get("status") == "done":
         out = entry["result"]
         _attach_master_used(out["report"], master_used)
@@ -1409,12 +1415,12 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         if entry.get("status") == "done" or i == 0:
             _store_convert_result(sid, entry, master_used)
         # a later shop that failed is retried on its own below (it may have failed only because the reused instance did)
-        if i + 1 < len(prepared):
+        if i + 1 < len(prepared) and prepared[i + 1][0] not in _stopped_shops:
             db.set_shop_status(prepared[i + 1][0], "converting", step="starting")
 
     try:
         results = corel_supervisor.run_batch([j for _, j, _ in prepared], results_path, on_progress=on_progress,
-                                             **_convert_limits())
+                                             should_cancel=lambda k: prepared[k][0] in _stopped_shops, **_convert_limits())
     except Exception as e:  # e.g. RefusedToStart (not enough free RAM): every shop in the batch fails with the reason
         results = [{"status": "error", "error": str(e)} for _ in prepared]
     finally:
@@ -1424,6 +1430,8 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
             p.unlink(missing_ok=True)
 
     for i, ((sid, job, master_used), entry) in enumerate(zip(prepared, results)):
+        if sid in _stopped_shops:            # the user stopped it: no result, no retry
+            continue
         if entry.get("status") == "done":
             if db.get_shop(sid)["status"] != "done":  # normally already stored by on_progress
                 _store_convert_result(sid, entry, master_used)
@@ -1437,7 +1445,8 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
         single = CONVERT_RUNS / f"{sid}.json"
         _batch_slots[sid] = (single.with_suffix(_HEARTBEAT_SUFFIX), 0)
         try:
-            retry = corel_supervisor.run_batch([job], single, **_convert_limits())[0]
+            retry = corel_supervisor.run_batch([job], single, should_cancel=lambda _k, s=sid: s in _stopped_shops,
+                                               **_convert_limits())[0]
         except Exception as e:
             retry = {"status": "error", "error": str(e)}
         finally:
@@ -1446,7 +1455,8 @@ def _v2_convert_worker(shop_id: str, job_id: str) -> None:
                 p.unlink(missing_ok=True)
         _store_convert_result(sid, retry, master_used)
     for sid, _, _ in prepared:
-        _apply_learned_nested(sid)
+        if sid not in _stopped_shops:
+            _apply_learned_nested(sid)
 
 
 def _learned_nested_found(shop: dict | None) -> list[dict] | None:
@@ -1560,6 +1570,7 @@ def v2_convert_shop(shop_id: str, request: Request, payload: dict | None = Body(
     if use_intel and row["status"] == "done":
         _discard_board_edits(row["job_id"], shop_id)         # the saved edits and scene belong to the board being replaced
     db.set_shop_intelligence(shop_id, use_intel)
+    _stopped_shops.discard(shop_id)      # converted again after a stop
     db.set_shop_status(shop_id, "queued")
     if _remote_mode():       # the user's Windows agent does the work: queue a job for it
         user = getattr(request.state, "user", None) or {"id": 0}
@@ -1569,6 +1580,44 @@ def v2_convert_shop(shop_id: str, request: Request, payload: dict | None = Body(
         _convert_queue.append(shop_id)
     _pool.submit(_v2_convert_worker, shop_id, row["job_id"])
     return {"status": "queued", "use_intelligence": use_intel}
+
+
+def _stop_shop(shop_id: str) -> bool:
+    """Stop one shop's conversion: waiting -> it never starts; running -> CorelDRAW is stopped (the local supervisor kills its worker; a
+    remote agent learns it on its next progress call) and nothing it made is stored. The shop ends `failed` with STOPPED_MSG, so the
+    row offers Retry. False when the shop was not waiting or converting (nothing to stop)."""
+    row = db.get_shop(shop_id)
+    if not row or row["status"] not in ("queued", "converting"):
+        return False
+    _stopped_shops.add(shop_id)
+    with _convert_queue_lock:
+        while shop_id in _convert_queue:
+            _convert_queue.remove(shop_id)
+    db.cancel_active_agent_jobs(shop_id, STOPPED_MSG)
+    db.set_shop_status(shop_id, "failed", error=STOPPED_MSG)
+    _progress_peak.pop(shop_id, None)
+    return True
+
+
+@app.post("/api/v2/shops/{shop_id}/stop", responses={404: {"description": "Not found"}})
+def v2_stop_shop(shop_id: str):
+    """The X on a row that is waiting or converting."""
+    if not db.get_shop(shop_id):
+        raise HTTPException(404, _SHOP_NOT_FOUND)
+    stopped = _stop_shop(shop_id)
+    if stopped:
+        audit.record("conversion_stopped", shop_id)
+    return {"stopped": stopped, "status": db.get_shop(shop_id)["status"]}
+
+
+@app.post("/api/v2/shops/stop")
+def v2_stop_shops(payload: dict = Body(default={})):
+    """The X on the Convert All banner: stop every listed shop that is still waiting or converting (others are left as they are)."""
+    ids = [str(i) for i in (payload.get("ids") or []) if i]
+    stopped = [sid for sid in ids if _stop_shop(sid)]
+    if stopped:
+        audit.record("batch_stopped", f"{len(stopped)} shop(s)")
+    return {"stopped": stopped}
 
 
 def _discard_board_edits(job_id: str, shop_id: str) -> None:
