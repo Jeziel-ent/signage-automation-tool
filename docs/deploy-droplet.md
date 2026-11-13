@@ -55,7 +55,7 @@ into `/data/backups` of the `signage-data` volume, checks each copy, deletes cop
 to Google Chat. The database holds Recently generated, users and masters, so one backup covers all three; the masters' and boards' FILES are never deleted.
 Set `SIGNAGE_ALERT_WEBHOOK` in `deploy/server.env` to the space's webhook (Google Chat: space > Apps & integrations > Webhooks) - the same
 webhook also receives server alerts (database / disk problems, designers waiting, unhandled errors). Off with `SIGNAGE_BACKUP_SCHEDULE=0`.
-Copy backups off the droplet too (weekly droplet backups in the DigitalOcean panel, or `docker compose cp app:/data/backups ./`).
+When `SIGNAGE_SPACES_KEY/SECRET/BUCKET` are set, each backup is also uploaded to Spaces under `signage-automation/database-backups/<date>/` (another bucket: `SIGNAGE_SPACES_BACKUP_BUCKET`), copies older than 7 days are removed there too, and `python tools/spaces_layout.py` (run inside the app container) creates the empty `signage-automation/` folders (masters, generated-boards, recently-generated, editor-exports, users, corrections, agent-downloads, shared-links, logs). Only backups are uploaded so far; the other folders are where masters and boards will go when they move off the droplet's disk. Copy backups off the droplet too (weekly droplet backups in the DigitalOcean panel, or `docker compose cp app:/data/backups ./`).
 Restore: `docker compose stop app`, copy a backup over `/data/signage.db` in the volume (delete `signage.db-wal` / `-shm` next to it),
 `docker compose start app`.
 

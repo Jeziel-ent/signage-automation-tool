@@ -71,3 +71,68 @@ def usage(client_factory=_client, now: float | None = None, force: bool = False)
             value = {**base, "error": f"could not read the bucket: {type(e).__name__}: {e}"}
         _cache.update(at=now, value=value)
         return value
+
+
+# ------------------------------------------------------------------ the "signage-automation" area: where backups (and later files) go
+ROOT = "signage-automation"
+FOLDERS = ("database-backups", "masters", "generated-boards", "recently-generated", "editor-exports", "users",
+           "corrections", "agent-downloads", "shared-links", "logs")
+
+
+def backup_settings() -> dict | None:
+    """Same keys as the usage check; the backups may live in ANOTHER bucket: SIGNAGE_SPACES_BACKUP_BUCKET (default = SIGNAGE_SPACES_BUCKET)."""
+    cfg = settings()
+    if cfg is None:
+        return None
+    return {**cfg, "bucket": os.environ.get("SIGNAGE_SPACES_BACKUP_BUCKET", "").strip() or cfg["bucket"]}
+
+
+def ensure_layout(client, bucket: str) -> list[str]:
+    """Create the empty folders (zero-byte keys ending in '/', which is how Spaces shows a folder). Returns the ones created."""
+    made = []
+    for name in ("", *FOLDERS):
+        key = f"{ROOT}/{name}/" if name else f"{ROOT}/"
+        try:
+            client.head_object(Bucket=bucket, Key=key)
+        except Exception:  # noqa: BLE001 - not there (404) -> create it
+            client.put_object(Bucket=bucket, Key=key, Body=b"")
+            made.append(key)
+    return made
+
+
+def backup_key(file_name: str, when: float | None = None) -> str:
+    return f"{ROOT}/database-backups/{time.strftime('%Y-%m-%d', time.localtime(when or time.time()))}/{file_name}"
+
+
+def upload_backup(path, client_factory=_client, when: float | None = None) -> dict | None:
+    """Upload one backup file to Spaces. None when Spaces is not configured; raises on a real failure (the caller reports it)."""
+    cfg = backup_settings()
+    if cfg is None:
+        return None
+    client = client_factory(cfg)
+    ensure_layout(client, cfg["bucket"])
+    key = backup_key(path.name, when)
+    client.upload_file(str(path), cfg["bucket"], key)
+    return {"bucket": cfg["bucket"], "key": key, "region": cfg["region"]}
+
+
+def prune_remote(days: int, client_factory=_client, now: float | None = None) -> int:
+    """Delete backups in Spaces older than `days` (by their upload time), never the newest one. Only touches signage-automation/database-backups/."""
+    cfg = backup_settings()
+    if cfg is None:
+        return 0
+    now = time.time() if now is None else now
+    client = client_factory(cfg)
+    prefix = f"{ROOT}/database-backups/"
+    items, token = [], None
+    while True:
+        page = client.list_objects_v2(Bucket=cfg["bucket"], Prefix=prefix, **({"ContinuationToken": token} if token else {}))
+        items += [i for i in page.get("Contents", []) if not i["Key"].endswith("/")]
+        if not page.get("IsTruncated"):
+            break
+        token = page["NextContinuationToken"]
+    items.sort(key=lambda i: i["LastModified"])
+    old = [i for i in items[:-1] if now - i["LastModified"].timestamp() > days * 86400]
+    for i in old:
+        client.delete_object(Bucket=cfg["bucket"], Key=i["Key"])
+    return len(old)

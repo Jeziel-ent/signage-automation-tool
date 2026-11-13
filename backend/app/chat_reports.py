@@ -15,7 +15,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from . import alerts, db
+from . import alerts, db, spaces
 
 log = logging.getLogger("signage.backup")
 DEFAULT_HOURS = (0, 6, 12, 18)
@@ -132,13 +132,23 @@ def run_backup(data_dir: Path, now: float | None = None) -> dict:
         target = _backup_tool().backup(db.DB_PATH, out_dir, keep=0, now=now)         # keep=0: pruning below is by AGE, not count
         deleted = prune(out_dir, retention_days(), now)
         c = counts()
+        remote, remote_note = None, "server volume only (Spaces not configured)"
+        if spaces.backup_settings():
+            try:
+                remote = spaces.upload_backup(target, when=now)
+                gone = spaces.prune_remote(retention_days(), now=now)
+                remote_note = f"DigitalOcean Spaces ({remote['bucket']}/{remote['key'].rsplit('/', 1)[0]}/), {gone} old copy(ies) removed"
+            except Exception as e:  # noqa: BLE001 - the local copy exists; say the upload failed
+                log.exception("spaces upload failed")
+                remote_note = f"UPLOAD TO SPACES FAILED ({type(e).__name__}: {e}) - local copy kept"
         text = (f"✅ *Database Backup - Signage #{n}* — SUCCESS\n"
                 f"Database: SQLite signage.db (recently generated, users, masters)\n"
                 f"Backup completed: {stamp}\n"
                 f"Backup file: {target.name}\n"
                 f"Backup size: {_fmt_size(target.stat().st_size)}\n"
                 f"Contents: {c['recent']} generated boards · {c['users']} users · {c['masters']} masters\n"
-                f"Storage: server volume ({out_dir.as_posix()})\n"
+                f"Storage: {remote_note}\n"
+                f"Local copy: {out_dir.as_posix()}\n"
                 f"Retention: OK: {retention_days()}-day retention applied (deleted {deleted} old backup(s))")
         ok = True
     except Exception as e:  # noqa: BLE001
