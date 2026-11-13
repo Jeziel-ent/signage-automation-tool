@@ -3,7 +3,7 @@
 # Run on the droplet, in the repository folder:   sh deploy/deploy.sh
 set -eu
 cd "$(dirname "$0")/.."
-git pull --ff-only
+git pull --ff-only origin main
 docker compose up -d --build
 echo "waiting for the server..."
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do

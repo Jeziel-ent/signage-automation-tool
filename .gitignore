@@ -56,3 +56,7 @@ frontend/lcov.info
 ci-reports/
 backend/pytest-report.xml
 frontend/frontend-junit.xml
+
+# deploy bundles made by hand (git archive / tar of the code)
+*.tgz
+*.tar.gz
