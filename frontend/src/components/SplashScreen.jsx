@@ -68,6 +68,9 @@ export default function SplashScreen({ onStart, goHome = true }) {
     return () => ro.disconnect();
   }, []);
   const finished = useRef(false);
+  const signedInHere = useRef(false);  // somebody signed in on this screen (not: was already signed in)
+  const userRef = useRef(user);        // the account as it is when the fly-in ends (login updates it after onLogin started)
+  userRef.current = user;
   const checkSeq = useRef(0);
   const timer = useRef(null);
 
@@ -85,8 +88,11 @@ export default function SplashScreen({ onStart, goHome = true }) {
     clearTimeout(timer.current);
     setArriving(true);
     timer.current = setTimeout(() => {
-      if (goHome) navigate("/"); // the Automation workspace, whichever page the screen was reopened over (a page load keeps the address, e.g. /admin)
       onStart();
+      // an administrator who just signed in lands on the admin monitor; everybody else on the Automation workspace (when reopened) or
+      // where the address already points (a page load keeps it)
+      if (signedInHere.current && userRef.current?.role === "admin") navigate("/admin");
+      else if (goHome) navigate("/");
     }, still ? 0 : FADE_MS);
   }
 
@@ -108,6 +114,7 @@ export default function SplashScreen({ onStart, goHome = true }) {
   async function onLogin(email, password, name) {
     const problem = await login(email, password, name);
     if (problem) return problem;
+    signedInHere.current = true;
     await pairDetectedAgent();
     start();
     return null;

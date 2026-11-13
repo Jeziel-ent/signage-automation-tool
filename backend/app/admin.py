@@ -4,12 +4,13 @@ from __future__ import annotations
 import os
 import shutil
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 import time
 
-from . import agents, alerts, audit, auth, db, retention, spaces, sysmetrics
+from . import agents, alerts, audit, auth, db, retention, spaces, storage_browser, sysmetrics
 
 router = APIRouter(dependencies=[Depends(auth.require_admin)])
 
@@ -129,6 +130,72 @@ def build_overview(now: float) -> dict:
     median = took[len(took) // 2] if took else None
     return {"now": now, "series": list(series.values()), "live": live, "recent": recent, "counts": counts,
             "median_convert_s": round(median, 1) if median is not None else None}
+
+
+# ---- the storage file browser (storage_browser.py)
+
+def _master_name(row: dict) -> str:
+    from .main import _master_label     # imported late: main imports this module
+    try:
+        return _master_label(row)
+    except Exception:  # noqa: BLE001 - a name is cosmetic; never let it break the listing
+        return row.get("master_name") or row.get("master_filename") or ""
+
+
+@router.get("/api/admin/files")
+def files_listing():
+    """Every file the site keeps here: masters by brand, designers' boards with their files, backups, the rest - with sizes."""
+    return storage_browser.listing(_data(), _master_name)
+
+
+def _deleted(what: str, target: str, freed: int) -> dict:
+    audit.record("files_deleted", target, what=what, bytes=freed)
+    return {"deleted": target, "bytes": freed}
+
+
+def _guard(fn, *args):
+    try:
+        return fn(*args)
+    except FileNotFoundError:
+        raise HTTPException(404, "not found")
+    except storage_browser.Busy as e:
+        raise HTTPException(409, str(e))
+    except ValueError:
+        raise HTTPException(422, "unknown part")
+
+
+@router.get("/api/admin/files/masters/{job_id}/download", responses={404: {"description": "Not found"}})
+def master_download(job_id: str):
+    job = db.get_job(job_id)
+    p = _data() / "jobs_v2" / job_id / "master.cdr"
+    if not p.is_file() or not storage_browser._SAFE.match(job_id):
+        raise HTTPException(404, "the master file is not on the server")
+    return FileResponse(p, media_type="application/octet-stream", filename=(job or {}).get("master_filename") or "master.cdr")
+
+
+@router.delete("/api/admin/files/masters/{job_id}", responses={404: {"description": "Not found"}, 409: {"description": "In use"}})
+def master_files_delete(job_id: str):
+    job = db.get_job(job_id) or {}
+    freed = _guard(storage_browser.delete_master_files, _data(), job_id)
+    return _deleted("master", f"{job.get('brand', '?')} / {job.get('master_filename', job_id)}", freed)
+
+
+@router.delete("/api/admin/files/boards/{shop_id}", responses={404: {"description": "Not found"}, 409: {"description": "Converting"},
+                                                              422: {"description": "Unknown part"}})
+def board_files_delete(shop_id: str, part: str = "all"):
+    shop = db.get_shop(shop_id) or {}
+    freed = _guard(storage_browser.delete_board, _data(), shop_id, part)
+    return _deleted(f"board {part}", f"{shop.get('name', shop_id)} ({shop_id})", freed)
+
+
+@router.delete("/api/admin/files/orphans/{job_id}/{folder}", responses={404: {"description": "Not found"}, 409: {"description": "In use"}})
+def orphan_delete(job_id: str, folder: str):
+    return _deleted("leftover folder", f"{job_id}/{folder}", _guard(storage_browser.delete_orphan, _data(), job_id, folder))
+
+
+@router.delete("/api/admin/files/backups/{name}", responses={404: {"description": "Not found"}})
+def backup_delete(name: str):
+    return _deleted("backup", name, _guard(storage_browser.delete_backup, _data(), name))
 
 
 @router.get("/api/admin/spaces")

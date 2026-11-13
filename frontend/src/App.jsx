@@ -20,8 +20,7 @@ import SplashScreen from "./components/SplashScreen.jsx";
 // The editor (canvas, panels, ops engine) is only needed in its own tab: out of the Automation bundle, prefetched on hover.
 const EditorPage = lazy(loadEditorPage);
 
-// Keys an earlier version used to skip the splash after the first visit. The splash now shows on EVERY load (refresh and
-// hard reload included), so any leftover flag is cleared once at start-up rather than left behind.
+// Keys an older version used to skip the splash; they are cleared once at start-up (the current rule is below, in Shell).
 const LEGACY_SPLASH_KEYS = ["signage.splashSeen", "splashSeen", "hasSeenSplash"];
 function clearLegacySplashFlags() {
   try {
@@ -31,6 +30,22 @@ function clearLegacySplashFlags() {
     });
   } catch {
     /* storage blocked - nothing to clear */
+  }
+}
+
+const SPLASH_TAB_KEY = "signage.welcomeDone";
+function splashSeenThisTab() {
+  try {
+    return sessionStorage.getItem(SPLASH_TAB_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+function markSplashSeen() {
+  try {
+    sessionStorage.setItem(SPLASH_TAB_KEY, "1");
+  } catch {
+    /* storage blocked: the screen simply shows again on the next load */
   }
 }
 
@@ -78,10 +93,13 @@ function Shell() {
   const { user, authEnabled, logout } = useAuth();
   const locked = authEnabled && !user; // signing in happens on the launch screen; until then nothing else loads (no API calls)
   const [collapsed, setCollapsed] = useState(readCollapsed);
-  const [showSplash, setShowSplash] = useState(true); // always: no storage check, so it appears on every page load
+  // The welcome screen is the way IN: it shows when nobody is signed in (it holds the sign-in card). A refresh while signed in keeps the
+  // page you were on and skips it (with sign-in off: once per browser tab). The sidebar's "Welcome screen" button still opens it.
+  const [showSplash, setShowSplash] = useState(() => (authEnabled ? !user : !splashSeenThisTab()));
   useEffect(clearLegacySplashFlags, []);
+  useEffect(() => { if (authEnabled && !user) setShowSplash(true); }, [authEnabled, user]);   // signed out -> back to the way in
   const [reopened, setReopened] = useState(false); // opened by the sidebar button (go home after it) rather than by loading the page (stay where the address points)
-  const startAutomation = () => { setShowSplash(false); setReopened(false); };
+  const startAutomation = () => { markSplashSeen(); setShowSplash(false); setReopened(false); };
   const onOpenSplash = () => { setReopened(true); setShowSplash(true); };   // the sidebar's "Welcome screen" button re-launches it without a refresh
   const toggle = () =>
     setCollapsed((c) => {

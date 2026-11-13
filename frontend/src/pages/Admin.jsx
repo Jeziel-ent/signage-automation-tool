@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate } from "react-router-dom";
 import {
-  Activity, AlertTriangle, CheckCircle2, CircleSlash, Clock, Cpu, Database, HardDrive, KeyRound, LayoutDashboard, Loader2, LogOut,
+  Activity, AlertTriangle, CheckCircle2, CircleSlash, Clock, Cpu, Database, FolderOpen, HardDrive, KeyRound, LayoutDashboard, Loader2, LogOut,
   MemoryStick, MonitorCheck, Power, ScrollText, Trash2, UserPlus, X, XCircle,
 } from "lucide-react";
 import { useAuth } from "../context/AuthContext.jsx";
 import GlassLogin from "../components/GlassLogin.jsx";
+import AdminFiles from "../components/AdminFiles.jsx";
 import { fmtBytes } from "../utils/fileSize.js";
 import { readError } from "../utils/authApi.js";
 import {
@@ -489,6 +490,7 @@ function Storage() {
   const [preview, setPreview] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
+  const [browsing, setBrowsing] = useState(false);
   const s = storage.data;
   const rows = useMemo(() => storageRows(s?.bytes, s?.total_bytes), [s]);
 
@@ -515,7 +517,11 @@ function Storage() {
   if (!s) return <div className="adash-scroll"><Loader2 className="spin" size={18} /></div>;
   return (
     <div className="adash-scroll">
-      <p className="adash-note"><b>{fmtBytes(s.total_bytes)}</b> used by the site · <b>{fmtBytes(s.free_bytes)}</b> free on the disk</p>
+      <div className="adash-storage-head">
+        <p className="adash-note"><b>{fmtBytes(s.total_bytes)}</b> used by the site · <b>{fmtBytes(s.free_bytes)}</b> free on the disk</p>
+        <button type="button" className="adash-btn" onClick={() => setBrowsing(true)}><FolderOpen size={15} /> Browse files</button>
+      </div>
+      {browsing && <AdminFiles onClose={() => setBrowsing(false)} onChanged={storage.reload} />}
       {rows.length ? (
         <table className="adash-table">
           <tbody>
