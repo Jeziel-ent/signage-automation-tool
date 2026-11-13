@@ -4,7 +4,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 git pull --ff-only origin main
-docker compose up -d --build
+docker compose up -d --build --remove-orphans      # --remove-orphans: the old 24-hour `backup` container is gone (the app backs up itself now)
 echo "waiting for the server..."
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   if docker compose exec -T app python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3).status==200 else 1)" 2>/dev/null; then

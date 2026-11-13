@@ -28,6 +28,33 @@ def webhook() -> str:
     return os.environ.get("SIGNAGE_ALERT_WEBHOOK", "").strip()
 
 
+def is_google_chat(url: str) -> bool:
+    return "chat.googleapis.com" in url
+
+
+def body_for(url: str, text: str, title: str = "", detail: str = "") -> dict:
+    """Google Chat rejects fields it does not know, so it gets `text` alone; other webhooks also get `title` and `detail`."""
+    if is_google_chat(url):
+        return {"text": text}
+    return {"text": text, "title": title, "detail": detail}
+
+
+def chat_alert_text(title: str, detail: str, recovered: bool = False) -> str:
+    """The alert in the style of the other messages in the space: a bold header, the server, the time, then the problem."""
+    import time as _t
+    when = _t.strftime("%d-%b-%Y %H:%M", _t.localtime()) + " IST"
+    server = os.environ.get("SIGNAGE_SERVER_LABEL", "").strip() or "Signage server"
+    head = "✅ *SIGNAGE SERVER RECOVERED*" if recovered else "🔴 *SIGNAGE SERVER ALERT* — CRITICAL"
+    mark = "🟡" if recovered else "🔴"
+    NL = chr(10)
+    text = NL.join([head, f"Server: {server}", f"Detected: {when}", "", f"{mark} *{title}*"])
+    if detail:
+        text += NL + detail
+    if not recovered:
+        text += NL * 2 + "Action: manual investigation required." + NL + "No automatic changes were made."
+    return text
+
+
 def _post(url: str, body: dict) -> None:
     try:
         req = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json", "User-Agent": "SignageAlerts"}, method="POST")
@@ -47,7 +74,9 @@ def notify(key: str, title: str, detail: str = "", cooldown_s: float = 3600.0, w
         if now - _last_sent.get(key, 0) < cooldown_s:
             return False
         _last_sent[key] = now
-    body = {"text": f"[Signage] {title}" + (f"\n{detail}" if detail else ""), "title": title, "detail": detail}
+    text = (chat_alert_text(title, detail, recovered=key.startswith("recovered:")) if is_google_chat(url)
+            else f"[Signage] {title}" + (f"\n{detail}" if detail else ""))
+    body = body_for(url, text, title, detail)
     if wait:
         _post(url, body)
     else:

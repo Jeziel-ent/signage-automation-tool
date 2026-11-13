@@ -50,8 +50,12 @@ cd signage && sh deploy/deploy.sh      # git pull, rebuild, restart, then checks
 
 ## Backups
 
-The `backup` service writes a consistent copy of the database to the `signage-data` volume (`/data/backups`) every 24 hours and keeps the newest 14.
-Copy them off the droplet too (weekly droplet backups in the DigitalOcean panel, or `docker compose cp backup:/data/backups ./`).
+The app backs the database up itself at **12 am, 6 am, 12 pm and 6 pm India time** (`SIGNAGE_BACKUP_HOURS=0,6,12,18`, `SIGNAGE_BACKUP_TZ`),
+into `/data/backups` of the `signage-data` volume, checks each copy, deletes copies older than **7 days** (`SIGNAGE_BACKUP_RETENTION_DAYS`) and posts the result
+to Google Chat. The database holds Recently generated, users and masters, so one backup covers all three; the masters' and boards' FILES are never deleted.
+Set `SIGNAGE_ALERT_WEBHOOK` in `deploy/server.env` to the space's webhook (Google Chat: space > Apps & integrations > Webhooks) - the same
+webhook also receives server alerts (database / disk problems, designers waiting, unhandled errors). Off with `SIGNAGE_BACKUP_SCHEDULE=0`.
+Copy backups off the droplet too (weekly droplet backups in the DigitalOcean panel, or `docker compose cp app:/data/backups ./`).
 Restore: `docker compose stop app`, copy a backup over `/data/signage.db` in the volume (delete `signage.db-wal` / `-shm` next to it),
 `docker compose start app`.
 
@@ -59,7 +63,7 @@ Restore: `docker compose stop app`, copy a backup over `/data/signage.db` in the
 
 - **Admin page** (administrators only, open `https://<your domain>/admin` - it is not in the sidebar; anyone else is sent to the home page): server health (CPU, memory, disk, queue), every designer with their usage (sign-ins, boards, exports, failures, PCs online), create / disable / delete a user, Spaces storage used, problems, disk use, the activity log and "Clean up old files".
 - **Spaces usage** on that page: set `SIGNAGE_SPACES_KEY`, `SIGNAGE_SPACES_SECRET`, `SIGNAGE_SPACES_BUCKET` (+ `SIGNAGE_SPACES_REGION`, default `sgp1`, and `SIGNAGE_SPACES_QUOTA_GB` for a percentage); it only reads the bucket, counted at most every 10 minutes.
-- **Alerts**: `SIGNAGE_ALERT_WEBHOOK=<Slack/Teams/Discord incoming-webhook URL>` posts when the database or disk is in trouble, a designer waits too long, or the server raises an unhandled error (one message per problem per hour).
+- **Alerts**: `SIGNAGE_ALERT_WEBHOOK=<Google Chat / Slack / Teams / Discord incoming-webhook URL>` posts when the database or disk is in trouble, a designer waits too long, or the server raises an unhandled error (one message per problem per hour).
 - **Clean-up**: temporary files (>1 day) and debug captures (>14 days) always; finished boards older than `SIGNAGE_RETENTION_DAYS` (unset = keep forever). Masters, brands and the database are never removed.
 - **Activity log** kept `SIGNAGE_AUDIT_DAYS` (default 365).
 - **Rate limits** per signed-in user / address: `SIGNAGE_RATE_LIMIT_PER_MIN` (1500), `..._UPLOADS_PER_MIN` (90), `..._AGENT_PER_MIN` (3000), `..._PAIRING_PER_MIN` (30).

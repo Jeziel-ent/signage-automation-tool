@@ -1,4 +1,4 @@
-# The Signage website on one Linux server (a DigitalOcean droplet): the app, Caddy for HTTPS, and a nightly database backup.
+# The Signage website on one Linux server (a DigitalOcean droplet): the app, Caddy for HTTPS, and (inside the app) a database backup at 12 am / 6 am / 12 pm / 6 pm, reported to Google Chat.
 #
 #   cp deploy/server.env.example deploy/server.env      # fill in the domain, the first administrator, the public address
 #   mkdir agent-dist                                      # copy agent/dist/* (SignageAgent.exe + latest.json) here after building it on Windows
@@ -29,16 +29,6 @@ services:
       - caddy-config:/config
     depends_on:
       - app
-
-  backup:                # a consistent copy of the database every 24 hours, the newest 14 kept (backend/tools/backup_db.py)
-    build: .
-    restart: unless-stopped
-    env_file: deploy/server.env
-    command: ["sh", "-c", "until [ -f /data/signage.db ]; do sleep 5; done; while true; do python tools/backup_db.py --out /data/backups --keep 14; sleep 86400; done"]
-    volumes:
-      - signage-data:/data
-    healthcheck:
-      disable: true
 
 volumes:
   signage-data:

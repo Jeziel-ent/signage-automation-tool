@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
-from . import admin, agents, alerts, audit, auth, confidence, corrections, file_naming, ratelimit, retention
+from . import admin, agents, alerts, audit, chat_reports, auth, confidence, corrections, file_naming, ratelimit, retention
 from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename, strip_copy_suffix
 from .engines import get_engine
 from .layout import to_mm
@@ -160,6 +160,8 @@ async def _lifespan(_app):
         tasks.append(asyncio.create_task(_expire_agent_jobs_loop()))
     if alerts.webhook():
         tasks.append(asyncio.create_task(_watchdog_loop()))
+    if chat_reports.enabled():
+        tasks.append(asyncio.create_task(chat_reports.loop(DATA)))
     try:
         yield
     finally:
@@ -930,9 +932,12 @@ def v2_recent(request: Request, agent_id: str | None = None, mine: bool = False)
         own = {a["id"] for a in db.list_agents(user["id"])}
         rows = [r for r in rows if r.get("agent_id") in own]
     out = []
+    exports = db.export_states()          # an edited board's files being rebuilt (Save Changes) show their progress in the row
     for r in rows:
         files = json.loads(r["files_json"]) if r.get("files_json") else None
+        ex = exports.get(r["id"]) or {}
         out.append({
+            "export_active": ex.get("active"), "edited_at": ex.get("edited_at"),
             "shop_id": r["id"], "job_id": r["job_id"], "brand": r["brand"],
             "master_filename": r["master_filename"], "name": r["name"],
             "width": r["width"], "width_unit": r["width_unit"],

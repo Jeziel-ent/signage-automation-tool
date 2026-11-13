@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Activity, Building2, ExternalLink, MonitorCheck, RefreshCw, Search } from "lucide-react";
 import PillSelect from "../components/PillSelect.jsx";
 import AnimatedCount from "../components/AnimatedCount.jsx";
+import RebuildProgress from "../components/RebuildProgress.jsx";
 import { matchesSearch } from "../utils/recentFilter.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
 import { useAgent } from "../context/AgentContext.jsx";
@@ -44,6 +45,10 @@ export default function RecentlyGenerated() {
   const [selectedStatus, setSelectedStatus] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [badThumbs, setBadThumbs] = useState(() => new Set()); // rows whose thumbnail failed (e.g. an empty preview file)
+  const [estimates, setEstimates] = useState({});
+  useEffect(() => {
+    fetch("/api/editor/export-estimates").then((r) => r.json()).then(setEstimates).catch(() => {});
+  }, []);
 
   async function load() {
     try {
@@ -67,7 +72,15 @@ export default function RecentlyGenerated() {
 
   // Keep the list live while anything is still queued/converting (e.g. a
   // conversion started from the Automation page in another tab).
-  const anyActive = useMemo(() => (rows || []).some((r) => r.status === "queued" || r.status === "converting"), [rows]);
+  const anyActive = useMemo(() => (rows || []).some((r) => r.status === "queued" || r.status === "converting" || r.export_active), [rows]);
+
+  // "Save Changes" in an editor tab: reload at once so the row shows its rebuild progress
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return undefined;
+    const ch = new BroadcastChannel("signage-editor");
+    ch.onmessage = (e) => { if (e.data?.type === "saved") load(); };
+    return () => ch.close();
+  }, [query]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!anyActive) return undefined;
     const t = setInterval(load, 3000);
@@ -138,7 +151,7 @@ export default function RecentlyGenerated() {
                 {visible.map((r) => {
                   const previewUrl = r.files?.preview && isImage(r.files.preview) ? fileUrl(r, r.files.preview) : null;
                   // the cell shows a ~10 KB server-made thumbnail; clicking still opens the full preview
-                  const thumbUrl = previewUrl && `/api/v2/shops/${r.shop_id}/thumb?v=${r.completed_at || 0}`;
+                  const thumbUrl = previewUrl && `/api/v2/shops/${r.shop_id}/thumb?v=${r.edited_at || r.completed_at || 0}`;
                   return (
                     <tr key={r.shop_id}>
                       <td>
@@ -169,6 +182,7 @@ export default function RecentlyGenerated() {
                             {r.confidence.label === "GOOD" ? "Exact size" : r.confidence.label === "REVIEW" ? "Check" : "Draft"}
                           </span>
                         )}
+                        {r.export_active && <RebuildProgress key={r.export_active.id} row={r} estimates={estimates} onFinished={load} />}
                       </td>
                       <td>
                         {r.files ? (

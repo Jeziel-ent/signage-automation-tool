@@ -699,6 +699,22 @@ def list_exports(shop_id: str, limit: int = 10) -> list[dict]:
     return [dict(r) for r in rows]
 
 
+def export_states() -> dict[str, dict]:
+    """Per shop, for list pages: the newest export still being built ({"id", "status"} or None) and when its newest finished export
+    was made (`edited_at`, None when it has none). One query over the exports table."""
+    out: dict[str, dict] = {}
+    with _conn() as conn:
+        rows = conn.execute("SELECT id, shop_id, status, created_at, completed_at FROM exports "
+                            "WHERE status IN ('queued', 'running', 'done') ORDER BY created_at").fetchall()
+    for r in rows:
+        s = out.setdefault(r["shop_id"], {"active": None, "edited_at": None})
+        if r["status"] == "done":
+            s["edited_at"] = max(s["edited_at"] or 0, r["completed_at"] or 0) or None
+        else:
+            s["active"] = {"id": r["id"], "status": r["status"]}      # newest wins (rows come oldest first)
+    return out
+
+
 def set_export_status(export_id: str, status: str, error: str | None = None) -> None:
     with _conn() as conn:
         conn.execute("UPDATE exports SET status = ?, error = ? WHERE id = ?", (status, error, export_id))
