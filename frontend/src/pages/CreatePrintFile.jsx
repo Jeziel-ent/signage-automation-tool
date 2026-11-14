@@ -3,6 +3,7 @@ import { CheckCircle2, FileCode, FileImage, FileText, FileUp, Loader2, Plus, Pri
 import { BOARD_TYPES, filenameFrom, fmtSqft, todayISO } from "../utils/printSheet.js";
 import { buildSpec, downloadBlob, figures, planAdd, progressPct, sectionTotals, validate } from "../utils/printFile.js";
 import { postPrintFile } from "../utils/printFileRequest.js";
+import PageHeader from "../components/PageHeader.jsx";
 import "./CreatePrintFile.css";
 
 let seq = 0;
@@ -140,13 +141,7 @@ export default function CreatePrintFile() {
 
   return (
     <div className="pf-page">
-      <header className="pf-top">
-        <div className="pf-top-icon"><Printer size={20} /></div>
-        <div>
-          <h1>Create Print File</h1>
-          <p>Upload the artwork, fill in the details and download the sheet for the printing team.</p>
-        </div>
-      </header>
+      <PageHeader title="Create Print File" description="Upload the artwork, fill in the details and download the sheet for the printing team." />
 
       <div className="pf-layout">
         <div className="pf-col pf-left" ref={lock}>

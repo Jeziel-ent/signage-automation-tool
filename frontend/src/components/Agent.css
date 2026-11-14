@@ -8,7 +8,7 @@
 .spin { animation: agent-spin 0.9s linear infinite; }
 @keyframes agent-spin { to { transform: rotate(360deg); } }
 
-.agent-page { padding: 24px; max-width: 920px; color: var(--ws-text, #e2e8f0); display: flex; flex-direction: column; gap: 16px; }
+.agent-page { padding: 0; max-width: 920px; color: var(--ws-text, #e2e8f0); display: flex; flex-direction: column; gap: 16px; }
 .agent-page h2 { margin: 0; color: var(--ws-strong, #f8fafc); }
 .agent-lead { margin: 0; color: var(--ws-muted, #94a3b8); font-size: 14px; line-height: 1.5; }
 .agent-status { padding: 16px 18px; display: flex; flex-direction: column; gap: 10px; }

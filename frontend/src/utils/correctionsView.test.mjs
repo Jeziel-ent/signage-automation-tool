@@ -47,11 +47,11 @@ test("learnedCount adds the top-level and the nested edits", () => {
 });
 
 test("the sparkle wording is singular / plural and says what is missing", () => {
-  assert.match(nothingLearnedNotice(), /nothing learned/);
+  assert.match(nothingLearnedNotice(), /nothing learned/i);
   assert.match(intelAllTitle(0), /Nothing learned/);
   assert.match(intelAllTitle(1), /Re-run 1 converted board with/);
   assert.match(intelAllTitle(4), /Re-run 4 converted boards with/);
-  assert.match(sparkleTitle(0), /nothing learned/);
+  assert.match(sparkleTitle(0), /nothing learned/i);
   assert.match(sparkleTitle(1), /1 learned designer correction$/);
   assert.match(sparkleTitle(2), /2 learned designer corrections$/);
 });

@@ -1,5 +1,5 @@
 /* Corel Intelligence review: a list on the left, the selected correction on the right; the page is exactly the viewport tall. */
-.app-shell .cr-page { height: 100vh; box-sizing: border-box; padding: 16px 22px 18px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+.app-shell .cr-page { height: calc(100vh - 48px); box-sizing: border-box; padding: 0; display: flex; flex-direction: column; gap: 16px; overflow: hidden; }
 .app-shell .cr-top { display: flex; align-items: center; gap: 12px; flex: none; }
 .app-shell .cr-top h1 { margin: 0; font-size: 20px; line-height: 1.1; }
 .app-shell .cr-top p { margin: 2px 0 0; font-size: 12px; opacity: .75; }
@@ -39,7 +39,6 @@
 .app-shell .cr-spin { animation: cr-spin 1s linear infinite; }
 @keyframes cr-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .app-shell .cr-spin { animation: none; } }
-.app-main:has(> .cr-page) { padding: 0; }
 
 @media (max-width: 1000px) {
   .app-shell .cr-page { height: auto; overflow: visible; }

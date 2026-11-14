@@ -99,3 +99,32 @@ test("Auto master: only a master the user picked is sent as master_id (the serve
   assert.equal(rowMasterIdsAuto({ ...row, master_id: "b" }, masters).master_id, "b");
   assert.equal(rowMasterIds(row, masters).master_id, "a");                // the existing helper is unchanged
 });
+
+test("brandRows lists every brand with its portrait and landscape counts, in the brand list's order", async () => {
+  const { brandRows } = await import("./masters.js");
+  const all = [
+    { id: "1", brand: "Hangyo", orientation: "landscape", name: "Master 1", file_name: "6 X 3.cdr" },
+    { id: "2", brand: "Hangyo", orientation: "landscape", name: "Master 2", file_name: "10 X 3.cdr" },
+    { id: "3", brand: "Hangyo", orientation: "portrait", name: "Master 1", file_name: "4 X 8.cdr" },
+    { id: "4", brand: "Dalmia", orientation: "landscape", name: "Master 1", file_name: "120 X 48.cdr" },
+  ];
+  assert.deepEqual(brandRows(["Dalmia", "Hangyo", "Agni"], all), [
+    { name: "Dalmia", portrait: 0, landscape: 1 },
+    { name: "Hangyo", portrait: 1, landscape: 2 },
+    { name: "Agni", portrait: 0, landscape: 0 },
+  ]);
+});
+
+test("brandRows search matches a brand name or any master's name / file name", async () => {
+  const { brandRows, masterMatches, filterMasters } = await import("./masters.js");
+  const all = [
+    { id: "1", brand: "Hangyo", orientation: "landscape", name: "Master 1", file_name: "6 X 3.cdr" },
+    { id: "4", brand: "Dalmia", orientation: "landscape", name: "Master 1", file_name: "120 X 48.cdr" },
+  ];
+  assert.deepEqual(brandRows(["Dalmia", "Hangyo"], all, "hang").map((r) => r.name), ["Hangyo"]);
+  assert.deepEqual(brandRows(["Dalmia", "Hangyo"], all, "120 x").map((r) => r.name), ["Dalmia"]);
+  assert.deepEqual(brandRows(["Dalmia", "Hangyo"], all, "zzz"), []);
+  assert.equal(masterMatches(all[0], " 6 x 3 "), true);
+  assert.equal(masterMatches(all[0], "nope"), false);
+  assert.deepEqual(filterMasters({ landscape: all, portrait: [] }, "120").landscape.map((m) => m.id), ["4"]);
+});

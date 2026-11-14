@@ -6,7 +6,7 @@ import { masterNeeds, maxCorelMajor } from "../utils/corelCompat.js";
 import { AnimatePresence } from "framer-motion";
 import BrandSelect from "./BrandSelect.jsx";
 import AnimatedCount from "./AnimatedCount.jsx";
-import { Building2, Eye, Layers, Store, FileCode2, FileSpreadsheet, Plus, FolderArchive, Play, Printer, RectangleHorizontal, Pencil, RectangleVertical, Sparkles, Trash2 } from "lucide-react";
+import { Building2, Eye, Layers, Store, FileCode2, FileSpreadsheet, Plus, FolderArchive, Play, Printer, RectangleHorizontal, Pencil, RectangleVertical, RefreshCw, Trash2 } from "lucide-react";
 import UploadDropzone from "./UploadDropzone.jsx";
 import ExportModal from "./ExportModal.jsx";
 import PrintFileModal from "./PrintFileModal.jsx";
@@ -91,7 +91,7 @@ export function SheetTabs({ tabs, shops, current, noSheet, sheetOf, onPick }) {
 
 const NEED_ONE = "Convert at least one shop first";
 
-/** The Shops Queue footer: Print File / ZIP / Download All / Corel Intelligence / Convert All (or the batch banner while converting). */
+/** The Shops Queue footer: Print File / ZIP / Download All / Apply learned corrections / Convert All (or the batch banner while converting). */
 export function QueueFooter({ banner, summary, printableCount, intelCount, convertibleCount, on }) {
   if (banner) return <div className="ws-card-foot">{banner}</div>;
   const has = printableCount > 0;
@@ -111,7 +111,7 @@ export function QueueFooter({ banner, summary, printableCount, intelCount, conve
         <FileCode2 size={15} /> Download All
       </button>
       <button className="btn-outline-red" onClick={on.intelligence} disabled={!intelCount} title={intelAllTitle(intelCount)}>
-        <Sparkles size={15} /> Corel Intelligence{intelCount ? ` (${intelCount})` : ""}
+        <RefreshCw size={15} /> Apply learned corrections{intelCount ? ` (${intelCount})` : ""}
       </button>
       {convertibleCount > 0 && (
         <button className="btn-gradient" onClick={on.convertAll}>
@@ -166,8 +166,9 @@ function MasterRow({ m, isDefault, onRemove, onEdit }) {
 
 /** One orientation's panel: a header (icon, name, size rule, count), one compact row per uploaded master, then a slim drop strip.
  *  Any number of masters per orientation; the first is that orientation's default. */
-export function MasterPanel({ orientation: o, masters, brand, onRemove, onAdded, onUpdated }) {
+export function MasterPanel({ orientation: o, masters, allMasters = masters, brand, onRemove, onAdded, onUpdated }) {
   const list = mastersOf(masters, o);
+  const every = mastersOf(allMasters, o);   // the unfiltered list: the default tag and the count do not change while a search narrows the rows
   const [editing, setEditing] = useState(null); // the master whose "Edit master" dialog is open
   const land = o === "landscape";
   const Icon = land ? RectangleHorizontal : RectangleVertical;
@@ -179,17 +180,18 @@ export function MasterPanel({ orientation: o, masters, brand, onRemove, onAdded,
           <h3>{land ? "Landscape" : "Portrait"}</h3>
           <span className="mt-rule">{land ? "wider than tall · W:H ≥ 1.25" : "taller or square · W:H < 1.25"}</span>
         </div>
-        <span className="mt-count" title={`${list.length} ${o} master${plural(list.length)}`}>{list.length}</span>
+        <span className="mt-count" title={`${every.length} ${o} master${plural(every.length)}`}>{every.length}</span>
       </div>
       {list.length > 0 && (
         <ul className="mt-list">
-          {list.map((m, i) => <MasterRow key={m.id} m={m} isDefault={i === 0 && list.length > 1} onRemove={onRemove} onEdit={onUpdated && setEditing} />)}
+          {list.map((m) => <MasterRow key={m.id} m={m} isDefault={every.length > 1 && m.id === every[0].id} onRemove={onRemove} onEdit={onUpdated && setEditing} />)}
         </ul>
       )}
+      {list.length === 0 && every.length > 0 && <p className="mt-nomatch">No {o} master matches your search.</p>}
       <div className="mt-slot" data-add={o}>
         <UploadDropzone
-          key={`${o}-${list.length}`}
-          strip={{ empty: list.length === 0, text: list.length ? `Add another ${o} master` : `Drop a ${o} master (.cdr) here` }}
+          key={`${o}-${every.length}`}
+          strip={{ empty: every.length === 0, text: every.length ? `Add another ${o} master` : `Drop a ${o} master (.cdr) here` }}
           disabled={!brand}
           brand={brand}
           orientation={o}

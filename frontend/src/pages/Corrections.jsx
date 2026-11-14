@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
-import { Loader2, Sparkles, Trash2 } from "lucide-react";
+import { Loader2, Trash2 } from "lucide-react";
+import PageHeader from "../components/PageHeader.jsx";
 import { ACTION_LABEL, describeShift, describeStyle, diffRects, pageLabel, pickSelection } from "../utils/correctionsView.js";
 import "./Corrections.css";
 
@@ -130,13 +131,7 @@ export default function Corrections() {
 
   return (
     <div className="cr-page">
-      <header className="cr-top">
-        <div className="cr-top-icon"><Sparkles size={20} /></div>
-        <div>
-          <h1>Corel Intelligence - what it has learned</h1>
-          <p>Everything designers fixed in the editor, and what was learned from their own files. All of it is applied to later boards of the same size.</p>
-        </div>
-      </header>
+      <PageHeader title="Learned corrections" description="Fixes designers made in the editor, and what was taken from their own files. They are applied to later boards of the same size." />
       {error && <div className="cr-error" role="alert">{error}</div>}
       <div className="cr-layout">
         <aside className="cr-list">

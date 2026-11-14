@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { finishedNotice, savedNotice, waitForExport } from "../utils/publishEdits.js";
 import { learnedCount, nothingLearnedNotice, sparkleTitle } from "../utils/correctionsView.js";
-import { CheckCircle2, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Play, Plus, Sparkles, Trash2, X } from "lucide-react";
+import { CheckCircle2, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import "../components/MasterPanels.css";
 import { useMasters } from "../context/MasterContext.jsx";
 import { boardOrientation, fallbackWarning, masterCount as countMasters, masterFallback, masterLabel, mastersOf, primaryMaster, pickedMasterId, rowMasterIdsAuto } from "../utils/masters.js";
@@ -15,6 +15,7 @@ import { batchFinishedText, batchStats, fmtEta, monotonicProgress, recordFinishe
 import { importOutcome } from "../utils/importOutcome.js";
 import { BrandControls, ImportReport, MasterPanel, StatusBadges, QueueActions, QueueModals, masterBadgeText, QueueFooter, SheetTabs } from "../components/QueueParts.jsx";
 import { apiDetail, createShopFromDraft, fetchShopStatuses } from "../utils/shopApi.js";
+import PageHeader from "../components/PageHeader.jsx";
 
 const UNITS = ["in", "ft"];
 // One shared unit per board (applies to both width and height); the server stores it on both dimensions.
@@ -411,7 +412,7 @@ export default function Automation() {
   async function applyIntelligenceAll() {
     const todo = intelRows.map((x) => x.id);
     if (!todo.length) return;
-    setQueueNotice(`Corel Intelligence is re-running ${todo.length} board${todo.length === 1 ? "" : "s"} with learned corrections.`);
+    setQueueNotice(`Re-running ${todo.length} board${todo.length === 1 ? "" : "s"} with learned corrections.`);
     const gen = masterGen.current;
     for (const id of todo) {
       if (gen !== masterGen.current) return;
@@ -528,6 +529,7 @@ export default function Automation() {
   const masterBadge = masterBadgeText(masters, bothMasters, nMasters);
   return (
     <div className="ws-page" hidden={hidden}>
+      <PageHeader title="Automation" description="Pick a brand, add the shops and generate the boards." />
       {/* BAR 1 - brand selector + status badges */}
       <header className="ws-bar">
         <BrandControls brand={brand} brands={brands} setBrand={setBrand} adding={addingBrand} setAdding={setAddingBrand} newBrand={newBrand}
@@ -712,7 +714,7 @@ function ShopsEmptyState({ hasJob, importing, dragOver, setDragOver, onImportCli
           <FileSpreadsheet size={40} />
         </div>
         <div className="hero-title">Import Shop Details Sheet</div>
-        <div className="hero-help">Supports .xlsx, .xls, and .csv files directly parsed in your browser via SheetJS</div>
+        <div className="hero-help">Accepts .xlsx, .xls and .csv files</div>
         <div className="hero-actions">
           <button className="btn-gradient" disabled={!hasJob || importing} onClick={onImportClick}>
             <FolderOpen size={15} /> {importing ? "Importing..." : "Import Excel File"}
@@ -1028,9 +1030,9 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, onS
             Learned ({learnedCount(shop.report.layout.intelligence)})
           </span>
         )}
-        <button className={"icon-btn row-dl-btn ci-row-btn" + (intelCount ? " ready" : "")} onClick={onIntelligence} aria-label={`Use Corel Intelligence on ${shop.name}`}
+        <button className={"icon-btn row-dl-btn ci-row-btn" + (intelCount ? " ready" : "")} onClick={onIntelligence} aria-label={`Apply learned corrections to ${shop.name}`}
           title={sparkleTitle(intelCount)}>
-          <Sparkles size={16} />
+          <RefreshCw size={16} />
         </button>
         <button className="icon-btn row-dl-btn" onClick={onPreview} title="Preview the converted output" aria-label={`Preview the output of ${shop.name}`}>
           <Eye size={16} />

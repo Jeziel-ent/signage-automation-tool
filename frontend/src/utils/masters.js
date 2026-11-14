@@ -113,3 +113,27 @@ export function resolveMasterId(text, masters) {
   const prefix = all.find((m) => keys(m).some((k) => k.replace(/^[lp] /, "").startsWith(want + " ") || want.startsWith(k.replace(/^[lp] /, "") + " ")));
   return prefix ? prefix.id : null;
 }
+
+/** True when a master's name or file name contains the search text (case-insensitive; an empty search matches all). */
+export function masterMatches(m, query) {
+  const q = String(query ?? "").trim().toLowerCase();
+  if (!q) return true;
+  return [m?.name, m?.file_name].some((t) => String(t ?? "").toLowerCase().includes(q));
+}
+
+/** One brand's { landscape, portrait } reduced to the masters that match the search text. */
+export function filterMasters(masters, query) {
+  return { landscape: mastersOf(masters, "landscape").filter((m) => masterMatches(m, query)), portrait: mastersOf(masters, "portrait").filter((m) => masterMatches(m, query)) };
+}
+
+/** The Masters page table: one row per brand, in the brand list's order, with its portrait and landscape counts. A search keeps
+ *  the brands whose name matches, or that own a master whose name or file name matches. */
+export function brandRows(brands, masters, query = "") {
+  const q = String(query ?? "").trim().toLowerCase();
+  const rows = (brands || []).map((name) => {
+    const mine = groupMasters(masters, name);
+    return { name, portrait: mine.portrait.length, landscape: mine.landscape.length };
+  });
+  if (!q) return rows;
+  return rows.filter((r) => r.name.toLowerCase().includes(q) || (masters || []).some((m) => m.brand === r.name && masterMatches(m, q)));
+}

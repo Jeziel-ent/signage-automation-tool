@@ -173,7 +173,7 @@ export default function SplashScreen({ onStart, goHome = true }) {
         {gl && (
           <div className={"sp3-preloader" + (cityReady ? " done" : "")} role="status" aria-live="polite">
             <span className="sp3-preloader-spin" aria-hidden="true" />
-            <span className="sp3-preloader-text">{cityReady ? "City ready" : "Initializing City Studio..."}</span>
+            <span className="sp3-preloader-text">{cityReady ? "Ready" : "Loading..."}</span>
           </div>
         )}
         {gl && (
@@ -192,7 +192,7 @@ export default function SplashScreen({ onStart, goHome = true }) {
       <main className="sp3-content" ref={contentRef}>
         <header className="sp3-header">
           <h1 id="sp3-title" className="sp3-title">Signage Automation Platform</h1>
-          <p className="sp3-sub">Enterprise CorelDRAW dual-master processing engine</p>
+          <p className="sp3-sub">Signage automation for CorelDRAW</p>
         </header>
         <ProfessionalConnectControl health={health} onConnect={runCheck} onStart={startSignedIn} disabled={leaving}
           login={needsLogin ? { onLogin, needsSetup } : undefined} />

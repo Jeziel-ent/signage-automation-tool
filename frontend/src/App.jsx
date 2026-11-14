@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
 import { AnimatePresence } from "framer-motion";
 import { NavLink, Navigate, Route, Routes } from "react-router-dom";
-import { ChevronLeft, ChevronRight, History, Layers, LogOut, MonitorCheck, Printer, ShieldCheck, Sparkles, Workflow } from "lucide-react";
+import { ChevronLeft, ChevronRight, History, House, Layers, LogOut, MonitorCheck, Printer, ShieldCheck, Workflow } from "lucide-react";
 import Automation from "./pages/Automation.jsx";
 import { MasterProvider } from "./context/MasterContext.jsx";
 import RecentlyGenerated from "./pages/RecentlyGenerated.jsx";
@@ -147,7 +147,7 @@ function Shell() {
               </>
             )}
             <button className="sidebar-toggle" onClick={onOpenSplash} data-tip="Welcome screen" aria-label="Show welcome screen">
-              <Sparkles size={18} />
+              <House size={18} />
               <span className="sidebar-label">Welcome screen</span>
             </button>
             <button

@@ -11,10 +11,10 @@ const CATCH_UP = 14; // per second: the bar also closes this fraction of the rem
 
 /** Fallback stage line by displayed percentage, used only when EditorPage sends no status of its own. */
 export function stageMessage(pct) {
-  if (pct <= 25) return "Initializing the editor workspace...";
-  if (pct <= 50) return "Loading master template artwork...";
-  if (pct <= 85) return "Loading vector object layers...";
-  return "Finalizing signage layout for the editor...";
+  if (pct <= 25) return "Starting the editor...";
+  if (pct <= 50) return "Loading the master artwork...";
+  if (pct <= 85) return "Loading the layers...";
+  return "Almost ready...";
 }
 
 /**

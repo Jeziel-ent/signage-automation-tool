@@ -98,7 +98,7 @@ export default function GenerateZipModal({ shops: shopsProp, onClose }) {
             <>
               <div className="gz-state">
                 <SuccessTick />
-                <p className="gz-done">Your signage package has been generated successfully!</p>
+                <p className="gz-done">The ZIP file is ready.</p>
                 <p className="xm-note">
                   {s.shops} shop{s.shops === 1 ? "" : "s"} &middot; {s.files} file{s.files === 1 ? "" : "s"}
                   {s.bytes ? ` · ${fmtBytes(s.bytes)}` : ""}

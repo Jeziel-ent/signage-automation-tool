@@ -1,0 +1,18 @@
+/* Confirmation box (components/ConfirmDialog.jsx). Portalled to <body>, so it carries its own dark colours instead of the shell tokens. */
+.cd-scrim { position: fixed; inset: 0; z-index: 90; display: grid; place-items: center; padding: 16px; background: rgba(2, 6, 23, 0.7); backdrop-filter: blur(2px); }
+.cd-box { width: min(440px, 100%); display: flex; flex-direction: column; gap: 14px; padding: 20px; border-radius: 14px;
+  background: #0b1222; border: 1px solid rgba(51, 65, 85, 0.8); box-shadow: 0 24px 60px -12px rgba(0, 0, 0, 0.7); color: #e2e8f0; font-family: var(--font-sans); }
+.cd-head { display: flex; align-items: center; gap: 10px; }
+.cd-head h3 { margin: 0; font-size: 16px; font-weight: 600; color: #f8fafc; }
+.cd-icon { flex: none; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: #f87171; background: rgba(239, 68, 68, 0.14); }
+.cd-body { font-size: 13.5px; line-height: 1.55; color: #cbd5e1; }
+.cd-body p { margin: 0 0 8px; }
+.cd-body p:last-child { margin-bottom: 0; }
+.cd-body strong { color: #f8fafc; font-weight: 600; }
+.cd-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.cd-actions .ws-cta-ghost { color: #cbd5e1; }
+.cd-actions .ws-cta-ghost:hover { background: rgba(148, 163, 184, 0.14); }
+.cd-danger { padding: 8px 16px; border: 0; border-radius: 10px; background: #dc2626; color: #fff; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.cd-danger:hover:not(:disabled) { background: #b91c1c; }
+.cd-danger:disabled, .cd-actions .ws-cta-ghost:disabled { opacity: 0.6; cursor: not-allowed; }
+.cd-danger:focus-visible, .cd-actions .ws-cta-ghost:focus-visible { outline: 2px solid #f87171; outline-offset: 2px; }

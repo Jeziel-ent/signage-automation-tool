@@ -6,6 +6,7 @@ import RebuildProgress from "../components/RebuildProgress.jsx";
 import { matchesSearch } from "../utils/recentFilter.js";
 import { prefetchEditor } from "../utils/prefetchEditor.js";
 import { useAgent } from "../context/AgentContext.jsx";
+import PageHeader from "../components/PageHeader.jsx";
 
 const KIND_LABELS = { cdr: "CDR", pdf: "PDF", report: "Report" };
 const STATUS_LABELS = { new: "Not converted", queued: "Queued", converting: "Converting", done: "Done", failed: "Failed" };
@@ -100,6 +101,7 @@ export default function RecentlyGenerated() {
 
   return (
     <div className="rg-page">
+      <PageHeader title="Recently generated" description="Boards generated so far, newest first." />
       {/* control bar */}
       <header className="rg-bar">
         <div className="rg-search">

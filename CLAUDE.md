@@ -61,6 +61,19 @@ an older one; bump it whenever the replay draws the same ops differently; (2) Re
 files - `/api/v2/shops/{id}/files/{name}` now gives the edited export's file when the current edits were exported (`_single_sources`, same rule
 as the row's Download and the ZIP). Tests in `test_publish.py`.
 
+## UI polish (2026-11-14, branch `working-branch`, not committed yet)
+
+**Masters page** (`pages/Masters.jsx`, `Masters.css`): a brand TABLE (S.No, Brand, Portrait, Landscape, arrow; `utils/masters.js brandRows`) with a search box
+(brand name or any master's name / file name) and New Brand; the row arrow opens a panel that slides in FROM THE LEFT over the table (`.mp-drawer`,
+change `left`/`translateX` in `Masters.css` to flip it) holding that brand's masters: its own "Search masters" box, `MasterPanel` for Landscape and
+Portrait (add strip, edit, delete). Delete opens `components/ConfirmDialog.jsx` ("deleted from the server too ... for every designer ... boards already made
+stay"); the delete is still the registry's SOFT delete (file stays on disk). Edit / delete buttons are still administrator-only (`MasterRow`).
+**Shared page title**: `components/PageHeader.jsx` on Automation, Masters, Recently generated, Create Print File, Learned corrections, Agent (title x/y checked equal
+on all six); `pf-page` / `cr-page` lost their own padding/negative offsets. **Tone**: "Corel Intelligence" is now "Learned corrections" in all visible text
+(button "Apply learned corrections", row icon RefreshCw, no sparkles; internal names such as `use_intelligence` unchanged), splash/editor-loader/ZIP texts
+plainer. Not changed: the Admin monitor (`/admin`) design. Frontend 353 tests pass, build OK; checked in the browser pane (DOM-driven + screenshots) against
+a scratch mock backend.
+
 ## Admin page (2026-11-08)
 
 `/admin` (`pages/Admin.jsx`, `utils/adminView.js`) - administrators only, NOT in the sidebar (a designer who types it is sent to `/`; `/users` and `/server` redirect to it). Server health (`GET /api/admin/health`, `sysmetrics.py`, needs psutil), designers + usage (`GET /api/admin/designers?days=`, `db.designer_usage`: sign-ins from the audit log, boards/exports/failures from `agent_jobs`), create/disable/reset/delete user (`DELETE /api/users/{id}`, `db.delete_user`: sessions removed, PCs disconnected, waiting jobs fail, the audit log keeps the e-mail; never yourself or the last admin), Spaces usage (`GET /api/admin/spaces`, `spaces.py`, read-only, needs boto3 + `SIGNAGE_SPACES_*`, cached 10 min), plus the old Server sections (`Server.jsx embedded`). Verified in the browser pane on a scratch server with the real agent exe. Tests: `test_admin_page.py`, `adminView.test.mjs`. Spaces counting is only unit-tested with a fake client (no real bucket yet).

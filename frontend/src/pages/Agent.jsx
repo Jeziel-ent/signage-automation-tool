@@ -1,6 +1,7 @@
 import { CheckCircle2, CircleDashed, Download, Link2, Loader2, MonitorCheck, RefreshCw, Unplug } from "lucide-react";
 import { useAgent } from "../context/AgentContext.jsx";
 import { fmtBytes } from "../utils/fileSize.js";
+import PageHeader from "../components/PageHeader.jsx";
 import "../components/Agent.css";
 
 const HEADLINE = {
@@ -35,11 +36,7 @@ export default function AgentPage() {
 
   return (
     <div className="agent-page">
-      <h2>Signage Agent</h2>
-      <p className="agent-lead">
-        A small Windows program that connects this website to the CorelDRAW installed on a designer PC. It makes outbound connections only,
-        starts with Windows and updates itself.
-      </p>
+      <PageHeader title="Agent" description="A small Windows program that connects this website to the CorelDRAW installed on a designer PC. It makes outbound connections only, starts with Windows and updates itself." />
 
       <section className={"ws-card agent-status " + tone} aria-live="polite">
         <div className="agent-status-head">

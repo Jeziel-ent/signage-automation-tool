@@ -66,19 +66,19 @@ export function learnedCount(intelligence) {
 
 const plural = (n, one, many) => (n === 1 ? one : many);
 
-/** The queue notice when the sparkle is clicked but nothing learned fits the board. */
+/** The queue notice when the re-run button is clicked but nothing learned fits the board. */
 export function nothingLearnedNotice() {
-  return "Corel Intelligence has nothing learned for this board size yet - correct a board of this size in the editor first.";
+  return "Nothing learned for this board size yet. Correct a board of this size in the editor first.";
 }
 
-/** Tooltip of the footer "Corel Intelligence (N)" button. */
+/** Tooltip of the footer "Apply learned corrections (N)" button. */
 export function intelAllTitle(n) {
   if (!n) return "Nothing learned yet for the converted boards - correct a board in the editor first";
   return `Re-run ${n} converted board${plural(n, "", "s")} with what designers corrected on the same size`;
 }
 
-/** Tooltip of a row's sparkle button. */
+/** Tooltip of a row's re-run button. */
 export function sparkleTitle(n) {
-  if (!n) return "Corel Intelligence: nothing learned for this board size yet";
-  return `Use Corel Intelligence: re-run this board with ${n} learned designer correction${plural(n, "", "s")}`;
+  if (!n) return "Nothing learned for this board size yet";
+  return `Re-run this board with ${n} learned designer correction${plural(n, "", "s")}`;
 }

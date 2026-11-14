@@ -1,0 +1,57 @@
+/* Masters page: a brand table and a panel that slides in from the left over it (pages/Masters.jsx). Colours come from the workspace tokens. */
+.mp-page { max-width: 1180px; }
+.mp-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.mp-bar-actions { display: flex; align-items: center; gap: 8px; }
+.mp-notice { margin: 0; border-radius: 10px; padding: 10px 14px; font-size: 13px; }
+
+.mp-search { position: relative; display: flex; align-items: center; flex: 1 1 280px; max-width: 420px; color: var(--ws-faint, #64748b); }
+.mp-search svg { position: absolute; left: 12px; pointer-events: none; }
+.mp-search input { width: 100%; padding: 9px 12px 9px 34px; border-radius: 12px; border: 1px solid var(--ws-field-border, #1e293b);
+  background: var(--ws-field, rgba(2, 6, 23, 0.55)); color: var(--ws-text, #e2e8f0); font: inherit; font-size: 13.5px; }
+.mp-search input::placeholder { color: var(--ws-faint, #64748b); }
+.mp-search input:focus { outline: none; border-color: #ef4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.14); }
+
+
+.ws-card.mp-card { position: relative; overflow: hidden; min-height: 300px; }
+.mp-table-wrap { padding: 4px 0 8px; overflow-x: auto; }
+.mp-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.mp-table th, .mp-table td { padding: 14px 20px; text-align: left; border-bottom: 1px solid var(--ws-line, rgba(30, 41, 59, 0.6)); }
+.mp-table thead th { padding-top: 14px; padding-bottom: 10px; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--ws-faint, #64748b); }
+.mp-table tbody th { font-weight: 600; color: var(--ws-strong, #f8fafc); }
+.mp-table tbody tr { cursor: pointer; transition: background 0.15s; }
+.mp-table tbody tr:hover, .mp-table tbody tr.active { background: var(--ws-row-hover, rgba(30, 41, 59, 0.45)); }
+.mp-table tbody tr:last-child td, .mp-table tbody tr:last-child th { border-bottom: 0; }
+.mp-sno { width: 72px; color: var(--ws-muted, #94a3b8); font-variant-numeric: tabular-nums; }
+.mp-num { width: 130px; text-align: right !important; font-variant-numeric: tabular-nums; }
+.mp-go { width: 64px; text-align: right !important; }
+.mp-go .icon-btn { margin-left: auto; }
+.mp-empty { margin: 0; padding: 36px 20px; text-align: center; font-size: 13.5px; color: var(--ws-muted, #94a3b8); }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* the panel is portalled into .app-shell and covers the full window height, like a detail drawer: dim background, slides in from the right */
+.mp-scrim { position: fixed; inset: 0; z-index: 80; background: rgba(2, 6, 23, 0.6); opacity: 0; pointer-events: none; transition: opacity 0.25s ease; }
+.mp-scrim.on { opacity: 1; pointer-events: auto; }
+.mp-drawer { position: fixed; z-index: 81; top: 0; bottom: 0; right: 0; width: min(640px, 100vw); display: flex; flex-direction: column; gap: 14px;
+  padding: 22px 24px; background: var(--ws-solid, #0b1222); border-left: 1px solid var(--ws-border-hover, rgba(51, 65, 85, 0.8));
+  box-shadow: -24px 0 48px -16px rgba(0, 0, 0, 0.6); transform: translateX(104%); visibility: hidden;
+  transition: transform 0.3s cubic-bezier(0.22, 0.8, 0.3, 1), visibility 0s linear 0.3s; }
+.mp-drawer.open { transform: none; visibility: visible; transition-delay: 0s; }
+/* the red tab on the panel's left edge closes it */
+.mp-handle { position: absolute; left: -42px; top: 42%; width: 42px; height: 84px; display: grid; place-items: center; border: 0; border-radius: 12px 0 0 12px;
+  background: #dc2626; color: #fff; cursor: pointer; box-shadow: -8px 0 20px -8px rgba(220, 38, 38, 0.6); }
+.mp-handle:hover { background: #b91c1c; }
+.mp-drawer-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.mp-drawer-head h2 { margin: 0; font-size: 20px; font-weight: 600; }
+.mp-drawer-sub { font-size: 12.5px; color: var(--ws-muted, #94a3b8); }
+.mp-drawer-search { max-width: none; flex: none; }
+.mp-drawer-body { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; padding-right: 2px; }
+.mt-nomatch { margin: 0; font-size: 12.5px; color: var(--ws-faint, #64748b); }
+/* inside the narrow panel the two orientation panels stack */
+.mp-drawer .mt-panel { flex: none; }
+
+@media (max-width: 720px) {
+  .mp-table th, .mp-table td { padding: 12px 12px; }
+  .mp-sno { width: 48px; }
+  .mp-num { width: 84px; }
+}
+@media (prefers-reduced-motion: reduce) { .mp-drawer, .mp-scrim { transition: none; } }

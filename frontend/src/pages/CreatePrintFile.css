@@ -1,6 +1,6 @@
 /* The page is exactly the viewport tall: nothing scrolls except the file list inside its own card, and only when there are more
    rows than fit. Three columns: details + sections | files (fills the height) | summary + generate. */
-.app-shell .pf-page { height: 100vh; box-sizing: border-box; padding: 16px 22px 18px; display: flex; flex-direction: column; gap: 14px; overflow: hidden; }
+.app-shell .pf-page { height: calc(100vh - 48px); box-sizing: border-box; padding: 0; display: flex; flex-direction: column; gap: 16px; overflow: hidden; }
 .app-shell .pf-top { display: flex; align-items: center; gap: 12px; flex: none; }
 .app-shell .pf-top h1 { margin: 0; font-size: 20px; line-height: 1.1; }
 .app-shell .pf-top p { margin: 2px 0 0; font-size: 12px; opacity: .7; }
@@ -94,7 +94,6 @@
 }
 
 /* the shared .ws-card .shops-table rules give inputs/selects a min-width and the cells 10 px padding: undo both for this compact table */
-.app-main:has(> .pf-page) { padding: 0; }
 .app-shell .ws-card .pf-table { table-layout: fixed; }
 .app-shell .ws-card .pf-table td { padding: 4px 4px; }
 .app-shell .ws-card .pf-table td input, .app-shell .ws-card .pf-table td select { width: 100%; min-width: 0; box-sizing: border-box; padding-left: 6px; padding-right: 6px; }
