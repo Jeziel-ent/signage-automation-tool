@@ -203,7 +203,14 @@ def _cors_origins() -> list[str]:
     return [o.strip().rstrip("/") for o in os.environ.get("SIGNAGE_CORS_ORIGINS", "").split(",") if o.strip() and o.strip() != "*"]
 
 
-app = FastAPI(title="signage-automation-tool", lifespan=_lifespan, dependencies=[Depends(auth.require_user)])
+def api_docs_urls() -> dict:
+    """The interactive API docs (/docs, /redoc, /openapi.json) list every endpoint and are NOT covered by the login: they exist only for
+    development (login off). On a server (login on) they are off, unless SIGNAGE_API_DOCS=1 asks for them."""
+    on = (not auth.enabled()) or os.environ.get("SIGNAGE_API_DOCS", "").strip().lower() in ("1", "true", "yes", "on")
+    return {"docs_url": "/docs" if on else None, "redoc_url": "/redoc" if on else None, "openapi_url": "/openapi.json" if on else None}
+
+
+app = FastAPI(title="signage-automation-tool", lifespan=_lifespan, dependencies=[Depends(auth.require_user)], **api_docs_urls())
 app.add_middleware(CORSMiddleware, allow_origins=_cors_origins(), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 app.include_router(auth.router)
 app.include_router(agents.router)
