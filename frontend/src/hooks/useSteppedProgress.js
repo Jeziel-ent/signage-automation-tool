@@ -30,11 +30,21 @@ import { useEffect, useRef, useState } from "react";
 export function useSteppedProgress(steps, currentStepKey, done, estimates, defaultDurationMs = 4000) {
   const [displayed, setDisplayed] = useState(0);
   const stepStateRef = useRef({ key: null, startedAt: 0, from: 0 });
+  const wasDone = useRef(false);
 
   useEffect(() => {
     if (done) {
+      wasDone.current = true;
       setDisplayed(100);
       return undefined;
+    }
+    // a finished row that starts AGAIN (re-run, Retry, Corel Intelligence) begins at 0 - it used to keep showing the old 100 %
+    let base = displayed;
+    if (wasDone.current) {
+      wasDone.current = false;
+      base = 0;
+      stepStateRef.current = { key: null, startedAt: 0, from: 0 };
+      setDisplayed(0);
     }
     if (!currentStepKey) return undefined;
 
@@ -49,7 +59,7 @@ export function useSteppedProgress(steps, currentStepKey, done, estimates, defau
       stepStateRef.current = {
         key: currentStepKey,
         startedAt: Date.now(),
-        from: Math.max(displayed, startPct),
+        from: Math.max(base, startPct),
       };
     }
 

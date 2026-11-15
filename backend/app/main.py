@@ -1178,12 +1178,35 @@ def _attach_master_used(report: dict, master_used: dict) -> None:
             "uploaded - the layout will not fit; upload a matching master and convert again")
 
 
+# Boards made with Corel Intelligence are converted FIRST and then get their learned edits replayed (scene build + export, about a minute). Until
+# that second phase ends the board is reported as still "converting" (step "learning"), so the row shows it instead of a finished-looking board
+# that changes a minute later. shop id -> when the phase began; a phase older than _LEARNING_TTL_S is ignored (an agent that never answered).
+_learning: dict[str, float] = {}
+_LEARNING_TTL_S = 900.0
+
+
+def _learning_start(shop_id: str) -> None:
+    _learning[shop_id] = time.time()
+
+
+def _learning_end(shop_id: str) -> None:
+    _learning.pop(shop_id, None)
+
+
+def _is_learning(shop_id: str) -> bool:
+    t = _learning.get(shop_id)
+    return t is not None and time.time() - t < _LEARNING_TTL_S
+
+
 def _store_convert_result(shop_id: str, entry: dict, master_used: dict) -> None:
     if shop_id in _stopped_shops:          # stopped by the user while it ran: its (partial) result is not kept
         return
     if entry.get("status") == "done":
         out = entry["result"]
         _attach_master_used(out["report"], master_used)
+        shop_now = db.get_shop(shop_id) or {}
+        if shop_now.get("use_intelligence"):
+            _learning_start(shop_id)        # before the board turns "done": the row never sees a finished board that is still being edited
         db.set_shop_result(shop_id, out["files"], out["report"])
     else:
         db.set_shop_status(shop_id, "failed", error=entry.get("error", "unknown error"))
@@ -1495,21 +1518,33 @@ def _apply_learned_nested(shop_id: str) -> None:
     ops (corrections.nested_ops), save them as the board's edits (the designer sees and can undo them in the editor) and publish the files.
     With SIGNAGE_ENGINE=remote the scene is built by the agent: this queues that job and `_learned_nested_finish` runs when it is stored.
     Never raises: a failure only means the board keeps the top-level learning."""
+    waiting_for_agent = False
     try:
         shop = db.get_shop(shop_id)
         if not _learned_nested_found(shop):
             return
         if _remote_mode():
             _enqueue_remote_scene_build(shop["job_id"], shop_id, then="learned_nested")
+            waiting_for_agent = True        # `_learned_nested_finish` ends the learning phase when the agent's scene is stored
             return
         _scene_build_worker(shop["job_id"], shop_id)
         _learned_nested_finish(shop_id)
     except Exception:
         _CORR_LOG.exception("could not apply the learned nested edits for shop %s", shop_id)
+    finally:
+        if not waiting_for_agent:
+            _learning_end(shop_id)
 
 
 def _learned_nested_finish(shop_id: str) -> None:
     """The second half: the board's scene exists - work out the learned ops, save them as its edits and publish the files."""
+    try:
+        _learned_nested_finish_inner(shop_id)
+    finally:
+        _learning_end(shop_id)
+
+
+def _learned_nested_finish_inner(shop_id: str) -> None:
     try:
         shop = db.get_shop(shop_id)
         found = _learned_nested_found(shop)
@@ -1721,6 +1756,9 @@ def v2_shop_status(shop_id: str):
     if not row:
         raise HTTPException(404, _SHOP_NOT_FOUND)
 
+    if row["status"] == "done" and _is_learning(shop_id):
+        row["status"], row["step"], row["progress_pct"] = "converting", "learning", 97     # Corel Intelligence is still replaying its edits
+        return row
     if row["status"] == "done":
         row["progress_pct"] = 100
         row["files"] = json.loads(row["files_json"]) if row["files_json"] else None

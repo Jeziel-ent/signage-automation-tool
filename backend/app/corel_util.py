@@ -45,6 +45,8 @@ import time
 import zipfile
 from pathlib import Path
 
+from .winproc import no_window
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_S = 300.0  # for a COM call that does real work: OpenDocument, SaveAs, ...
@@ -94,7 +96,7 @@ def corel_pids() -> set[int]:
     try:
         out = subprocess.run(
             ["tasklist", "/FI", "IMAGENAME eq CorelDRW.exe", "/FO", "CSV", "/NH"],
-            capture_output=True, text=True, timeout=10,
+            capture_output=True, text=True, timeout=10, **no_window(),
         ).stdout
     except Exception:
         return set()
@@ -111,7 +113,7 @@ def corel_pids() -> set[int]:
 
 def force_kill(pid: int) -> None:
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10)
+        subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True, timeout=10, **no_window())
     except Exception:
         pass
 

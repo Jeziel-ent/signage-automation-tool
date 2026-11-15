@@ -23,6 +23,7 @@ import time
 from pathlib import Path
 
 from . import corel_util
+from .winproc import no_window, worker_window_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -118,7 +119,7 @@ def run_batch(jobs: list[dict], results_path: Path, overall_timeout_s: float | N
     jobs_path.write_text(json.dumps(jobs), encoding="utf-8")
 
     backend_dir = Path(__file__).resolve().parents[1]
-    proc = subprocess.Popen(worker_command(worker_module, jobs_path, results_path), cwd=str(backend_dir), env=worker_env())
+    proc = subprocess.Popen(worker_command(worker_module, jobs_path, results_path), cwd=str(backend_dir), env=worker_env(), **worker_window_kwargs())
     logger.info("started CorelDRAW worker pid=%s for %d job(s); no-progress timeout=%.0fs",
                 proc.pid, len(jobs), overall_timeout_s)
 
@@ -258,7 +259,7 @@ def _read_json(path: Path):
 
 def _kill_tree(pid: int) -> None:
     try:
-        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=15)
+        subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, timeout=15, **no_window())
     except Exception:
         pass
     # /T kills the worker's direct children, but CorelDRAW is launched via

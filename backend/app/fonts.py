@@ -14,6 +14,8 @@ import re
 import subprocess
 import sys
 
+from .winproc import no_window
+
 _cache: dict | None = None
 
 _PS = (
@@ -25,7 +27,7 @@ _PS = (
 def _from_powershell() -> list[str]:
     out = subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", _PS],
-        capture_output=True, text=True, timeout=30, encoding="utf-8",
+        capture_output=True, text=True, timeout=30, encoding="utf-8", **no_window(),
     )
     if out.returncode != 0:
         raise RuntimeError(out.stderr.strip() or "powershell failed")

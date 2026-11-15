@@ -91,8 +91,10 @@ def test_corel_intelligence_runs_end_to_end_through_the_agent(world):
     b = world.web.post(f"/api/v2/jobs/{job}/shops", json={"name": "Board B", "width": 12, "width_unit": "ft", "height": 4, "height_unit": "ft"}).json()["id"]
     world.web.post(f"/api/v2/shops/{b}/convert", json={"use_intelligence": True})
     assert runner.poll_once() == 1                                     # convert
-    assert _status(world, b)["status"] == "done"
+    st = _status(world, b)
+    assert (st["status"], st["step"]) == ("converting", "learning")    # converted, but its learned edits are still being replayed
     assert runner.poll_once() == 1                                     # the scene the replay needs
+    assert _status(world, b)["status"] == "done"                       # the replay is in: now it is finished
     ops = world.db.get_editor_ops(b)
     assert [o["ids"] for o in ops] == [["s3"]]                         # the learned edit became B's edit
     assert runner.poll_once() == 1                                     # the publish export with those edits

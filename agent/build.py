@@ -72,7 +72,7 @@ def main() -> int:
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean", "--onefile", "--noconsole", "--name", "SignageAgent",
            "--distpath", str(dist), "--workpath", str(work), "--specpath", str(work), "--paths", str(HERE), "--paths", str(backend)]
     # the website's CorelDRAW engine (backend/app) runs inside the exe: imported lazily / by name, so PyInstaller must be told
-    for mod in ("app.corel_supervisor", "app.corel_worker", "app.engines", "app.export_replay", "app.scene_export", "app.corel_util",
+    for mod in ("app.corel_supervisor", "app.corel_worker", "app.engines", "app.export_replay", "app.scene_export", "app.corel_util", "app.winproc",
                 "app.layout", "app.example_layout", "app.confidence", "app.corrections", "app.file_naming", "app.name_check",
                 "app.orientation_adapter", "app.content_check", "app.print_file", "app.scene_ops", "tools.dump_objects",
                 "tools.render_real_preview", "win32com.client", "win32api", "pythoncom", "pywintypes", "PIL.Image", "PIL.ImageDraw",

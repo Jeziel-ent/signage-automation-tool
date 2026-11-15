@@ -1009,6 +1009,10 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, onS
     return <span className="stop-cell"><span className="badge badge-failed" title="None of your Signage Agents is online - start the agent on your PC and this board will convert (see the Agent page)">Waiting for agent</span>{stopBtn}</span>;
   }
   if (shop.status === "queued") return <span className="stop-cell"><span className="badge badge-queued" title="Waiting its turn - CorelDRAW converts one board at a time">Pending</span>{stopBtn}</span>;
+  if (shop.status === "converting" && shop.step === "learning") {
+    // the board is converted; Corel Intelligence is now building its scene and replaying the learned edits (a minute or so, no percentage to show)
+    return <span className="stop-cell"><span className="badge badge-processing" title="The board is converted. Corel Intelligence is now applying the learned edits to it (names, text style, hidden objects) and rebuilding its files.">Applying Corel Intelligence...</span>{stopBtn}</span>;
+  }
   if (shop.status === "converting") {
     // Eased toward (but capped just below) the next real step threshold - never a straight jump to the backend's
     // last-polled value, and never 100% here (that only happens once status flips to "done").
