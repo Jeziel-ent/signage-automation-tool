@@ -17,7 +17,26 @@ is being built alongside it, not as a replacement yet. Engine-side work
 (layout rules, validation, tiling) is unaffected by either UI and
 continues independently - none of it was touched building the new UI.
 
-## Security + agent (2026-11-07) - newest, read before the older handoff below
+## 2026-11-15 session summary (home PC) - READ THIS FIRST on the office PC
+
+**Workflow:** development is done on the owner's HOME PC (no SSH to the droplet); deployment is done from the OFFICE PC (has SSH). Anything not in git must be carried over (see "Not in git" below). Pushing to `main` deploys the site through GitHub Actions; the agent build is published by hand with `scp` (docs/deploy-droplet.md "Publishing the agent").
+
+**What changed today** (details are in the sections below; commits `19fda7a` .. `56673fe`, all on `main` and `working-branch`):
+1. **Name + look:** the tool is **Signage Adaptation Tool**; black / white / red design layer (`frontend/src/ui-refresh.css`), one page header on every page (`components/PageHeader.jsx`), Masters page = brand table + right-side drawer (`pages/Masters.jsx`), plainer wording.
+2. **Dark / Light / Auto theme** (`utils/theme.js`, `theme-tokens.css`, `components/ThemeToggle.jsx`): Auto = light 06:00-18:00 by the PC clock; switch on the welcome screen and in the sidebar; the welcome screen's 3D city eases between night and day (`CityScene.jsx` `dayState`). Sidebar starts collapsed.
+3. **Corel Intelligence** (name restored; `backend/app/corrections.py`): measuring (`/api/v2/intelligence/stats`, `tools/intelligence_loo.py`), learning across sizes, identity matching (`master_id`), confidence + quality gate, finer feedback, admin switch for automatic apply (default OFF). Plan file: `C:\Users\mjezi\.claude\plans\sprightly-inventing-starfish.md` (home PC only); the sections below hold the facts.
+4. **Progress fixes:** a re-run row starts at 0 % (`hooks/useSteppedProgress.js`); a Corel Intelligence board stays "converting" with step `learning` ("Applying Corel Intelligence...") until its learned edits are replayed (`main._learning`, `v2_shop_status`).
+5. **Agent 0.3.8:** helper programs (tasklist, taskkill, powershell, the packaged worker) start with CREATE_NO_WINDOW (`backend/app/winproc.py`), so the windowed agent no longer flashes console windows during a conversion. **Built (agent/dist) but NOT yet published to the droplet** - do it from the office PC.
+6. **Welcome-screen stutter:** the agent poll (every 3 s) re-rendered every `useAgent()` consumer, including the Automation page mounted under the welcome screen; `AgentContext` now keeps the old state when the poll result is unchanged (`utils/stableState.js`). Not confirmed on the owner's PC yet.
+7. Also: `docs/hangyo_tiruvannamalai_import_10shops.xlsx` (import sheet, 19 board rows for shops 01-10 of the Tiruvannamalai batch, masters from `signage_dataset/Hangyo/Creative`).
+
+**Tests at the end of the session:** frontend `npm test` 362 pass + `vite build` OK; backend correction / editor / publish / main_v2 / engines / agent-queue suites pass (about 190 tests run in groups; the WHOLE backend suite was not run in one go - run `cd backend && python -m pytest -q` once); agent `python -m pytest agent/tests` 71 pass. One sqlite error appeared once in a very long combined run and passed alone.
+
+**Not in git (carry to the office PC):** `agent/dist/SignageAgent.exe` + `latest.json` (agent 0.3.8; prepared as `office-handoff.zip`); `deploy/server.env` exists ONLY on the droplet.
+
+**Still open / not verified:** nothing was run on real CorelDRAW after the Corel Intelligence work (steps 2-5 are unit-tested and leave-one-out tested only); the light theme was not checked on the editor and on the Export / Print / ZIP popups; Spaces storage for masters/boards is not built (keys not set - never put real keys in a dev machine's `backend/.env`); old corrections have no `master_id`; agents built before 0.3.8 ignore `intelligence_min`; code signing certificate still missing.
+
+## Security + agent (2026-11-07) - read before the older handoff below
 
 Login (`backend/app/auth.py`: email + password, roles admin/designer, cookie session; `SIGNAGE_AUTH=off` for local dev; first admin via `SIGNAGE_ADMIN_EMAIL/PASSWORD` or `backend/tools/create_user.py`), glass sign-in on the launch screen (`components/GlassLogin.jsx`), closed CORS, upload limit, `/healthz`, the API serves `frontend/dist`. **Windows agent**: `agent/` (`signage_agent/*`, `build.py`, tests in `agent/tests`) + `backend/app/agents.py` + `pages/Agent.jsx`, `context/AgentContext.jsx`, `components/AgentBanner.jsx`; design and status in `docs/deployment-plan.md` (Phase 4). The agent registers, heartbeats, updates itself and (2026-11-08) RUNS CONVERT JOBS: `SIGNAGE_ENGINE=remote` queues them (`agent_jobs`, `agents.py` job API, `agent/signage_agent/jobs.py`); the exe bundles `backend/app` and re-launches itself as `--corel-worker`. Verified with the mock engine only - a real-CorelDRAW run through the agent is still to do. Agent 0.2.0 also builds the editor scene and runs exports (jobs `scene_build`, `export`; Corel Intelligence's replay chains through them) - verified with real CorelDRAW 27 through the exe on 2026-11-08. **Deployment files (2026-11-08):** `Dockerfile`, `docker-compose.yml`, `deploy/`, `docs/deploy-droplet.md` (not yet built with Docker); per-PC Recently generated, fonts reported by the agent, master hash + CorelDRAW version check - see `docs/deployment-plan.md` Phase 4. **Learning loop (2026-11-08, `corrections.py`):** a save on a board made WITH learned data is judged against the board as it was left (`learned_baseline`: no echo of the learned edits as a 'new' correction), top-level corrections are re-based onto the engine's own placement, and every record that fed the board gets a verdict per board (kept / corrected again -> `trust`, `quarantined` after 2 disputes and trust < 0.3; trusted records lead the 8:2 blend; the Learned corrections page shows it). `report.layout.intelligence` now stores `learned_ops` + `nested_sources`. Run `agent/tests` with `python -m pytest agent/tests` from the repo root.
 
@@ -61,7 +80,7 @@ an older one; bump it whenever the replay draws the same ops differently; (2) Re
 files - `/api/v2/shops/{id}/files/{name}` now gives the edited export's file when the current edits were exported (`_single_sources`, same rule
 as the row's Download and the ZIP). Tests in `test_publish.py`.
 
-## UI polish (2026-11-14, branch `working-branch`, not committed yet)
+## UI polish (2026-11-14, on `main` since 2026-11-15)
 
 **Masters page** (`pages/Masters.jsx`, `Masters.css`): a brand TABLE (S.No, Brand, Portrait, Landscape, arrow; `utils/masters.js brandRows`) with a search box
 (brand name or any master's name / file name) and New Brand; the row arrow opens a panel that slides in FROM THE LEFT over the table (`.mp-drawer`,

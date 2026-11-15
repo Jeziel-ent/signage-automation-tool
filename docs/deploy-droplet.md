@@ -38,6 +38,9 @@ Open the domain, **Connect Agent**, sign in with the administrator from `server.
 
 ## Publishing the agent
 
+The build is NOT in git (`agent/dist` is ignored). If you develop on one PC and deploy from another, carry `SignageAgent.exe` + `latest.json` over and upload them from the PC that has SSH:
+`scp SignageAgent.exe root@<droplet>:/opt/signage/agent-dist/` FIRST, then `scp latest.json ...` (so no agent reads the new json before the exe exists); check with `curl -s https://<site>/api/agent/config` (`latest_version`).
+
 Build it on a Windows PC (`cd agent && ..\.venv\Scripts\python.exe build.py`), then copy `agent\dist\SignageAgent.exe` and `agent\dist\latest.json`
 to `agent-dist/` on the droplet (`scp`). Designers download it from the site; running agents update themselves at their next check. Raise
 `agent/signage_agent/version.py` for every release; `build.py --min-supported X` makes older agents update at once.
