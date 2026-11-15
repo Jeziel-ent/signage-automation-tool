@@ -1,0 +1,38 @@
+/* ======================================================================
+   Colour tokens for the two themes. Every stylesheet uses these variables instead of fixed greys:
+     --nXX   a neutral grey, named by its dark-theme hex (--n12 = #121212 in dark). A light value is its counterpart: surfaces become white / off-white,
+             text becomes near-black, borders stay a soft grey.
+     --rXX   the same greys as "r, g, b" for rgba(var(--rXX), 0.4);  --rw = the overlay colour (white in dark, black in light)
+     --red-t / --green-t / --amber-t / --blue-t   coloured TEXT that is readable on the theme's surface;  --rgb-*-bg   tinted backgrounds (rgb triplets).
+   The theme is set as data-theme="dark" | "light" on <html> (src/utils/theme.js; chosen on the welcome screen and in the sidebar).
+   An element with data-theme="dark" of its own (the sidebar, the welcome screen) stays dark in both themes.
+   ====================================================================== */
+:root, [data-theme="dark"] {
+  --n0a: #0a0a0a; --n0d: #0d0d0d; --n0f: #0f0f0f; --n12: #121212; --n14: #141414; --n15: #151515; --n16: #161616; --n17: #171717; --n18: #181818;
+  --n1a: #1a1a1a; --n1f: #1f1f1f; --n26: #262626; --n2e: #2e2e2e; --n33: #333333; --n3a: #3a3a3a; --n40: #404040; --n52: #525252; --n73: #737373;
+  --na3: #a3a3a3; --nd4: #d4d4d4; --ne5: #e5e5e5; --nef: #efefef; --nf5: #f5f5f5; --nfa: #fafafa;
+  --r0a: 10, 10, 10; --r0d: 13, 13, 13; --r0f: 15, 15, 15; --r12: 18, 18, 18; --r14: 20, 20, 20; --r15: 21, 21, 21; --r16: 22, 22, 22; --r17: 23, 23, 23; --r18: 24, 24, 24;
+  --r1a: 26, 26, 26; --r1f: 31, 31, 31; --r26: 38, 38, 38; --r2e: 46, 46, 46; --r33: 51, 51, 51; --r3a: 58, 58, 58; --r40: 64, 64, 64; --r52: 82, 82, 82; --r73: 115, 115, 115;
+  --ra3: 163, 163, 163; --rd4: 212, 212, 212; --re5: 229, 229, 229; --ref: 239, 239, 239; --rf5: 245, 245, 245; --rfa: 250, 250, 250;
+  --rw: 255, 255, 255;
+  --red-t: #fca5a5; --red-t2: #fecaca; --red-t3: #f87171; --green-t: #6ee7b7; --green-b: #34d399; --amber-t: #fcd34d; --blue-t: #7dd3fc;
+  --red-bg: #3b0d0d; --green-bg: #052e1f;
+  --rgb-red-bg: 127, 29, 29; --rgb-green-bg: 6, 78, 59; --rgb-amber-bg: 120, 53, 15; --rgb-blue-bg: 12, 74, 110;
+  --shadow-color: 0, 0, 0;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  --n0a: #f5f5f4; --n0d: #ffffff; --n0f: #fafaf9; --n12: #ffffff; --n14: #ffffff; --n15: #f8f8f7; --n16: #f5f5f4; --n17: #f3f3f2; --n18: #f3f3f2;
+  --n1a: #eeeeed; --n1f: #e9e9e8; --n26: #e2e2e0; --n2e: #d9d9d7; --n33: #d0d0ce; --n3a: #c7c7c5; --n40: #bdbdbb; --n52: #a3a3a1; --n73: #737373;
+  --na3: #5f5f5d; --nd4: #404040; --ne5: #262626; --nef: #1f1f1f; --nf5: #171717; --nfa: #0a0a0a;
+  --r0a: 245, 245, 244; --r0d: 255, 255, 255; --r0f: 250, 250, 249; --r12: 255, 255, 255; --r14: 255, 255, 255; --r15: 248, 248, 247; --r16: 245, 245, 244; --r17: 243, 243, 242; --r18: 243, 243, 242;
+  --r1a: 238, 238, 237; --r1f: 233, 233, 232; --r26: 226, 226, 224; --r2e: 217, 217, 215; --r33: 208, 208, 206; --r3a: 199, 199, 197; --r40: 189, 189, 187; --r52: 163, 163, 161; --r73: 115, 115, 115;
+  --ra3: 95, 95, 93; --rd4: 64, 64, 64; --re5: 38, 38, 38; --ref: 31, 31, 31; --rf5: 23, 23, 23; --rfa: 10, 10, 10;
+  --rw: 0, 0, 0;
+  --red-t: #b91c1c; --red-t2: #991b1b; --red-t3: #dc2626; --green-t: #047857; --green-b: #059669; --amber-t: #b45309; --blue-t: #0369a1;
+  --red-bg: #fee2e2; --green-bg: #d1fae5;
+  --rgb-red-bg: 254, 202, 202; --rgb-green-bg: 167, 243, 208; --rgb-amber-bg: 253, 230, 138; --rgb-blue-bg: 186, 230, 253;
+  --shadow-color: 15, 15, 15;
+  color-scheme: light;
+}

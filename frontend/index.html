@@ -3,12 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Signage Automation Tool</title>
-    <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#0A0A0C" />
-    <!-- painted with the very first byte of HTML, before any script or stylesheet: the launch screen's night sky, so the
-         page never flashes white/grey (or plain black) while the app loads -->
-    <style>html, body { background: radial-gradient(ellipse at top, #0f172a 0%, #020617 55%, #000 100%) fixed, #020617; }</style>
+    <title>Signage Adaptation Tool</title>
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#0a0a0a" />
+    <!-- applied with the very first byte of HTML, before any stylesheet: the saved theme choice, else light by day (6 am - 6 pm) and dark at night, so the page never flashes the wrong colour -->
+    <script>try{var c=localStorage.getItem("signage.themeChoice");var h=new Date().getHours();var t=c==="dark"||c==="light"?c:(h>=6&&h<18?"light":"dark");document.documentElement.setAttribute("data-theme",t);}catch(e){document.documentElement.setAttribute("data-theme","dark");}</script>
+    <style>html, body { background: radial-gradient(ellipse at top, #171717 0%, #0a0a0a 55%, #000 100%) fixed, #0a0a0a; } html[data-theme="light"], html[data-theme="light"] body { background: #f5f5f4; }</style>
   </head>
   <body>
     <div id="root"></div>

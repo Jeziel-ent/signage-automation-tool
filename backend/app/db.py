@@ -49,6 +49,22 @@ CREATE TABLE IF NOT EXISTS corrections (
     updated_at REAL NOT NULL
 );
 
+-- Corel Intelligence accuracy (app/corrections.py save_cost): one row per board, replaced on every editor save (also a save that changed
+-- nothing = cost 0), so boards made WITH and WITHOUT learning can be compared.
+CREATE TABLE IF NOT EXISTS correction_stats (
+    shop_id TEXT PRIMARY KEY,
+    brand TEXT,
+    master_file TEXT,
+    page_w_mm REAL,
+    page_h_mm REAL,
+    board_type TEXT,
+    used_intelligence INTEGER NOT NULL DEFAULT 0,
+    learned INTEGER NOT NULL DEFAULT 0,
+    edit_cost REAL NOT NULL DEFAULT 0,
+    objects INTEGER NOT NULL DEFAULT 0,
+    updated_at REAL NOT NULL
+);
+
 -- Accounts (app/auth.py): email + password, role admin | designer. Sessions store only a hash of the cookie token.
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -640,6 +656,27 @@ def delete_correction(shop_id: str) -> None:
         conn.execute("DELETE FROM corrections WHERE shop_id = ?", (shop_id,))
 
 
+def save_correction_stat(shop_id: str, brand: str | None, master_file: str | None, page_w_mm: float, page_h_mm: float,
+                         board_type: str | None, score: dict) -> None:
+    """Store (or replace) the score of a board's latest editor save (`corrections.save_cost`)."""
+    with _conn() as conn:
+        conn.execute(
+            """INSERT INTO correction_stats (shop_id, brand, master_file, page_w_mm, page_h_mm, board_type, used_intelligence, learned,
+                                             edit_cost, objects, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(shop_id) DO UPDATE SET brand = excluded.brand, master_file = excluded.master_file, page_w_mm = excluded.page_w_mm,
+                 page_h_mm = excluded.page_h_mm, board_type = excluded.board_type, used_intelligence = excluded.used_intelligence,
+                 learned = excluded.learned, edit_cost = excluded.edit_cost, objects = excluded.objects, updated_at = excluded.updated_at""",
+            (shop_id, brand, master_file, page_w_mm, page_h_mm, board_type, 1 if score.get("used_intelligence") else 0,
+             int(score.get("learned") or 0), float(score.get("cost") or 0), int(score.get("objects") or 0), time.time()))
+
+
+def list_correction_stats() -> list[dict]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM correction_stats ORDER BY updated_at DESC").fetchall()
+    return [{**dict(r), "used_intelligence": bool(r["used_intelligence"])} for r in rows]
+
+
 def get_correction(shop_id: str) -> dict | None:
     with _conn() as conn:
         row = conn.execute("SELECT * FROM corrections WHERE shop_id = ?", (shop_id,)).fetchone()
@@ -648,7 +685,7 @@ def get_correction(shop_id: str) -> dict | None:
     return {**dict(row), "record": json.loads(row["record_json"])}
 
 
-def set_correction_feedback(source_shop_id: str, board_shop_id: str, confirmed: int, disputed: int) -> bool:
+def set_correction_feedback(source_shop_id: str, board_shop_id: str, confirmed: float, disputed: float) -> bool:
     """Record what ONE board's save said about a stored record: how many of its lessons the designer kept / corrected on that board.
     Kept per board (`record.feedback.boards[board]`), so saving the same board again replaces its verdict instead of adding to it."""
     with _conn() as conn:
@@ -663,7 +700,8 @@ def set_correction_feedback(source_shop_id: str, board_shop_id: str, confirmed: 
         if confirmed == 0 and disputed == 0:
             boards.pop(board_shop_id, None)
         else:
-            boards[board_shop_id] = [int(confirmed), int(disputed)]
+            tidy = lambda v: int(v) if float(v).is_integer() else round(float(v), 2)      # a nudge counts half (see corrections._verdict_of)
+            boards[board_shop_id] = [tidy(confirmed), tidy(disputed)]
         conn.execute("UPDATE corrections SET record_json = ? WHERE shop_id = ?", (json.dumps(rec), source_shop_id))
     return True
 

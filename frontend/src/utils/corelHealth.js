@@ -20,11 +20,11 @@ export function describeHealth(result) {
       pill: "Server unreachable",
       badges: [],
       title: "Automation server not reachable",
-      detail: "The Signage Automation backend did not respond.",
+      detail: "The Signage Adaptation Tool backend did not respond.",
       memory: "",
       lowMemory: false,
       steps: [
-        "Start the Signage Automation backend on the server machine.",
+        "Start the Signage Adaptation Tool backend on the server machine.",
         "Make sure this page is opened from the same machine or network as the backend.",
         "Then retry the connection.",
       ],

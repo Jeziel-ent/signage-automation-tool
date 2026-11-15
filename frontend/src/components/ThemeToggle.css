@@ -1,0 +1,8 @@
+/* Dark / Light switch on the welcome screen (always drawn dark - the welcome screen is a night scene). */
+.tt-seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: rgba(10, 10, 10, 0.72); border: 1px solid rgba(255, 255, 255, 0.14); font-family: var(--font-sans); }
+.tt-opt { display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; border: 0; border-radius: 8px; background: transparent; color: #a3a3a3; font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; transition: background-color 150ms ease, color 150ms ease; }
+.tt-opt:hover { color: #fff; }
+.tt-opt.on { background: #dc2626; color: #fff; }
+.tt-opt:focus-visible { outline: 2px solid #fff; outline-offset: 2px; }
+.sp3-theme { position: absolute; top: 20px; right: 24px; z-index: 6; }
+@media (max-width: 520px) { .sp3-theme { top: 12px; right: 12px; } }

@@ -60,7 +60,7 @@ export default function AdminRoute() {
     return (
       <div className="adash adash-login">
         <div className="adash-login-box">
-          <div className="adash-brand"><span className="dot" /> Signage Automation <span className="adash-muted">· Admin monitor</span></div>
+          <div className="adash-brand"><span className="dot" /> Signage Adaptation Tool <span className="adash-muted">· Admin monitor</span></div>
           <GlassLogin onLogin={login} needsSetup={needsSetup} />
         </div>
       </div>
@@ -94,7 +94,7 @@ function AdminDashboard() {
   return (
     <div className="adash">
       <header className="adash-top">
-        <div className="adash-brand"><span className="dot" /> Signage Automation <span className="adash-muted">· Admin monitor</span></div>
+        <div className="adash-brand"><span className="dot" /> Signage Adaptation Tool <span className="adash-muted">· Admin monitor</span></div>
         <div className="adash-top-right">
           <span className={"adash-pill " + (problems.length ? "bad" : status.data ? "good" : "")} title={problems.map((p) => p.title).join(" · ")}>
             {problems.length ? <AlertTriangle size={14} /> : <CheckCircle2 size={14} />}

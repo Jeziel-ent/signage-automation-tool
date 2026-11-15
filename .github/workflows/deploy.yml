@@ -117,9 +117,9 @@ jobs:
           RUN_NO: ${{ github.run_number }}
         run: |
           if [ -z "$WEBHOOK" ]; then echo "GCHAT_WEBHOOK_URL is not set - no message sent"; exit 0; fi
-          if [ "$DEPLOY_RESULT" = "success" ]; then head="✅ *Signage Automation Tool* — SUCCESS"
-          elif [ "$TEST_RESULT" != "success" ]; then head="❌ *Signage Automation Tool* — TESTS FAILED (not deployed, the live site is unchanged)"
-          else head="❌ *Signage Automation Tool* — DEPLOY FAILED"; fi
+          if [ "$DEPLOY_RESULT" = "success" ]; then head="✅ *Signage Adaptation Tool* — SUCCESS"
+          elif [ "$TEST_RESULT" != "success" ]; then head="❌ *Signage Adaptation Tool* — TESTS FAILED (not deployed, the live site is unchanged)"
+          else head="❌ *Signage Adaptation Tool* — DEPLOY FAILED"; fi
           title=$(printf '%s' "${COMMIT_MSG:-manual run}" | head -n 1)
           text="$head
           Environment: Production

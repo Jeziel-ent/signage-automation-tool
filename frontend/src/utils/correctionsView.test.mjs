@@ -55,3 +55,43 @@ test("the sparkle wording is singular / plural and says what is missing", () => 
   assert.match(sparkleTitle(1), /1 learned designer correction$/);
   assert.match(sparkleTitle(2), /2 learned designer corrections$/);
 });
+
+test("accuracyCards: with / without, the work saved and the lessons kept", async () => {
+  const { accuracyCards } = await import("./correctionsView.js");
+  assert.deepEqual(accuracyCards(null), []);
+  const cards = accuracyCards({
+    with: { boards: 3, avg_cost: 3.67, untouched: 1 }, without: { boards: 1, avg_cost: 15, untouched: 0 }, improvement_pct: 75.6,
+    lessons: { records: 4, kept: 6, corrected: 2, paused: 1 },
+  });
+  assert.deepEqual(cards.map((c) => c.value), ["15%", "3.67%", "75.6%", "75%"]);
+  assert.match(cards[0].note, /1 saved board$/);
+  assert.match(cards[1].note, /3 saved boards$/);
+  assert.match(cards[2].note, /less moving/);
+  assert.match(cards[3].note, /6 kept, 2 corrected again, 1 paused/);
+  const empty = accuracyCards({ with: { boards: 0, avg_cost: null }, without: { boards: 0, avg_cost: null }, improvement_pct: null, lessons: { kept: 0, corrected: 0, paused: 0 } });
+  assert.deepEqual(empty.map((c) => c.value), ["-", "-", "-", "-"]);
+  assert.match(empty[0].note, /no saved boards yet/);
+  assert.match(empty[2].note, /needs saved boards/);
+  assert.match(accuracyCards({ with: { boards: 1, avg_cost: 9 }, without: { boards: 1, avg_cost: 4 }, improvement_pct: -125, lessons: {} })[2].note, /more moving/);
+});
+
+test("learnedTitle says what was applied, held back and undone", async () => {
+  const { learnedTitle } = await import("./correctionsView.js");
+  assert.equal(learnedTitle({ applied: 1 }), "1 learned change applied");
+  assert.equal(learnedTitle({ applied: 3, nested: { applied: 1 } }), "4 learned changes applied");
+  assert.equal(
+    learnedTitle({ applied: 5, family: 2, avg_confidence: 0.64, held_back: 1, gated: 2 }),
+    "5 learned changes applied - 2 from other sizes of this master - average confidence 64% - 1 held back (not sure enough) - 2 undone (would leave the page or cover another object)",
+  );
+});
+
+test("autoApplyNote explains the switch in both states", async () => {
+  const { autoApplyNote, learnedTitle } = await import("./correctionsView.js");
+  assert.equal(autoApplyNote(null), "");
+  const on = autoApplyNote({ auto_apply: true, auto_min_confidence: 0.5, button_min_confidence: 0.2 });
+  assert.match(on, /^On: every Convert/);
+  assert.match(on, /at least 50% sure/);
+  assert.match(on, /down to 20%/);
+  assert.match(autoApplyNote({ auto_apply: false, auto_min_confidence: 0.5, button_min_confidence: 0.2 }), /^Off: learned changes are only applied when you press/);
+  assert.match(learnedTitle({ applied: 2, auto: true }), /2 learned changes applied automatically/);
+});

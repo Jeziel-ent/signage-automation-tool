@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "../context/AuthContext.jsx";
 import { Loader2, Trash2 } from "lucide-react";
 import PageHeader from "../components/PageHeader.jsx";
-import { ACTION_LABEL, describeShift, describeStyle, diffRects, pageLabel, pickSelection } from "../utils/correctionsView.js";
+import { ACTION_LABEL, accuracyCards, autoApplyNote, describeShift, describeStyle, diffRects, pageLabel, pickSelection } from "../utils/correctionsView.js";
 import "./Corrections.css";
 
 /** The page drawn to scale: dashed grey = where the engine put an object, solid red = where the designer put it. */
@@ -100,9 +100,14 @@ export default function Corrections() {
   const [selected, setSelected] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [stats, setStats] = useState(null);
+  const [settings, setSettings] = useState(null);
+  const { isAdmin } = useAuth();
 
   const load = useCallback(async () => {
     try {
+      fetch("/api/v2/intelligence/stats").then((x) => (x.ok ? x.json() : null)).then(setStats).catch(() => {});
+      fetch("/api/v2/intelligence/settings").then((x) => (x.ok ? x.json() : null)).then(setSettings).catch(() => {});
       const r = await fetch("/api/v2/corrections");
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setRecords((await r.json()).corrections);
@@ -126,13 +131,40 @@ export default function Corrections() {
     }
   }, [load]);
 
+  const toggleAuto = useCallback(async () => {
+    try {
+      const r = await fetch("/api/v2/intelligence/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ auto_apply: !settings.auto_apply }) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      setSettings(await r.json());
+    } catch (e) {
+      setError(`Could not change the setting: ${e.message}`);
+    }
+  }, [settings]);
+
   const current = pickSelection(records, selected);
   const record = records.find((r) => r.id === current) ?? null;
 
   return (
     <div className="cr-page">
-      <PageHeader title="Learned corrections" description="Fixes designers made in the editor, and what was taken from their own files. They are applied to later boards of the same size." />
+      <PageHeader title="Corel Intelligence" description="Fixes designers made in the editor, and what was taken from their own files. They are applied to later boards of the same size." />
       {error && <div className="cr-error" role="alert">{error}</div>}
+      {stats && (
+        <section className="cr-stats" aria-label="Accuracy of Corel Intelligence">
+          {accuracyCards(stats).map((c) => (
+            <div key={c.key} className={"cr-stat " + c.key}>
+              <span className="cr-stat-label">{c.label}</span>
+              <b className="cr-stat-value">{c.value}</b>
+              <span className="cr-stat-note">{c.note}</span>
+            </div>
+          ))}
+        </section>
+      )}
+      {settings && (
+        <label className={"cr-auto" + (isAdmin ? "" : " locked")}>
+          <input type="checkbox" role="switch" checked={settings.auto_apply} onChange={toggleAuto} disabled={!isAdmin} />
+          <span className="cr-auto-text"><b>Apply automatically when converting</b><span>{autoApplyNote(settings)}{isAdmin ? "" : " Only an administrator can change this."}</span></span>
+        </label>
+      )}
       <div className="cr-layout">
         <aside className="cr-list">
           <div className="cr-items">

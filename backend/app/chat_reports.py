@@ -20,7 +20,7 @@ from . import alerts, db, spaces
 log = logging.getLogger("signage.backup")
 DEFAULT_HOURS = (0, 6, 12, 18)
 DEFAULT_RETENTION_DAYS = 7
-SERVER_LABEL = "Signage Automation"
+SERVER_LABEL = "Signage Adaptation Tool"
 
 
 def enabled() -> bool:

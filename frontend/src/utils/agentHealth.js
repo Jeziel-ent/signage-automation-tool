@@ -17,7 +17,7 @@ const corelText = (list) => (list?.length ? `CorelDRAW ${list.map((c) => c.major
  */
 export function describeAgent(local, config) {
   if (!config && !local) {
-    return { state: "offline", title: "Website not reachable", detail: "The Signage Automation server did not respond. Check the connection and try again.",
+    return { state: "offline", title: "Website not reachable", detail: "The Signage Adaptation Tool server did not respond. Check the connection and try again.",
       steps: [], download: false, canContinue: false };
   }
   if (local) {

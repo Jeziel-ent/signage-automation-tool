@@ -32,7 +32,7 @@ function LoginForm({ needsSetup, onDone, overlay }) {
       <form className="auth-card" onSubmit={submit}>
         <h1>{needsSetup ? "Create the administrator" : "Sign in"}</h1>
         <p className="auth-sub">
-          {needsSetup ? "First start: this account manages the other users." : overlay ? "Your session ended. Sign in again - your work on this page is kept." : "Signage Automation"}
+          {needsSetup ? "First start: this account manages the other users." : overlay ? "Your session ended. Sign in again - your work on this page is kept." : "Signage Adaptation Tool"}
         </p>
         {needsSetup && (
           <label>Name

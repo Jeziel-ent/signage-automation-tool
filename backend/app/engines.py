@@ -1062,13 +1062,16 @@ class CorelEngine:
                 )
                 apply_name_fonts(placed, shop)
                 if shop.get("intelligence"):
-                    summary = corrections.apply_to_placed(placed, new_w, new_h, shop["intelligence"])
+                    summary = corrections.apply_to_placed(placed, new_w, new_h, shop["intelligence"],
+                                                          min_confidence=shop.get("intelligence_min", corrections.APPLY_MIN_CONFIDENCE))
+                    if shop.get("intelligence_auto"):
+                        summary["auto"] = True            # applied by itself on Convert (administrator's switch), not by the row button
                     src = next((p.layout_source for p in placed if p.layout_source), None)
                     if src is None and placed:
                         src = placed[0].layout_source = {}
                     if src is not None:
                         src["intelligence"] = summary
-                    if not summary["applied"]:
+                    if not summary["applied"] and not shop.get("intelligence_auto"):
                         warnings.append("Corel Intelligence: the learned corrections are already in place on this board" if summary.get("in_place")
                                         else "Corel Intelligence had no matching designer correction to apply to this board")
 

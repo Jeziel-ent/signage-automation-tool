@@ -1,4 +1,4 @@
-// Corel Intelligence "learned corrections" screen helpers: how a stored correction is drawn and described (the server sends page fractions + mm shifts).
+// Corel Intelligence screen helpers: how a stored correction is drawn and described (the server sends page fractions + mm shifts).
 
 export const ACTION_LABEL = {
   moved: "Moved", resized: "Resized", "moved+resized": "Moved and resized", hidden: "Hidden", deleted: "Deleted", styled: "Restyled",
@@ -68,10 +68,10 @@ const plural = (n, one, many) => (n === 1 ? one : many);
 
 /** The queue notice when the re-run button is clicked but nothing learned fits the board. */
 export function nothingLearnedNotice() {
-  return "Nothing learned for this board size yet. Correct a board of this size in the editor first.";
+  return "Corel Intelligence has nothing learned for this board size yet. Correct a board of this size in the editor first.";
 }
 
-/** Tooltip of the footer "Apply learned corrections (N)" button. */
+/** Tooltip of the footer "Corel Intelligence (N)" button. */
 export function intelAllTitle(n) {
   if (!n) return "Nothing learned yet for the converted boards - correct a board in the editor first";
   return `Re-run ${n} converted board${plural(n, "", "s")} with what designers corrected on the same size`;
@@ -79,6 +79,47 @@ export function intelAllTitle(n) {
 
 /** Tooltip of a row's re-run button. */
 export function sparkleTitle(n) {
-  if (!n) return "Nothing learned for this board size yet";
-  return `Re-run this board with ${n} learned designer correction${plural(n, "", "s")}`;
+  if (!n) return "Corel Intelligence: nothing learned for this board size yet";
+  return `Use Corel Intelligence: re-run this board with ${n} learned designer correction${plural(n, "", "s")}`;
+}
+
+/** The accuracy strip of the Corel Intelligence page, from GET /api/v2/intelligence/stats: how much designers still moved things (average, in % of
+ *  the page) on boards made without and with Corel Intelligence, the work it saved, and how many stored lessons the designers kept. */
+export function accuracyCards(s) {
+  if (!s?.with || !s?.without) return [];
+  const pct = (v) => (v == null ? "-" : `${v}%`);
+  const boards = (n) => (n ? `${n} saved board${plural(n, "", "s")}` : "no saved boards yet");
+  const { kept, corrected, paused } = s.lessons || { kept: 0, corrected: 0, paused: 0 };
+  const judged = kept + corrected;
+  let gainNote = "needs saved boards made with and without it";
+  if (s.improvement_pct != null) gainNote = s.improvement_pct >= 0 ? "less moving by hand than without it" : "more moving by hand - check the lessons";
+  return [
+    { key: "without", label: "Without Corel Intelligence", value: pct(s.without.avg_cost), note: `average edit per board - ${boards(s.without.boards)}` },
+    { key: "with", label: "With Corel Intelligence", value: pct(s.with.avg_cost), note: `average edit per board - ${boards(s.with.boards)}` },
+    { key: "gain", label: "Work saved", value: pct(s.improvement_pct), note: gainNote },
+    { key: "lessons", label: "Lessons kept", value: judged ? `${Math.round((kept / judged) * 100)}%` : "-",
+      note: judged ? `${kept} kept, ${corrected} corrected again${paused ? `, ${paused} paused` : ""}` : "no board has judged a lesson yet" },
+  ];
+}
+
+/** The hover text of a row's "Learned (n)" badge: what Corel Intelligence applied to the board and what it held back or undid
+ *  (`report.layout.intelligence`: applied, nested.applied, family, identity, held_back, gated, avg_confidence). */
+export function learnedTitle(intelligence) {
+  const i = intelligence || {};
+  const n = learnedCount(i);
+  const parts = [`${n} learned change${plural(n, "", "s")} applied${i.auto ? " automatically" : ""}`];
+  if (i.family) parts.push(`${i.family} from other sizes of this master`);
+  if (i.avg_confidence) parts.push(`average confidence ${Math.round(i.avg_confidence * 100)}%`);
+  if (i.held_back) parts.push(`${i.held_back} held back (not sure enough)`);
+  if (i.gated) parts.push(`${i.gated} undone (would leave the page or cover another object)`);
+  return parts.join(" - ");
+}
+
+/** The sentence under the "apply automatically" switch on the Corel Intelligence page (`GET /api/v2/intelligence/settings`). */
+export function autoApplyNote(s) {
+  if (!s) return "";
+  const pct = (v) => `${Math.round((v ?? 0) * 100)}%`;
+  return s.auto_apply
+    ? `On: every Convert applies the learned changes Corel Intelligence is at least ${pct(s.auto_min_confidence)} sure about. The button on a row still applies everything down to ${pct(s.button_min_confidence)}.`
+    : `Off: learned changes are only applied when you press the Corel Intelligence button on a row (or the footer). Turn on to apply the ones it is at least ${pct(s.auto_min_confidence)} sure about on every Convert.`;
 }

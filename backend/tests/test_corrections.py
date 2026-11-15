@@ -154,6 +154,7 @@ def test_apply_moves_the_matching_object_to_the_designers_box():
     logo = _placed("0", 100, 150, 200, 100)                      # exactly the recorded "before" box
     other = _placed("1", 600, 50, 100, 100)
     s = corrections.apply_to_placed([logo, other], 1000.0, 400.0, [_rec()])
+    assert 0.5 < s.pop("avg_confidence") <= 0.99            # one unproven editor correction of this size: fairly sure
     assert s == {"applied": 1, "skipped": 0, "conflicting": 0, "records": ["s1"]}
     assert (logo.x, logo.y, logo.w, logo.h) == (200.0, 110.0, 200.0, 100.0)
     assert (other.x, other.y) == (600, 50)

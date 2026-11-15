@@ -11,6 +11,7 @@ import Masters from "./pages/Masters.jsx";
 import AgentPage from "./pages/Agent.jsx";
 import AdminPage from "./pages/Admin.jsx";
 import AgentBanner from "./components/AgentBanner.jsx";
+import ThemeToggle from "./components/ThemeToggle.jsx";
 import { AgentProvider, useAgent } from "./context/AgentContext.jsx";
 import { useAuth } from "./context/AuthContext.jsx";
 import { loadEditorPage } from "./utils/prefetchEditor.js";
@@ -75,16 +76,16 @@ const NAV = [
   { to: "/masters", end: false, label: "Masters", Icon: Layers },
   { to: "/recent", end: false, label: "Recently generated", Icon: History },
   { to: "/print-file", end: false, label: "Create Print File", Icon: Printer },
-  { to: "/corrections", end: false, label: "Learned corrections", Icon: ShieldCheck },
+  { to: "/corrections", end: false, label: "Corel Intelligence", Icon: ShieldCheck },
   { to: "/agent", end: false, label: "Agent", Icon: MonitorCheck, dot: true },
 ];
 
 const COLLAPSE_KEY = "signage.sidebarCollapsed";
 function readCollapsed() {
   try {
-    return localStorage.getItem(COLLAPSE_KEY) === "1";
+    return localStorage.getItem(COLLAPSE_KEY) !== "0";   // collapsed unless the user opened it (the slim rail is the default)
   } catch {
-    return false; // private window / blocked storage: just start expanded
+    return true; // private window / blocked storage: start collapsed
   }
 }
 
@@ -117,10 +118,10 @@ function Shell() {
       </AnimatePresence>
       {!locked && (
         <AgentProvider>
-          <aside className={"app-sidebar" + (collapsed ? " collapsed" : "")} aria-label="Sidebar">
+          <aside className={"app-sidebar" + (collapsed ? " collapsed" : "")} aria-label="Sidebar" data-theme="dark">
             <div className="sidebar-brand">
               <span className="dot" />
-              <span className="sidebar-label">Signage Automation</span>
+              <span className="sidebar-label">Signage Adaptation Tool</span>
             </div>
             <nav>
               {NAV.map(({ to, end, label, Icon, dot }) => (
@@ -146,6 +147,7 @@ function Shell() {
                 </button>
               </>
             )}
+            <ThemeToggle variant="compact" />
             <button className="sidebar-toggle" onClick={onOpenSplash} data-tip="Welcome screen" aria-label="Show welcome screen">
               <House size={18} />
               <span className="sidebar-label">Welcome screen</span>

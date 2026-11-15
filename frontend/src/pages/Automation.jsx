@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import { finishedNotice, savedNotice, waitForExport } from "../utils/publishEdits.js";
-import { learnedCount, nothingLearnedNotice, sparkleTitle } from "../utils/correctionsView.js";
+import { learnedCount, learnedTitle, nothingLearnedNotice, sparkleTitle } from "../utils/correctionsView.js";
 import { CheckCircle2, Download, ExternalLink, Eye, FileSpreadsheet, FolderOpen, Play, Plus, RefreshCw, Trash2, X } from "lucide-react";
 import "../components/MasterPanels.css";
 import { useMasters } from "../context/MasterContext.jsx";
@@ -412,7 +412,7 @@ export default function Automation() {
   async function applyIntelligenceAll() {
     const todo = intelRows.map((x) => x.id);
     if (!todo.length) return;
-    setQueueNotice(`Re-running ${todo.length} board${todo.length === 1 ? "" : "s"} with learned corrections.`);
+    setQueueNotice(`Corel Intelligence is re-running ${todo.length} board${todo.length === 1 ? "" : "s"} with what designers corrected.`);
     const gen = masterGen.current;
     for (const id of todo) {
       if (gen !== masterGen.current) return;
@@ -1026,11 +1026,11 @@ function ConvertCell({ shop, onConvert, onExport, onPreview, onIntelligence, onS
           </span>
         )}
         {learnedCount(shop.report?.layout?.intelligence) > 0 && (
-          <span className="badge conf-badge conf-GOOD" title="Made with what designers corrected on this board size">
+          <span className="badge conf-badge conf-GOOD" title={learnedTitle(shop.report.layout.intelligence)}>
             Learned ({learnedCount(shop.report.layout.intelligence)})
           </span>
         )}
-        <button className={"icon-btn row-dl-btn ci-row-btn" + (intelCount ? " ready" : "")} onClick={onIntelligence} aria-label={`Apply learned corrections to ${shop.name}`}
+        <button className={"icon-btn row-dl-btn ci-row-btn" + (intelCount ? " ready" : "")} onClick={onIntelligence} aria-label={`Use Corel Intelligence on ${shop.name}`}
           title={sparkleTitle(intelCount)}>
           <RefreshCw size={16} />
         </button>

@@ -1,0 +1,221 @@
+/* ======================================================================
+   Signage Adaptation Tool - interface layer (loaded LAST, after theme.css, styles.css and workspace-dark.css).
+   Palette: black, white and one red. Flat surfaces, thin borders, no glow, no blur, no gradients, no hover lift.
+   Everything here is about looks only: no markup, no behaviour. To change the brand red, edit --brand below.
+   ====================================================================== */
+:root {
+  --brand: #dc2626;           /* the one red: buttons, active marks, progress */
+  --brand-hover: #b91c1c;
+  --brand-soft: rgba(220, 38, 38, 0.14);
+  --brand-line: rgba(239, 68, 68, 0.55);
+
+  --font-sans: "Inter", "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, Roboto, sans-serif;
+  --fs-xs: 12px; --fs-sm: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 20px;
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 24px; --sp-6: 32px;
+  --r-sm: 6px; --r-md: 8px; --r-lg: 12px;
+  --ease: cubic-bezier(0.2, 0, 0, 1);
+  --t-fast: 120ms; --t-base: 180ms; --t-slow: 280ms;
+}
+
+body { font-family: var(--font-sans); font-size: var(--fs-md); line-height: 1.5; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; }
+
+.app-shell, .app-shell [data-theme="dark"] {
+  --ws-bg: var(--n0a);
+  --ws-glass: var(--n12);
+  --ws-glass-strong: var(--n14);
+  --ws-solid: var(--n12);
+  --ws-border: var(--n26);
+  --ws-border-hover: var(--n3a);
+  --ws-line: var(--n1f);
+  --ws-text: var(--ne5);
+  --ws-strong: var(--nfa);
+  --ws-muted: var(--na3);
+  --ws-faint: var(--n73);
+  --ws-field: var(--n0d);
+  --ws-field-border: var(--n2e);
+  --ws-row-hover: var(--n18);
+  --ws-accent: var(--brand);
+  --ws-accent-soft: var(--brand-soft);
+  --ws-card-shadow: none;
+  --ws-card-shadow-hover: none;
+  background: var(--ws-bg);
+  font-family: var(--font-sans);
+}
+html, body { background: var(--n0a); }
+::selection { background: rgba(220, 38, 38, 0.45); color: #fff; }
+
+/* ------------------------------------------------------------ type scale */
+.app-shell h1 { font-size: var(--fs-xl); font-weight: 600; letter-spacing: -0.01em; }
+.app-shell h2 { font-size: var(--fs-lg); font-weight: 600; letter-spacing: 0; }
+.app-shell h3 { font-size: var(--fs-md); font-weight: 600; }
+.pg-head h1 { letter-spacing: -0.01em; }
+.app-shell .ws-bar-title, .app-shell .sheet-tabs-label { font-size: 11.5px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ws-faint); }
+.app-shell .shops-table th, .app-shell .rg-table th, .app-shell .mp-table thead th { font-size: 11.5px; font-weight: 600; letter-spacing: 0.05em; }
+
+/* ------------------------------------------------------------- surfaces */
+.app-shell .ws-bar, .app-shell .rg-bar, .app-shell .ws-card, .app-shell .rg-table-card {
+  background: var(--ws-glass); border: 1px solid var(--ws-border); border-radius: var(--r-lg);
+  box-shadow: none; -webkit-backdrop-filter: none; backdrop-filter: none; animation: none;
+  transition: border-color var(--t-base) var(--ease);
+}
+.app-shell .ws-bar:hover, .app-shell .rg-bar:hover, .app-shell .ws-card:hover, .app-shell .rg-table-card:hover { border-color: var(--ws-border-hover); box-shadow: none; }
+.app-shell .ws-card::before, .app-shell .rg-table-card::before, .app-shell .ws-bar::before, .app-shell .rg-bar::before { content: none; }
+.app-shell .ws-page > .ws-bar { background: var(--n0a); border-radius: 0; box-shadow: none; border-bottom: 1px solid var(--ws-border); }
+.app-shell .ws-page > .ws-bar:hover { box-shadow: none; }
+.app-shell .ws-card-head { padding: var(--sp-4) var(--sp-5); }
+.app-shell .ws-card-head h2 { font-size: var(--fs-lg); letter-spacing: 0; }
+.app-shell .ws-card-body { padding: var(--sp-5); gap: var(--sp-4); }
+.app-main { padding: var(--sp-5) var(--sp-6); }
+.app-main > * + * { margin-top: var(--sp-4); }
+.app-shell .ws-page > .ws-bar { margin: 0 calc(var(--sp-6) * -1); padding: var(--sp-3) var(--sp-6); }
+.app-main:has(> .ws-page:not([hidden])) { padding-top: 0; }
+.ws-page { gap: var(--sp-4); }
+.app-shell .ws-badge { background: var(--n18); border: 1px solid var(--ws-border); border-radius: var(--r-md); box-shadow: none; color: var(--ws-text); font-size: var(--fs-xs); font-weight: 500; }
+.app-shell .ws-dot.live { box-shadow: none; }
+
+/* -------------------------------------------------------------- sidebar */
+.app-shell .app-sidebar { background: var(--n0a); border-right: 1px solid var(--ws-border); -webkit-backdrop-filter: none; backdrop-filter: none; padding: var(--sp-5) 0 var(--sp-4); transition: width var(--t-slow) var(--ease); }
+.app-sidebar .sidebar-brand { font-size: var(--fs-md); font-weight: 600; letter-spacing: 0; line-height: 1.25; gap: 10px; align-items: center; }
+.app-shell .sidebar-brand .dot { box-shadow: none; width: 8px; height: 8px; }
+.app-shell .app-sidebar .nav-link {
+  margin: 1px 12px; padding: 10px 12px; border-radius: var(--r-md); color: var(--ws-muted); font-size: var(--fs-md); font-weight: 500;
+  transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.app-shell .app-sidebar .nav-link:hover { background: var(--n16); color: var(--nfa); }
+.app-shell .app-sidebar .nav-link.active { background: var(--n1a); color: var(--nfa); box-shadow: none; }
+.app-shell .app-sidebar .nav-link.active::before { content: ""; position: absolute; left: -12px; top: 8px; bottom: 8px; width: 3px; border-radius: 0 3px 3px 0; background: var(--brand); }
+.app-shell .app-sidebar .nav-link.active svg { color: var(--brand); }
+.app-shell .app-sidebar.collapsed .nav-link { margin: 1px 10px; padding: 10px 12px; }
+.app-shell .app-sidebar.collapsed .nav-link.active::before { left: -10px; }
+.app-shell .sidebar-toggle { border-radius: var(--r-md); transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.app-shell .sidebar-toggle:hover { background: var(--n16); }
+
+/* -------------------------------------------------------------- buttons */
+.app-shell .ws-cta, .app-shell .btn, .app-shell .btn-gradient, .app-shell .rg-editor-btn, .app-shell a.gz-download, .app-shell .sheet-tab.active, .app-shell .cd-danger {
+  background: var(--brand); background-image: none; border: 1px solid var(--brand); color: #fff;
+  border-radius: var(--r-md); padding: 8px 14px; font: inherit; font-size: var(--fs-sm); font-weight: 600; line-height: 1.25; box-shadow: none; transform: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; text-decoration: none;
+  transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.app-shell .ws-cta:hover:not(:disabled), .app-shell .btn:hover:not(:disabled), .app-shell .btn-gradient:hover:not(:disabled), .app-shell .rg-editor-btn:hover,
+.app-shell a.gz-download:hover, .app-shell .cd-danger:hover:not(:disabled) { background: var(--brand-hover); border-color: var(--brand-hover); box-shadow: none; transform: none; }
+.app-shell .ws-cta:active:not(:disabled), .app-shell .btn:active:not(:disabled) { background: #991b1b; border-color: #991b1b; transform: none; }
+.app-shell .ws-cta:disabled, .app-shell .btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.app-shell .btn.small { padding: 5px 10px; font-size: var(--fs-xs); }
+
+/* secondary: outlined */
+.app-shell .btn-outline-dark, .app-shell .hero-outline, .app-shell .hero-cta, .app-shell .mc-browse, .app-shell .rg-refresh, .app-shell .xm-btn, .app-shell .xm-card-dl,
+.app-shell .btn.ghost, .app-shell .btn-outline-red {
+  background: transparent; border: 1px solid var(--ws-border-hover); color: var(--ws-text); box-shadow: none; border-radius: var(--r-md);
+  padding: 8px 14px; font-size: var(--fs-sm); font-weight: 600; transition: background-color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.app-shell .btn-outline-dark:hover:not(:disabled), .app-shell .hero-outline:hover:not(:disabled), .app-shell .rg-refresh:hover:not(:disabled), .app-shell .xm-btn:hover,
+.app-shell .xm-card-dl:hover:not(:disabled), .app-shell .btn.ghost:hover, .app-shell .btn-outline-red:hover:not(:disabled) { background: var(--n1a); border-color: var(--n52); color: var(--nfa); box-shadow: none; }
+.app-shell .btn-outline-red { border-color: var(--brand-line); color: var(--red-t); }
+.app-shell .btn-outline-red:hover:not(:disabled) { background: var(--brand-soft); border-color: var(--brand); color: var(--nfa); }
+.app-shell .btn.ghost { border-color: var(--ws-border-hover); color: var(--ws-text); }
+.app-shell .btn.small.ghost { padding: 5px 10px; }
+.app-shell .ws-cta-ghost { padding: 8px 12px; border-radius: var(--r-md); color: var(--ws-muted); font-size: var(--fs-sm); font-weight: 600; transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.app-shell .ws-cta-ghost:hover { background: var(--n1a); color: var(--nfa); }
+.app-shell .icon-btn { border-radius: var(--r-md); padding: 6px; color: var(--ws-faint); transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease); }
+.app-shell .icon-btn:hover:not(:disabled), .app-shell .icon-btn:focus-visible { background: var(--n1f); color: var(--nfa); }
+.app-shell .icon-btn.mt-del:hover, .app-shell .icon-btn.stop-btn:hover { color: var(--red-t3); background: var(--brand-soft); }
+.app-shell button:focus-visible, .app-shell a:focus-visible, .app-shell [tabindex]:focus-visible { outline: 2px solid var(--nfa); outline-offset: 2px; }
+.app-shell .sheet-tab { border-radius: var(--r-md); background: transparent; color: var(--ws-muted); font-size: var(--fs-sm); font-weight: 500; transition: background-color var(--t-fast) var(--ease), color var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease); }
+.app-shell .sheet-tab:hover { border-color: var(--ws-border-hover); color: var(--nfa); }
+.app-shell .sd-btn:hover:not(.disabled) { background: var(--brand); background-image: none; }
+
+/* --------------------------------------------------------------- fields */
+.app-shell input, .app-shell select, .app-shell textarea { border-radius: var(--r-md); font-family: inherit; }
+.app-shell .ws-input, .app-shell .rg-search input, .app-shell .brand-search, .app-shell .xm-select, .app-shell .pf-input, .app-shell .mp-search input {
+  background: var(--ws-field); border: 1px solid var(--ws-field-border); color: var(--ws-text); padding: 9px 12px; font-size: var(--fs-sm);
+  transition: border-color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease);
+}
+.app-shell .ws-input:focus, .app-shell .rg-search input:focus, .app-shell .mp-search input:focus, .app-shell .pf-input:focus {
+  background: var(--ws-field); border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft);
+}
+.app-shell .brand-trigger, .app-shell .ws-select select { background: var(--n14); border: 1px solid var(--ws-border-hover); border-radius: var(--r-md); transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease); }
+.app-shell .brand-trigger:hover, .app-shell .ws-select select:hover { background: var(--n1a); border-color: var(--n52); }
+.app-shell .brand-trigger:focus-visible, .app-shell .brand-trigger[aria-expanded="true"] { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.app-shell .brand-menu, .brand-menu.portal { background: var(--n14); border: 1px solid var(--n33); border-radius: var(--r-lg); box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.app-shell .brand-item:hover, .app-shell .brand-item.active, .app-shell .brand-item.selected,
+.brand-menu.portal .brand-item:hover, .brand-menu.portal .brand-item.active, .brand-menu.portal .brand-item.selected { background: var(--n1f); color: var(--nfa); }
+
+/* --------------------------------------------------------------- tables */
+.app-shell .ws-table-wrap { border-radius: var(--r-md); background: transparent; }
+.app-shell .ws-card .shops-table th, .app-shell .ws-table-scroll .shops-table th, .app-shell .rg-table th { background: var(--n12); color: var(--ws-faint); }
+.app-shell .ws-card .shops-table td, .app-shell .rg-table td { padding-top: 10px; padding-bottom: 10px; }
+.app-shell .ws-card .shops-table tbody tr, .app-shell .rg-table tbody tr, .app-shell .mp-table tbody tr { transition: background-color var(--t-fast) var(--ease); }
+.app-shell .ws-card .shops-table tr.new-shop-row td { background: var(--n15); }
+
+/* ---------------------------------------------- badges, progress, hero */
+.app-shell .badge-done, .app-shell .badge-processing, .app-shell .badge-queued, .app-shell .badge-failed, .app-shell .pill, .app-shell .ws-tag { border-radius: var(--r-sm); font-size: 11.5px; font-weight: 600; }
+.app-shell .batch-bar-fill, .app-shell .progress-fill { box-shadow: none; background: var(--brand); transition: width var(--t-base) var(--ease); }
+.app-shell .progress-bar, .app-shell .batch-bar { background: var(--n26); }
+.app-shell .progress-circle-fill { filter: none; stroke: var(--brand); }
+.app-shell .progress-circle-text { text-shadow: none; }
+.app-shell .empty-hero:hover, .app-shell .empty-hero.drag, .app-shell .empty-hero:focus-visible { background: var(--n0f); }
+.app-shell .master-card:hover:not(.filled), .app-shell .master-card.drag { background: var(--n14); box-shadow: none; transform: none; border-color: var(--brand-line); }
+.app-shell .master-card:hover .mc-icon { box-shadow: none; }
+.app-shell .mc-icon { box-shadow: none; }
+.app-shell .dropzone { border-radius: var(--r-lg); transition: border-color var(--t-base) var(--ease), background-color var(--t-base) var(--ease); }
+.app-shell .dropzone:hover, .app-shell .dropzone.drag, .app-shell .dropzone.compact:hover, .app-shell .dropzone.compact.drag { background: var(--n14); border-color: var(--brand-line); }
+.app-shell .mt-panel { border-radius: var(--r-lg); }
+.app-shell .mt-row { border-radius: var(--r-md); transition: border-color var(--t-fast) var(--ease), background-color var(--t-fast) var(--ease); }
+.app-shell .mt-drop { border-radius: var(--r-md); }
+.app-shell .mt-drop:hover, .app-shell .mt-drop.drag { background: var(--n15); }
+
+/* --------------------------------------------------------------- modals */
+.app-shell .xm-back, .cd-scrim { background: rgba(0, 0, 0, 0.66); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.app-shell .xm, .cd-box { background: var(--n12); border: 1px solid var(--n2e); border-radius: var(--r-lg); box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6); -webkit-backdrop-filter: none; backdrop-filter: none; }
+.app-shell .xm-foot { background: var(--n0f); }
+.app-shell .xm-card, .app-shell .xm-file, .app-shell .gz-action, .app-shell .pf-list { background: var(--n0f); border-radius: var(--r-md); }
+.app-shell .xm-card { transition: border-color var(--t-base) var(--ease); }
+.app-shell .xm-card.on { border-color: var(--brand); box-shadow: none; }
+.app-shell .xm-seg { background: var(--n0d); border-radius: var(--r-md); }
+.app-shell .xm-seg button.on { background: var(--n26); color: var(--nfa); box-shadow: none; }
+.app-shell .xm-x { border-radius: var(--r-md); }
+
+/* -------------------------------------------- the Masters drawer, scrollbars */
+.mp-drawer { background: var(--n12); border-left: 1px solid var(--n2e); box-shadow: -16px 0 40px rgba(0, 0, 0, 0.5); }
+.mp-scrim { background: rgba(0, 0, 0, 0.6); }
+.mp-handle { box-shadow: none; }
+.mp-table tbody tr:hover, .mp-table tbody tr.active { background: var(--ws-row-hover); }
+.app-shell * { scrollbar-width: thin; scrollbar-color: var(--n33) transparent; }
+.app-shell *::-webkit-scrollbar { width: 10px; height: 10px; }
+.app-shell *::-webkit-scrollbar-thumb { background: var(--n33); border-radius: 999px; border: 2px solid transparent; background-clip: content-box; }
+.app-shell *::-webkit-scrollbar-thumb:hover { background: var(--n52); background-clip: content-box; }
+
+/* ----------------------------------------------------- page transition */
+@keyframes ui-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+.app-main > .pg-head, .app-main > .ws-page > .pg-head, .app-main > .rg-page, .app-main > .pf-page, .app-main > .cr-page, .app-main > .agent-page { animation: ui-in var(--t-slow) var(--ease) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell *, .app-shell *::before, .app-shell *::after, .mp-drawer, .mp-scrim { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+
+/* search boxes keep room for their magnifier icon */
+.app-shell .mp-search input, .app-shell .rg-search input { padding-left: 38px; }
+
+/* every plain field is dark with a light border (a few pages styled their own white fields) */
+.app-shell input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="file"]), .app-shell select, .app-shell textarea {
+  background-color: var(--ws-field); border-color: var(--ws-field-border); color: var(--ws-text);
+}
+.app-shell .pf-details input, .app-shell .pf-section input { background: var(--ws-field); border: 1px solid var(--ws-field-border); color: var(--ws-text); border-radius: var(--r-md); padding: 8px 10px; }
+.app-shell .pf-details input:focus, .app-shell .pf-section input:focus { border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-soft); }
+.app-shell input::placeholder, .app-shell textarea::placeholder { color: var(--ws-faint); }
+
+
+/* ------------------------------------------------------------- light theme */
+:root[data-theme="light"] .app-shell { --ws-card-shadow: 0 1px 2px rgba(15, 15, 15, 0.04); }
+:root[data-theme="light"] .app-shell .ws-card, :root[data-theme="light"] .app-shell .ws-bar, :root[data-theme="light"] .app-shell .rg-bar, :root[data-theme="light"] .app-shell .rg-table-card { box-shadow: 0 1px 2px rgba(15, 15, 15, 0.04); }
+:root[data-theme="light"] .app-shell .xm-back, :root[data-theme="light"] .cd-scrim, :root[data-theme="light"] .mp-scrim { background: rgba(15, 15, 15, 0.45); }
+:root[data-theme="light"] .app-shell .xm, :root[data-theme="light"] .cd-box { box-shadow: 0 20px 48px rgba(15, 15, 15, 0.18); }
+:root[data-theme="light"] .mp-drawer { box-shadow: -16px 0 40px rgba(15, 15, 15, 0.14); }
+:root[data-theme="light"] .app-shell .brand-menu, :root[data-theme="light"] .brand-menu.portal { box-shadow: 0 12px 32px rgba(15, 15, 15, 0.14); }
+:root[data-theme="light"] .app-shell input, :root[data-theme="light"] .app-shell select, :root[data-theme="light"] .app-shell textarea { color-scheme: light; }
+:root[data-theme="light"] ::selection { background: rgba(220, 38, 38, 0.25); color: #0a0a0a; }
+:root[data-theme="light"] .app-shell .ws-page > .ws-bar { background: var(--n0a); }
+:root[data-theme="light"] .app-shell .ws-cta:disabled, :root[data-theme="light"] .app-shell .btn:disabled { opacity: 0.4; }
+html, body { transition: background-color var(--t-base) var(--ease); }
+:root[data-theme="light"] .app-shell { color-scheme: light; }

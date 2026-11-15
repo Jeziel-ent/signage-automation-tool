@@ -91,7 +91,7 @@ export function SheetTabs({ tabs, shops, current, noSheet, sheetOf, onPick }) {
 
 const NEED_ONE = "Convert at least one shop first";
 
-/** The Shops Queue footer: Print File / ZIP / Download All / Apply learned corrections / Convert All (or the batch banner while converting). */
+/** The Shops Queue footer: Print File / ZIP / Download All / Corel Intelligence / Convert All (or the batch banner while converting). */
 export function QueueFooter({ banner, summary, printableCount, intelCount, convertibleCount, on }) {
   if (banner) return <div className="ws-card-foot">{banner}</div>;
   const has = printableCount > 0;
@@ -111,7 +111,7 @@ export function QueueFooter({ banner, summary, printableCount, intelCount, conve
         <FileCode2 size={15} /> Download All
       </button>
       <button className="btn-outline-red" onClick={on.intelligence} disabled={!intelCount} title={intelAllTitle(intelCount)}>
-        <RefreshCw size={15} /> Apply learned corrections{intelCount ? ` (${intelCount})` : ""}
+        <RefreshCw size={15} /> Corel Intelligence{intelCount ? ` (${intelCount})` : ""}
       </button>
       {convertibleCount > 0 && (
         <button className="btn-gradient" onClick={on.convertAll}>

@@ -2,6 +2,8 @@ import { Component, Suspense, lazy, useCallback, useEffect, useRef, useState } f
 import { useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
 import ProfessionalConnectControl from "./ProfessionalConnectControl.jsx";
+import ThemeToggle from "./ThemeToggle.jsx";
+import { useTheme } from "../utils/theme.js";
 import { FLIGHT_S } from "./cityTiming.js";
 import { checkAgentConnection, describeAgent } from "../utils/agentHealth.js";
 import { pairLocalAgent } from "../utils/agentLocal.js";
@@ -48,6 +50,7 @@ class CanvasBoundary extends Component {
  */
 export default function SplashScreen({ onStart, goHome = true }) {
   const navigate = useNavigate();
+  const { theme } = useTheme();   // the welcome screen is a night street in the dark theme and a day street in the light one
   const { user, authEnabled, needsSetup, login } = useAuth();
   const needsLogin = authEnabled && !user; // the sign-in card replaces the Start button until somebody is signed in
   const [gl] = useState(webglAvailable);
@@ -152,6 +155,7 @@ export default function SplashScreen({ onStart, goHome = true }) {
   return (
     <motion.div
       className={"sp3-root" + (leaving ? " leaving" : "")}
+      data-theme={theme}
       style={{ "--sp3-inset": `${inset}px` }}
       aria-labelledby="sp3-title"
       // no entrance fade: the screen is opaque from its first paint. A 0 -> 1 fade showed the workspace through it and was
@@ -180,7 +184,7 @@ export default function SplashScreen({ onStart, goHome = true }) {
           <CanvasBoundary>
             <Suspense fallback={null}>
               <div className={"sp3-canvas-wrap" + (cityReady ? " ready" : "")}>
-                <CityCanvas leaving={leaving} still={still} onArrive={onArrive} onReady={onCityReady} inset={inset} />
+                <CityCanvas leaving={leaving} still={still} onArrive={onArrive} onReady={onCityReady} inset={inset} day={theme === "light"} />
               </div>
             </Suspense>
           </CanvasBoundary>
@@ -189,9 +193,10 @@ export default function SplashScreen({ onStart, goHome = true }) {
       </div>
 
       {/* the page itself: title + one control, the same height in every state */}
+      <div className="sp3-theme"><ThemeToggle /></div>
       <main className="sp3-content" ref={contentRef}>
         <header className="sp3-header">
-          <h1 id="sp3-title" className="sp3-title">Signage Automation Platform</h1>
+          <h1 id="sp3-title" className="sp3-title">Signage Adaptation Tool</h1>
           <p className="sp3-sub">Signage automation for CorelDRAW</p>
         </header>
         <ProfessionalConnectControl health={health} onConnect={runCheck} onStart={startSignedIn} disabled={leaving}

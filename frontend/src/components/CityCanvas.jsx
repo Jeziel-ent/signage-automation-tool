@@ -20,7 +20,7 @@ const GL = { antialias: false, stencil: false, powerPreference: "high-performanc
  * (SplashScreen passes useCallback'd handlers) none of that reaches the WebGL tree - the canvas is never re-rendered, let
  * alone re-mounted, except when `leaving`, `still` or `inset` really change.
  */
-function CityCanvas({ leaving, still, onArrive, onReady, inset }) {
+function CityCanvas({ leaving, still, onArrive, onReady, inset, day }) {
   return (
     <Canvas
       className="sp3-canvas"
@@ -28,7 +28,7 @@ function CityCanvas({ leaving, still, onArrive, onReady, inset }) {
       camera={CAMERA}
       gl={GL}
     >
-      <CityScene leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} inset={inset} />
+      <CityScene leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} inset={inset} day={day} />
     </Canvas>
   );
 }

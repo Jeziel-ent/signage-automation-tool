@@ -330,8 +330,20 @@ NEARBY_AREA_TOL = 0.25     # ... and size (area within 25 %) still describes a b
 NEARBY_WEIGHT = 0.5        # a nearby record counts half in the averaged part; a record of the exact size always leads
 LINE_MIN_FRAC = 0.75       # a name shorter than this share of the name she broke into lines stays on one line
 FIT_FRAC = 0.92            # the export keeps a learned name inside this share of her box width (measured by CorelDRAW, not estimated)
+FAMILY_MAX_ASPECT_LN = 0.7   # a record from another board size still teaches this one when the pages are within this log-aspect distance ...
+FAMILY_MAX_AREA_LN = 1.6     # ... and this log-area distance (the same master, so the same design family)
+FAMILY_TAU = 0.6             # how fast a size's say fades with distance: weight = exp(-distance / tau)
+FAMILY_STRENGTH = 0.85       # an object takes this share of the shift designers made on another size (the rest stays where the engine put it)
+FAMILY_MATCH_TOL = 0.10      # a recorded object is the placed one when its box is this close (share of the page) ...
+FAMILY_ASPECT_TOL = 0.10     # ... and its shape (log aspect) this similar - the sizes differ, so the loose rule of the two
+IDENTITY_CAPTURE_TOL = 0.005  # when a correction is recorded, its object is tied to the master element whose placed box is within this share of the page
+IDENTITY_SHIFT_TOL = 0.02     # an object found by identity that sits within this of where the record saw it takes the recorded box as it is;
+                              # farther away (the engine placed it differently since) it takes the recorded SHIFT instead
 TRUST_LEAD = 0.5           # only a record trusted at least this much may LEAD a blend (the newest such record); distrusted ones only steady it
 QUARANTINE_TRUST = 0.3     # a record trusted less than this ...
+NUDGE_SHIFT = 0.02         # a designer who moved a learned object by less than this (share of the page) nudged it: the lesson was PARTLY right (half kept, half disputed)
+REVERT_WEIGHT = 2.0        # a designer who put a learned object back where the ENGINE had it says the lesson was wrong: it counts double
+AUTO_MIN_CONFIDENCE = 0.50  # when learning applies by itself on Convert (no button) only changes this sure are applied
 QUARANTINE_DISPUTES = 2    # ... after at least this many designers corrected what it taught, is left out until confirmations win it back
 
 
@@ -343,11 +355,11 @@ QUARANTINE_DISPUTES = 2    # ... after at least this many designers corrected wh
 # keeps being corrected falls towards 0 and is finally paused (`quarantined`). Tallies are kept per BOARD (the board whose save produced
 # them), so autosaving the same board many times never counts twice.
 
-def _totals(fb: dict) -> tuple[int, int]:
+def _totals(fb: dict) -> tuple[float, float]:
     boards = fb.get("boards") or {}
     if boards:
-        return sum(int(v[0]) for v in boards.values()), sum(int(v[1]) for v in boards.values())
-    return max(0, int(fb.get("confirmed", 0) or 0)), max(0, int(fb.get("disputed", 0) or 0))
+        return sum(float(v[0]) for v in boards.values()), sum(float(v[1]) for v in boards.values())
+    return max(0.0, float(fb.get("confirmed", 0) or 0)), max(0.0, float(fb.get("disputed", 0) or 0))
 
 
 def feedback_of(rec: dict) -> dict:
@@ -366,7 +378,7 @@ def quarantined(rec: dict) -> bool:
 
 
 def usable_records(rows: list[dict], brand: str | None, master_file: str | None, w_mm: float, h_mm: float,
-                   board_type: str | None) -> list[dict]:
+                   board_type: str | None, family: bool = False) -> list[dict]:
     """The stored corrections that describe THIS board: same brand, same master file, same page size (within `SAME_SIZE_TOL`) and, when
     both name one, the same TYPE OF BOARD. Every stored record is used.
     Newest first, so a later correction wins a clash."""
@@ -376,7 +388,14 @@ def usable_records(rows: list[dict], brand: str | None, master_file: str | None,
     out = sorted(out, key=lambda r: r.get("updated_at") or 0, reverse=True)
     near = [{**r, "nearby": True} for r in rows if _record_fits(r, brand, master_file, w_mm, h_mm, want, nearby=True)]
     near.sort(key=lambda r: r.get("updated_at") or 0, reverse=True)
-    return out + near                                       # exact-size records lead; nearby ones only steady them (or stand in when there is none)
+    fam: list[dict] = []
+    if family:                                              # other sizes of the same master: they only speak for objects nothing else covers
+        for r in rows:
+            d = family_distance(r, brand, master_file, w_mm, h_mm, want)
+            if d is not None:
+                fam.append({**r, "family": True, "_dist": d})
+        fam.sort(key=lambda r: r["_dist"])
+    return out + near + fam                                 # exact-size records lead; nearby ones only steady them; family ones stand in
 
 
 def _same_size(a, b) -> bool:
@@ -413,6 +432,28 @@ def _record_fits(r: dict, brand: str | None, master_file: str | None, w_mm: floa
         return False
     have = _lower(r.get("board_type"))
     return not (want_type and have and want_type != have)
+
+
+def family_distance(r: dict, brand: str | None, master_file: str | None, w_mm: float, h_mm: float, want_type: str) -> float | None:
+    """How far another board size of the same brand / master / board type is from this one (log-aspect distance + half the log-area distance),
+    or None when it is the same or a nearby size (those have their own rule), a different master, or too far to say anything."""
+    if (r.get("brand") or "") != (brand or "") or _lower(r.get("master_file")) != _lower(master_file):
+        return None
+    have = _lower(r.get("board_type"))
+    if want_type and have and want_type != have:
+        return None
+    try:
+        rw, rh = float(r["page_w_mm"]), float(r["page_h_mm"])
+        if min(rw, rh, w_mm, h_mm) <= 0:
+            return None
+        if (_same_size(rw, w_mm) and _same_size(rh, h_mm)) or _nearby_size(r, w_mm, h_mm):
+            return None
+        da, dv = abs(math.log((rw / rh) / (w_mm / h_mm))), abs(math.log((rw * rh) / (w_mm * h_mm)))
+    except (KeyError, TypeError, ValueError, ZeroDivisionError):
+        return None
+    if da > FAMILY_MAX_ASPECT_LN or dv > FAMILY_MAX_AREA_LN:
+        return None
+    return da + 0.5 * dv
 
 
 def _median(v: list[float]) -> float:
@@ -453,23 +494,131 @@ def _collect_votes(placed: list, new_w: float, new_h: float, records: list[dict]
 def _record_votes(rec: dict, placed: list, new_w: float, new_h: float, votes: dict) -> int:
     """Add one record's votes to `votes`; returns how many of its changes matched nothing or are not re-applied."""
     sid = rec.get("shop_id") or (rec.get("record") or {}).get("shop_id")
+    if rec.get("family"):
+        return _family_votes(rec, sid, placed, new_w, new_h, votes)
     taken: set[str] = set()                                   # within one record an object answers one change only
     skipped = 0
     for ch in (rec.get("record") or rec).get("changes", []):
         if ch["action"] in SCENE_ACTIONS:
             continue                                          # replayed afterwards as editor ops (nested_ops)
         best = None
+        by_id = False
         if ch["action"] in APPLIED_ACTIONS and (ch.get("signature") or {}).get("kind") != "text":
-            best = _nearest_placed(placed, taken, ch["before"], new_w, new_h)
+            ident = _find_identity(placed, taken, ch.get("master_id"))
+            if ident is not None:                                  # the same master element, wherever the engine put it
+                best, by_id = (0.0, ident), True
+            else:
+                best = _nearest_placed(placed, taken, ch["before"], new_w, new_h)
         if best is None:
             skipped += 1
             continue
         taken.add(best[1].id)
         after = {**ch["after"], "_t": trust(rec)}
+        if by_id:
+            after["_id"] = True
+            p = best[1]
+            moved = max(abs((p.x + p.w / 2) / new_w - ch["before"]["cx"]), abs((p.y + p.h / 2) / new_h - ch["before"]["cy"]),
+                        abs(p.w / new_w - ch["before"]["w"]), abs(p.h / new_h - ch["before"]["h"]))
+            if moved > IDENTITY_SHIFT_TOL:                         # placed elsewhere than when the designer fixed it: repeat her SHIFT, not her box
+                b, a = ch["before"], ch["after"]
+                sw = (a["w"] / b["w"]) if b["w"] else 1.0
+                sh = (a["h"] / b["h"]) if b["h"] else 1.0
+                after.update({"cx": (p.x + p.w / 2) / new_w + (a["cx"] - b["cx"]), "cy": (p.y + p.h / 2) / new_h + (a["cy"] - b["cy"]),
+                              "w": p.w / new_w * sw, "h": p.h / new_h * sh})
         if rec.get("nearby"):
             after["_w"] = NEARBY_WEIGHT
         votes.setdefault(best[1].id, []).append((after, sid, _is_editor(rec)))
     return skipped
+
+
+def _base_id(pid) -> str:
+    """A placed object's master element id: tile copies are named "<id>_tile<n>"."""
+    return str(pid).split("_tile")[0]
+
+
+def _find_identity(placed: list, taken: set[str], master_id) -> object | None:
+    """The placed object that IS the recorded master element (the same layout id), or None - also None when the element was copied
+    (tiles) or is text, because then one id names several objects and only the box can tell which one the designer meant."""
+    if master_id is None:
+        return None
+    hits = [p for p in placed if _base_id(p.id) == str(master_id)]
+    if len(hits) != 1:
+        return None
+    p = hits[0]
+    return None if p.id in taken or p.role in TEXT_ROLES or p.w <= 0 or p.h <= 0 else p
+
+
+def attach_identity(changes: list[dict], objects: list[dict] | None, pw: float, ph: float) -> int:
+    """Tie each top-level change to the master element it is about, so a later board can find the same element even when the engine places it
+    differently (another size, a better layout rule). `objects` = the report's placed objects of the board the designer corrected (id, role, x, y,
+    w, h in mm); an element qualifies when exactly one object has its box within IDENTITY_CAPTURE_TOL of the change's `before` and its id is not
+    shared by tile copies. Sets `master_id` on the change; returns how many were tied."""
+    if not objects or pw <= 0 or ph <= 0:
+        return 0
+    counts: dict[str, int] = {}
+    for o in objects:
+        counts[_base_id(o.get("id"))] = counts.get(_base_id(o.get("id")), 0) + 1
+    tied = 0
+    for c in changes:
+        b = c.get("before")
+        if c.get("master_id") is not None or not b or (c.get("signature") or {}).get("kind") == "text":
+            continue
+        close = []
+        for o in objects:
+            if o.get("role") in TEXT_ROLES or not o.get("w") or not o.get("h"):
+                continue
+            d = max(abs((o["x"] + o["w"] / 2) / pw - b["cx"]), abs((o["y"] + o["h"] / 2) / ph - b["cy"]), abs(o["w"] / pw - b["w"]), abs(o["h"] / ph - b["h"]))
+            if d <= IDENTITY_CAPTURE_TOL:
+                close.append(o)
+        if len(close) == 1 and counts.get(_base_id(close[0]["id"])) == 1:
+            c["master_id"] = _base_id(close[0]["id"])
+            tied += 1
+    return tied
+
+
+def _family_match(placed: list, taken: set[str], ch: dict, new_w: float, new_h: float):
+    """The placed object a change recorded on ANOTHER board size is about: nearest box within FAMILY_MATCH_TOL whose shape (aspect) agrees."""
+    b, aspect = ch["before"], (ch.get("signature") or {}).get("aspect")
+    best = None
+    for p in placed:
+        if p.id in taken or p.role in TEXT_ROLES or p.w <= 0 or p.h <= 0:
+            continue
+        if aspect and abs(math.log((p.w / p.h) / aspect)) > FAMILY_ASPECT_TOL:
+            continue
+        d = max(abs((p.x + p.w / 2) / new_w - b["cx"]), abs((p.y + p.h / 2) / new_h - b["cy"]))
+        if d <= FAMILY_MATCH_TOL and (best is None or d < best[0]):
+            best = (d, p)
+    return best[1] if best else None
+
+
+def _family_votes(rec: dict, sid, placed: list, new_w: float, new_h: float, votes: dict) -> int:
+    """Votes from a record made on another size of the same master: its shift (after - before, as page fractions) is added to where the engine
+    placed the matching object here, damped by FAMILY_STRENGTH and weighted by how near that size is. Changes that match nothing are NOT counted
+    as skipped (a different size is expected to lack some of them). Returns 0."""
+    wgt = math.exp(-float(rec.get("_dist") or 0.0) / FAMILY_TAU)
+    taken: set[str] = set()
+    for ch in (rec.get("record") or rec).get("changes", []):
+        b, a = ch.get("before"), ch.get("after")
+        if ch["action"] not in APPLIED_ACTIONS or (ch.get("signature") or {}).get("kind") == "text" or not b or not a:
+            continue
+        p = _find_identity(placed, taken, ch.get("master_id"))
+        if p is not None and (ch.get("signature") or {}).get("aspect") and abs(math.log((p.w / p.h) / ch["signature"]["aspect"])) > 3 * FAMILY_ASPECT_TOL:
+            p = None                                               # the same id but a very different shape: not the element she fixed
+        by_id = p is not None
+        if p is None:
+            p = _family_match(placed, taken, ch, new_w, new_h)
+        if p is None:
+            continue
+        taken.add(p.id)
+        k = FAMILY_STRENGTH
+        sw = (a["w"] / b["w"]) if b["w"] else 1.0
+        sh = (a["h"] / b["h"]) if b["h"] else 1.0
+        box = {"cx": (p.x + p.w / 2) / new_w + k * (a["cx"] - b["cx"]), "cy": (p.y + p.h / 2) / new_h + k * (a["cy"] - b["cy"]),
+               "w": p.w / new_w * (1 + k * (sw - 1)), "h": p.h / new_h * (1 + k * (sh - 1)), "_t": trust(rec), "_w": wgt, "_fam": True}
+        if by_id:
+            box["_id"] = True
+        votes.setdefault(p.id, []).append((box, sid, _is_editor(rec)))
+    return 0
 
 
 def blend_boxes(boxes: list[dict]) -> dict:
@@ -490,6 +639,12 @@ def _decide_box(votes: list[tuple[dict, str, bool]]) -> tuple[dict | None, list[
     """(the box an object takes, the shop ids behind it). Corrections saved from the editor beat the rest and are blended 8:2 - 80 % the NEWEST
     (`records` come newest first) and 20 % the average of all of them (`blend_boxes`) - so a fresh fix leads and older ones steady it instead of
     clashing. Without one (corrections learned from designer files) the boxes must agree - see `_agreed_box`."""
+    family = [(box, sid) for box, sid, _ in votes if box.get("_fam")]
+    votes = [v for v in votes if not v[0].get("_fam")]
+    if not votes and family:                                  # no record of this size / a nearby one names the object: other sizes decide
+        wts = [b["_w"] * b["_t"] for b, _ in family]
+        total = sum(wts) or 1.0
+        return {k: round(sum(b[k] * x for (b, _), x in zip(family, wts)) / total, 6) for k in BOX_KEYS}, [sid for _, sid in family]
     editors = [(box, sid) for box, sid, editor in votes if editor]
     if editors:
         return blend_boxes([b for b, _ in editors]), [sid for _, sid in editors]
@@ -504,38 +659,161 @@ def _agreed_box(boxes: list[dict]) -> dict | None:
     return {k: _median([x[k] for x in boxes]) for k in BOX_KEYS}
 
 
-def apply_to_placed(placed: list, new_w: float, new_h: float, records: list[dict]) -> dict:
+# ---------------------------------------------------------------- confidence + quality gate
+#
+# Every learned change gets a CONFIDENCE (0-1) before it is applied: what kind of record taught it (this size's editor correction > a designer
+# file > a nearby size > another size, which fades with distance), that record's trust, whether the element was found by identity, how many
+# records agree (noisy-OR) and a penalty per record that disagrees. Changes below APPLY_MIN_CONFIDENCE are HELD BACK (reported, not applied).
+# After the changes are applied a quality gate looks at the board and UNDOES any learned move that would push an object off the page or onto
+# another object it did not touch before (lowest confidence first), so a bad lesson cannot make a board worse than the engine's own layout.
+
+APPLY_MIN_CONFIDENCE = 0.20   # tuned with tools/intelligence_loo.py --sweep: 0.2 keeps the cross-size gain, 0.3 held back changes that were good (see CLAUDE.md)
+BASE_CONFIDENCE = {"editor": 0.90, "seed": 0.75, "nearby": 0.60}
+FAMILY_CONFIDENCE = 0.70      # x the size's weight exp(-distance / FAMILY_TAU)
+IDENTITY_BONUS = 0.05
+DISAGREE_PENALTY = 0.75       # x per record whose box differs from the decided one by more than CONSENSUS_TOL
+GATE_PAGE_TOL = 0.005         # an object may stick out of the page by this share (the engine itself does so slightly) ...
+GATE_NEW_OVERLAP = 0.25       # ... and a learned move may add at most this share of the smaller object's area as overlap with another object
+GATE_SKIP_ROLES = ("bg", "frame")
+
+
+def _vote_confidence(box: dict, editor: bool) -> float:
+    if box.get("_fam"):
+        base = FAMILY_CONFIDENCE * float(box.get("_w", 0.5))
+    elif box.get("_w"):
+        base = BASE_CONFIDENCE["nearby"]
+    else:
+        base = BASE_CONFIDENCE["editor" if editor else "seed"]
+    c = base * (0.5 + 0.5 * float(box.get("_t", 0.5))) + (IDENTITY_BONUS if box.get("_id") else 0.0)
+    return max(0.0, min(0.99, c))
+
+
+def confidence_of(votes: list, decided: dict) -> float:
+    """How far to trust the box decided for one object from its `votes` ([(box, shop id, from the editor)]). The decided box may be a blend, so
+    "agreeing" is measured against the vote nearest to it (the anchor): votes within CONSENSUS_TOL of the anchor agree, the rest disagree."""
+    if not votes:
+        return 0.0
+    anchor = min((v[0] for v in votes), key=lambda bx: max(abs(bx[k] - decided[k]) for k in BOX_KEYS))
+    agree, off = [], 0
+    for box, _, editor in votes:
+        if max(abs(box[k] - anchor[k]) for k in BOX_KEYS) <= CONSENSUS_TOL:
+            agree.append(_vote_confidence(box, editor))
+        else:
+            off += 1
+    if not agree:
+        return 0.0
+    miss = 1.0
+    for c in agree:
+        miss *= 1.0 - c
+    return round(min(0.99, (1.0 - miss) * DISAGREE_PENALTY ** off), 3)
+
+
+def _inter(a, b) -> float:
+    w = min(a.x + a.w, b.x + b.w) - max(a.x, b.x)
+    h = min(a.y + a.h, b.y + b.h) - max(a.y, b.y)
+    return max(0.0, w) * max(0.0, h)
+
+
+class _Box:
+    def __init__(self, x, y, w, h):
+        self.x, self.y, self.w, self.h = x, y, w, h
+
+
+def _breaks_board(p, before: _Box, placed: list, new_w: float, new_h: float, prior: dict | None = None) -> str | None:
+    """Why the learned move of `p` must be undone ("leaves the page" / "overlaps another object"), or None when the board is no worse for it.
+    `prior` = {id: box before any learned move}: an overlap is compared with the one the SAME two objects had before, so pieces that moved
+    together (a logo made of many shapes) never count as overlapping each other."""
+    prior = prior or {}
+    tx, ty = GATE_PAGE_TOL * new_w, GATE_PAGE_TOL * new_h
+
+    def outside(b) -> bool:
+        return b.x < -tx or b.y < -ty or b.x + b.w > new_w + tx or b.y + b.h > new_h + ty
+
+    if outside(p) and not outside(before):
+        return "leaves the page"
+    for o in placed:
+        if o is p or o.role in GATE_SKIP_ROLES or o.w <= 0 or o.h <= 0:
+            continue
+        smaller = min(p.w * p.h, o.w * o.h)
+        if smaller > 0 and _inter(p, o) - _inter(before, prior.get(o.id, o)) > GATE_NEW_OVERLAP * smaller:
+            return "overlaps another object"
+    return None
+
+
+def apply_to_placed(placed: list, new_w: float, new_h: float, records: list[dict], min_confidence: float = APPLY_MIN_CONFIDENCE,
+                    details: list | None = None) -> dict:
     """Move/resize the engine's placed objects to where designers put them on a board of this size.
 
-    Each recorded move/resize is matched to the placed object whose box is nearest the recorded "before" box (the engine produced that
-    box for the same master and size, so it is the same object). One designer's correction is applied as it is. When several records
-    corrected the same object their "after" boxes must agree (within `CONSENSUS_TOL` of the page on every value): then the median is
-    used; when they disagree the designers do not share one answer, so the object is left as the engine placed it ("conflicting").
-    Text objects are never touched, and hidden / deleted objects are not re-applied (counted as skipped).
-    Returns {"applied", "skipped", "conflicting", "records": [shop ids that contributed]}.
+    Each recorded move/resize is matched to a placed object - by master element identity when the record knows it, else the one whose box is
+    nearest the recorded "before" box (the engine produced that box for the same master and size). One designer's correction is applied as it
+    is. When several records corrected the same object their "after" boxes are blended (editor corrections) or must agree (designer-file
+    records; "conflicting" when they do not). Records of other sizes of the same master move an object only when nothing else names it.
+    Each change carries a confidence; those below `min_confidence` are held back and, once applied, a change that would push an object off
+    the page or onto another object is undone (the quality gate). Text objects are never touched; hidden / deleted objects are not re-applied.
+    Returns {"applied", "skipped", "conflicting", "records": [shop ids that contributed], optional "held_back", "gated", "family", "identity",
+    "in_place", "avg_confidence"}. `details` (a list) receives one dict per decided object: id, confidence, outcome - for tools and tests.
     """
     votes, skipped = _collect_votes(placed, new_w, new_h, records)
     by_id = {p.id: p for p in placed}
-    applied = conflicting = in_place = 0
+    conflicting = in_place = from_family = by_identity = held_back = 0
     used: list[str] = []
+    todo = []                                                 # (confidence, placed object, box, votes, source shop ids)
     for pid, vs in votes.items():
         a, sids = _decide_box(vs)
         if a is None:
             conflicting += 1
             continue
         p = by_id[pid]
+        conf = confidence_of(vs, a)
         if _already_there(p, a, new_w, new_h):
             in_place += 1
             used.extend(sid for sid in sids if sid not in used)
+            if details is not None:
+                details.append({"id": pid, "confidence": conf, "outcome": "in_place"})
             continue
+        if conf < min_confidence:
+            held_back += 1
+            if details is not None:
+                details.append({"id": pid, "confidence": conf, "outcome": "held_back"})
+            continue
+        todo.append((conf, p, a, vs, sids))
+    before = {p.id: _Box(p.x, p.y, p.w, p.h) for _, p, _, _, _ in todo}
+    for conf, p, a, vs, sids in todo:
         p.w, p.h = a["w"] * new_w, a["h"] * new_h
         p.x, p.y = a["cx"] * new_w - p.w / 2, a["cy"] * new_h - p.h / 2
-        p.warnings.append("moved to where a designer corrected this board size (Corel Intelligence)")
-        applied += 1
+        p.warnings.append("moved like designers corrected other sizes of this master (Corel Intelligence)" if all(v[0].get("_fam") for v in vs)
+                          else "moved to where a designer corrected this board size (Corel Intelligence)")
+    gated = 0
+    applied_conf: list[float] = []
+    for conf, p, a, vs, sids in sorted(todo, key=lambda t: t[0]):          # the least certain change is the first to go
+        why = _breaks_board(p, before[p.id], placed, new_w, new_h, before)
+        if why:
+            b = before[p.id]
+            p.x, p.y, p.w, p.h = b.x, b.y, b.w, b.h
+            p.warnings[-1] = f"a learned move was undone: it would make this object {why} (Corel Intelligence)"
+            gated += 1
+            if details is not None:
+                details.append({"id": p.id, "confidence": conf, "outcome": "gated", "why": why})
+            continue
+        applied_conf.append(conf)
         used.extend(sid for sid in sids if sid not in used)
-    out = {"applied": applied, "skipped": skipped, "conflicting": conflicting, "records": used}
+        from_family += all(v[0].get("_fam") for v in vs)
+        by_identity += any(v[0].get("_id") for v in vs)
+        if details is not None:
+            details.append({"id": p.id, "confidence": conf, "outcome": "applied"})
+    out = {"applied": len(applied_conf), "skipped": skipped, "conflicting": conflicting, "records": used}
     if in_place:
         out["in_place"] = in_place          # learned boxes the engine already produced: nothing to move
+    if held_back:
+        out["held_back"] = held_back        # changes below the confidence floor: not applied
+    if gated:
+        out["gated"] = gated                # changes undone by the quality gate (off the page / onto another object)
+    if from_family:
+        out["family"] = int(from_family)    # objects moved because of corrections made on OTHER sizes of this master
+    if by_identity:
+        out["identity"] = int(by_identity)  # objects found as the same master element (not by where they happen to sit)
+    if applied_conf:
+        out["avg_confidence"] = round(sum(applied_conf) / len(applied_conf), 2)
     return out
 
 
@@ -919,7 +1197,18 @@ def _close(a: dict, b: dict) -> bool:
     return max(abs(a[k] - b[k]) for k in BOX_KEYS) <= MATCH_TOL
 
 
-def rebase_and_feedback(changes: list[dict], source_rows: list[dict], baseline: dict) -> tuple[list[dict], dict[str, list[int]]]:
+def _verdict_of(new: dict, source: dict) -> tuple[float, float]:
+    """(kept, disputed) of one learned move that the designer moved AGAIN: put back near where the engine had it = the lesson was wrong (counts
+    REVERT_WEIGHT); only nudged (under NUDGE_SHIFT) = partly right (half and half); moved elsewhere / hidden / deleted = one dispute."""
+    after, before = new.get("after"), new.get("before")
+    if after and source.get("before") and _close(after, source["before"]):
+        return 0.0, REVERT_WEIGHT
+    if after and before and max(abs(after[k] - before[k]) for k in BOX_KEYS) <= NUDGE_SHIFT:
+        return 0.5, 0.5
+    return 0.0, 1.0
+
+
+def rebase_and_feedback(changes: list[dict], source_rows: list[dict], baseline: dict) -> tuple[list[dict], dict[str, list[float]]]:
     """Top-level corrections made on a board that already carried learned moves.
 
     `changes` are the new save's top-level changes, whose "before" is where the object sat on the LEARNED board. A record must describe the
@@ -939,16 +1228,20 @@ def rebase_and_feedback(changes: list[dict], source_rows: list[dict], baseline: 
             hit = next((i for i, c in enumerate(out) if i not in rebased and c.get("before") and _close(c["before"], s["after"])), None)
             tally = verdicts.setdefault(sid, [0, 0])
             if hit is not None:
-                tally[1] += 1
+                kept, wrong = _verdict_of(out[hit], s)
+                tally[0] += kept
+                tally[1] += wrong
                 rebased.add(hit)
                 out[hit]["before"] = s["before"]
+                if s.get("master_id") is not None:
+                    out[hit]["master_id"] = s["master_id"]
             elif any(_close(b, s["after"]) for b in boxes):
                 tally[0] += 1                                # nothing moved it again and it is where the record put it
     return out, {k: v for k, v in verdicts.items() if v != [0, 0]}
 
 
 def learn_from_save(shop: dict, job: dict | None, base: dict, edited: dict, layout: dict | None,
-                    source_rows: list[dict]) -> tuple[dict | None, dict[str, list[int]]]:
+                    source_rows: list[dict], objects: list[dict] | None = None) -> tuple[dict | None, dict[str, list[int]]]:
     """Everything one editor save teaches. Returns (the record to store or None, {record shop id: [confirmed, disputed] on THIS board}).
 
     On a board made with Corel Intelligence the save is judged against the board as it was left (`learned_baseline`), so only what the
@@ -956,7 +1249,10 @@ def learn_from_save(shop: dict, job: dict | None, base: dict, edited: dict, layo
     board is told whether its lesson was kept. `source_rows` = stored records (db.list_corrections())."""
     intel = (layout or {}).get("intelligence") if isinstance(layout, dict) else None
     if not isinstance(intel, dict) or not (intel.get("learned_ops") or intel.get("records")):
-        return build_record(shop, job, base, edited, layout), {}
+        rec = build_record(shop, job, base, edited, layout)
+        if rec:
+            attach_identity(rec["changes"], objects, *_page(base))
+        return rec, {}
     ops = intel.get("learned_ops") or []
     baseline = learned_baseline(base, ops)
     diff = diff_scenes(baseline, edited)
@@ -974,5 +1270,78 @@ def learn_from_save(shop: dict, job: dict | None, base: dict, edited: dict, layo
             v = verdicts.setdefault(sid, [0, 0])
             v[0] += c
             v[1] += d
-    return build_record(shop, job, baseline, edited, layout, diff=diff), {k: v for k, v in verdicts.items() if v != [0, 0]}
+    rec = build_record(shop, job, baseline, edited, layout, diff=diff)
+    if rec:
+        attach_identity(rec["changes"], objects, *_page(base))      # changes rebased onto a source record already carry its master_id
+    return rec, {k: v for k, v in verdicts.items() if v != [0, 0]}
 
+
+# ---------------------------------------------------------------- measuring: how much did the designer still have to fix?
+#
+# Every editor save is scored, even one that changed nothing: the COST is how far the designer still moved / resized objects, in % of the page
+# (hiding or deleting an object counts HIDE_COST, a text style or line-count edit STYLE_COST). On a board made with Corel Intelligence the cost
+# is measured against the board as the learning left it, so it is the work learning did NOT save. Comparing the average cost of boards made
+# with and without Corel Intelligence is the accuracy number (`summarize_stats`); `tools/intelligence_loo.py` measures the same offline.
+
+HIDE_COST = 5.0
+STYLE_COST = 1.0
+
+
+def _change_cost(c: dict) -> float:
+    if c.get("action") in SCENE_ACTIONS:
+        return HIDE_COST
+    b, a = c.get("before"), c.get("after")
+    if b and a:
+        return 100.0 * max(abs(a[k] - b[k]) for k in BOX_KEYS)
+    if c.get("style") or c.get("lines"):
+        return STYLE_COST
+    return 0.0
+
+
+def edit_cost(diff: dict) -> dict:
+    """{"cost": % of the page the designer moved things in total, "objects": how many objects they changed} for one `diff_scenes` result."""
+    items = list(diff.get("changes") or []) + list(diff.get("nested") or [])
+    return {"cost": round(sum(_change_cost(c) for c in items), 3), "objects": len(items)}
+
+
+def save_cost(shop: dict, base: dict, edited: dict, layout: dict | None) -> dict | None:
+    """The score of one editor save: {"cost", "objects", "used_intelligence", "learned"}; None when the page size was edited (boxes are then
+    meaningless). `layout` is the report's `layout` block - its `intelligence` entry says whether (and how much) learning fed the board."""
+    intel = (layout or {}).get("intelligence") if isinstance(layout, dict) else None
+    used = isinstance(intel, dict) and bool(intel.get("learned_ops") or intel.get("records"))
+    start = learned_baseline(base, intel.get("learned_ops") or []) if used else base
+    d = diff_scenes(start, edited)
+    if d["page_changed"]:
+        return None
+    learned = ((intel.get("applied") or 0) + ((intel.get("nested") or {}).get("applied") or 0)) if used else 0
+    return {**edit_cost(d), "used_intelligence": used, "learned": int(learned)}
+
+
+def _mean(v: list[float]) -> float | None:
+    return round(sum(v) / len(v), 2) if v else None
+
+
+def _aggregate(rows: list[dict]) -> dict:
+    with_ = [r["edit_cost"] for r in rows if r.get("used_intelligence")]
+    without = [r["edit_cost"] for r in rows if not r.get("used_intelligence")]
+    raw_a = sum(with_) / len(with_) if with_ else None
+    raw_b = sum(without) / len(without) if without else None
+    return {"with": {"boards": len(with_), "avg_cost": _mean(with_), "untouched": sum(1 for c in with_ if c == 0)},
+            "without": {"boards": len(without), "avg_cost": _mean(without), "untouched": sum(1 for c in without if c == 0)},
+            "improvement_pct": round((1 - raw_a / raw_b) * 100, 1) if raw_a is not None and raw_b else None}
+
+
+def summarize_stats(stats: list[dict], records: list[dict]) -> dict:
+    """The accuracy panel: average cost of saved boards made WITH vs WITHOUT Corel Intelligence (overall and per brand) and how the stored
+    lessons fared (kept = the designer left it, corrected = moved again). `stats` = db.list_correction_stats(), `records` = db.list_corrections()."""
+    brands: dict[str, list[dict]] = {}
+    for r in stats:
+        brands.setdefault(r.get("brand") or "", []).append(r)
+    kept = corrected = 0
+    for rec in records:
+        fb = feedback_of(rec)
+        kept += fb["confirmed"]
+        corrected += fb["disputed"]
+    kept, corrected = round(kept, 1), round(corrected, 1)
+    return {**_aggregate(stats), "brands": {b: _aggregate(rows) for b, rows in sorted(brands.items())},
+            "lessons": {"records": len(records), "kept": kept, "corrected": corrected, "paused": sum(1 for r in records if quarantined(r))}}

@@ -1090,12 +1090,21 @@ STOPPED_MSG = corel_supervisor.STOPPED_ERROR
 
 
 def _learned_records(shop_row: dict, job_row: dict, master_used: dict, w_mm: float, h_mm: float) -> list[dict]:
-    """The stored corrections Corel Intelligence applies to this conversion: none unless the sparkle asked for them (use_intelligence)."""
-    if not shop_row.get("use_intelligence"):
+    """The stored corrections Corel Intelligence applies to this conversion: none unless the row's button asked for them (use_intelligence) or the
+    administrator switched on automatic apply (then only the changes it is sure about - `intelligence_min`, see _convert_job)."""
+    if not shop_row.get("use_intelligence") and not _auto_apply_on():
         return []
     chosen = db.get_job(master_used["job_id"]) or job_row
     return corrections.usable_records(db.list_corrections(), job_row["brand"], chosen.get("master_filename"), w_mm, h_mm,
-                                      shop_row.get("board_type"))
+                                      shop_row.get("board_type"), family=True)
+
+
+AUTO_KEY = "intelligence_auto"
+
+
+def _auto_apply_on() -> bool:
+    """True when an administrator switched on "apply Corel Intelligence by itself when converting" (default OFF)."""
+    return db.get_setting(AUTO_KEY, "0") == "1"
 
 
 def _convert_job(shop_id: str) -> tuple[dict, dict]:
@@ -1141,6 +1150,9 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
     learned = _learned_records(shop_row, job_row, master_used, shop_dict["width"], shop_dict["height"])
     if learned:
         shop_dict["intelligence"] = learned
+        if not shop_row.get("use_intelligence"):                    # applied by itself: stricter than the button
+            shop_dict["intelligence_auto"] = True
+            shop_dict["intelligence_min"] = corrections.AUTO_MIN_CONFIDENCE
     # What the CHOSEN master currently shows as its shop name - how the engine finds the text shape to overwrite on an
     # untagged master (layout.find_shopname_ids); a `shopname`-tagged shape is used regardless.
     mrow = db.get_job(master_used["job_id"]) or job_row
@@ -1654,10 +1666,33 @@ def _learned_for(rows: list[dict], shop: dict | None) -> int:
     chosen = db.get_job(used.get("job_id")) if used.get("job_id") else job
     found = corrections.usable_records(rows, job["brand"], (chosen or job).get("master_filename"),
                                        to_mm(shop["width"], shop["width_unit"]), to_mm(shop["height"], shop["height_unit"]),
-                                       shop.get("board_type"))
+                                       shop.get("board_type"), family=True)
     top = sum(1 for r in found for c in r["record"]["changes"]
               if c["action"] in corrections.LEARNED_ACTIONS and (c.get("signature") or {}).get("kind") != "text")
     return top + sum(len(r["record"].get("nested", [])) for r in found)
+
+
+@app.get("/api/v2/intelligence/settings")
+def v2_intelligence_settings():
+    return {"auto_apply": _auto_apply_on(), "auto_min_confidence": corrections.AUTO_MIN_CONFIDENCE, "button_min_confidence": corrections.APPLY_MIN_CONFIDENCE}
+
+
+@app.put("/api/v2/intelligence/settings", dependencies=[Depends(auth.require_admin)], responses={422: {"description": "Validation error"}})
+def v2_intelligence_settings_put(payload: dict = Body(...)):
+    """Switch automatic apply on / off ({"auto_apply": bool}). On: every Convert uses the learned corrections it is at least
+    AUTO_MIN_CONFIDENCE sure about (top-level moves / resizes); the row button still applies everything above the lower floor."""
+    if not isinstance(payload.get("auto_apply"), bool):
+        raise HTTPException(422, "auto_apply must be true or false")
+    db.set_setting(AUTO_KEY, "1" if payload["auto_apply"] else "0")
+    audit.record("intelligence_auto", "on" if payload["auto_apply"] else "off")
+    return v2_intelligence_settings()
+
+
+@app.get("/api/v2/intelligence/stats")
+def v2_intelligence_stats():
+    """Corel Intelligence accuracy: the average work designers still did (in % of the page) on saved boards made WITH vs WITHOUT it, overall
+    and per brand, plus how the stored lessons fared. Lower is better."""
+    return corrections.summarize_stats(db.list_correction_stats(), db.list_corrections())
 
 
 @app.get("/api/v2/corrections")
@@ -2867,7 +2902,8 @@ def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> 
             report = {}
         # the master the board was really made from (a shop can use another upload's master), not just its own job's
         made_from = db.get_job((report.get("master_used") or {}).get("job_id") or job_id) or db.get_job(job_id)
-        record, verdicts = corrections.learn_from_save(shop, made_from, base, edited, report.get("layout"), db.list_corrections())
+        record, verdicts = corrections.learn_from_save(shop, made_from, base, edited, report.get("layout"), db.list_corrections(),
+                                                        objects=report.get("objects"))
         if record:
             record["feedback"] = (db.get_correction(shop_id) or {}).get("record", {}).get("feedback") or {}     # this board's own record keeps its tallies
             if not record["feedback"]:
@@ -2877,6 +2913,10 @@ def _capture_correction(job_id: str, shop_id: str, base: dict, edited: dict) -> 
             db.delete_correction(shop_id)
         for source_id, (confirmed, disputed) in verdicts.items():        # did the designer keep what the records taught this board?
             db.set_correction_feedback(source_id, shop_id, confirmed, disputed)
+        score = corrections.save_cost(shop, base, edited, report.get("layout"))          # how much the designer still had to fix (accuracy panel)
+        if score is not None:
+            pw, ph = corrections._page(base)
+            db.save_correction_stat(shop_id, (made_from or {}).get("brand"), (made_from or {}).get("master_filename"), pw, ph, shop.get("board_type"), score)
     except Exception:
         _CORR_LOG.exception("could not record the correction for shop %s", shop_id)
 
