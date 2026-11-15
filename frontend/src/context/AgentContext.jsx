@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { agentPhase, pairLocalAgent, probeAgent, unpairLocalAgent } from "../utils/agentLocal.js";
 import { readError } from "../utils/authApi.js";
+import { keepIfSame } from "../utils/stableState.js";
 
 /** { phase, local, agents, config, busy, error, connect(), disconnect(id), refresh() } - see utils/agentLocal.js agentPhase for the phases. */
 export const AgentContext = createContext({
@@ -27,8 +28,8 @@ export function AgentProvider({ children }) {
       fetch("/api/agents").then((r) => (r.ok ? r.json() : { agents: [] })).catch(() => ({ agents: [] })),
     ]);
     if (!alive.current) return;
-    setLocal(l);
-    setAgents(a.agents || []);
+    setLocal((prev) => keepIfSame(prev, l));                          // unchanged poll results keep their reference: nothing re-renders every 3 s
+    setAgents((prev) => keepIfSame(prev, a.agents || []));
     setLoaded(true);
   }, []);
 

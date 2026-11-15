@@ -1,4 +1,4 @@
-import { Suspense, createContext, memo, useContext, useEffect, useLayoutEffect, useMemo, useRef } from "react";
+import { Suspense, memo, useEffect, useLayoutEffect, useMemo, useRef } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
 import { Environment, Lightformer, RoundedBox, Stars, useTexture } from "@react-three/drei";
 import { Bloom, EffectComposer, ToneMapping, Vignette } from "@react-three/postprocessing";
@@ -27,10 +27,24 @@ import { ARRIVE_AT, FLIGHT_S } from "./cityTiming.js";
 export const BG = "#0A0A0C";
 // the same street by day (the welcome screen follows the light theme): sky, ground, road, pavement and shop fronts; the towers keep their dark glass
 const DAY = { sky: "#c4dcf0", ground: "#a3a9b3", road: "#41444c", pave: "#8a8e98", shops: "#9aa2b1" };
-const DayContext = createContext(false);
 const RED = "#E31E24";
 const BUILDING = "#121218";
 export { FLIGHT_S };
+
+// How far the street is from night (0) to day (1). The theme sets `target`; SceneBase eases `v` towards it every frame and everything that
+// differs between night and day (sky, fog, lights, stars, ground, shop fronts, bloom) follows `v` - a theme change is a sunrise / sunset
+// over about a second, not a snap. One welcome screen exists at a time, so this lives at module level.
+const dayState = { v: 0, target: 0 };
+const NIGHT_COLOR = { ground: new THREE.Color(BG), road: new THREE.Color("#101015"), pave: new THREE.Color("#16161c"), shops: new THREE.Color(BUILDING) };
+const DAY_COLOR = { ground: new THREE.Color(DAY.ground), road: new THREE.Color(DAY.road), pave: new THREE.Color(DAY.pave), shops: new THREE.Color(DAY.shops) };
+const lerp = (a, b, t) => a + (b - a) * t;
+
+/** Keeps one material's colour on the night <-> day blend (`key` = ground | road | pave | shops). */
+function useDayColor(ref, key) {
+  useFrame(() => {
+    if (ref.current) ref.current.color.lerpColors(NIGHT_COLOR[key], DAY_COLOR[key], dayState.v);
+  });
+}
 
 const FACE_W = 4.2;
 const FACE_H = 2.1;
@@ -395,7 +409,8 @@ function LedBoard({ logo, halo, position, w }) {
  * faces and neon lines are each ONE merged mesh - every face shares the logo texture - so the whole row is five draw calls.
  */
 function Storefronts({ logo }) {
-  const day = useContext(DayContext);
+  const shopsMat = useRef();
+  useDayColor(shopsMat, "shops");
   const { bodies, windows, cabinets, faces, neons, glazing } = useMemo(() => {
     const rnd = mulberry32(44);
     const units = [];
@@ -436,7 +451,7 @@ function Storefronts({ logo }) {
   return (
     <group>
       <mesh geometry={bodies}>
-        <meshStandardMaterial color={day ? DAY.shops : BUILDING} roughness={0.9} />
+        <meshStandardMaterial ref={shopsMat} color={BUILDING} roughness={0.9} />
       </mesh>
       {/* shop windows: a warm interior glow (tone mapped, far below the bloom threshold) */}
       <mesh geometry={windows}>
@@ -456,7 +471,14 @@ function Storefronts({ logo }) {
   );
 }
 function Street({ halo }) {
-  const day = useContext(DayContext);
+  const groundMat = useRef();
+  const roadMat = useRef();
+  const paveMatA = useRef();
+  const paveMatB = useRef();
+  useDayColor(groundMat, "ground");
+  useDayColor(roadMat, "road");
+  useDayColor(paveMatA, "pave");
+  useDayColor(paveMatB, "pave");
   const dashes = useRef();
   const dashList = useMemo(() => {
     const out = [];
@@ -478,11 +500,11 @@ function Street({ halo }) {
     <group>
       <mesh rotation-x={-Math.PI / 2} position={[0, 0, 0]}>
         <planeGeometry args={[400, 400]} />
-        <meshStandardMaterial color={day ? DAY.ground : BG} roughness={1} depthWrite />
+        <meshStandardMaterial ref={groundMat} color={BG} roughness={1} depthWrite />
       </mesh>
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.005, (ROAD.z0 + ROAD.z1) / 2]}>
         <planeGeometry args={[400, roadW]} />
-        <meshStandardMaterial color={day ? DAY.road : "#101015"} roughness={0.42} metalness={0.4} envMapIntensity={0.9} depthWrite polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
+        <meshStandardMaterial ref={roadMat} color="#101015" roughness={0.42} metalness={0.4} envMapIntensity={0.9} depthWrite polygonOffset polygonOffsetFactor={-1} polygonOffsetUnits={-1} />
       </mesh>
       {/* the solid centre line and the dashed lane lines */}
       <mesh rotation-x={-Math.PI / 2} position={[0, 0.013, 2.6]}>
@@ -496,11 +518,11 @@ function Street({ halo }) {
       {/* pavements: far (the billboard's) and near */}
       <mesh position={[0, 0.07, ROAD.z0 - 2.2]}>
         <boxGeometry args={[400, 0.14, 4.4]} />
-        <meshStandardMaterial color={day ? DAY.pave : "#16161c"} roughness={0.95} />
+        <meshStandardMaterial ref={paveMatA} color="#16161c" roughness={0.95} />
       </mesh>
       <mesh position={[0, 0.07, ROAD.z1 + 2.2]}>
         <boxGeometry args={[400, 0.14, 4.4]} />
-        <meshStandardMaterial color={day ? DAY.pave : "#16161c"} roughness={0.95} />
+        <meshStandardMaterial ref={paveMatB} color="#16161c" roughness={0.95} />
       </mesh>
       {/* street lamps on the far pavement, each with a warm pool on the road */}
       {lamps.map((x) => (
@@ -1058,31 +1080,67 @@ function City({ leaving, still, onArrive, onReady, inset }) {
  * (its only prop, `still`, is fixed for the screen's lifetime) because drei's <Environment> re-renders its cube camera - six
  * extra renders, a visible hitch - every time its `children` prop is a new element, i.e. on every parent re-render.
  */
-const SceneBase = memo(function SceneBase({ still, day }) {
-  const sky = day ? DAY.sky : BG;
+const SceneBase = memo(function SceneBase({ still }) {
+  const amb = useRef();
+  const hemi = useRef();
+  const key = useRef();
+  const fill = useRef();
+  const red = useRef();
+  const stars = useRef();
+  const tmp = useMemo(() => ({ a: new THREE.Color(), b: new THREE.Color(), skyN: new THREE.Color(BG), skyD: new THREE.Color(DAY.sky) }), []);
+  const last = useRef(-1);
+
+  useFrame(({ scene }, dt) => {
+    if (dayState.v !== dayState.target) {
+      const k = 1 - Math.exp(-Math.min(dt, 0.1) * 3.2);           // ~1 s to settle, whatever the frame rate
+      dayState.v += (dayState.target - dayState.v) * k;
+      if (Math.abs(dayState.target - dayState.v) < 0.002) dayState.v = dayState.target;
+    }
+    const e = dayState.v;
+    if (e === last.current) return;
+    last.current = e;
+    const mix = (c, night, day) => c.copy(tmp.a.set(night)).lerp(tmp.b.set(day), e);
+    if (scene.background?.isColor) scene.background.copy(tmp.skyN).lerp(tmp.skyD, e);
+    if (scene.fog) {
+      scene.fog.color.copy(tmp.skyN).lerp(tmp.skyD, e);
+      scene.fog.near = lerp(34, 46, e);
+      scene.fog.far = lerp(110, 150, e);
+    }
+    scene.environmentIntensity = lerp(1, 1.9, e);                 // the reflections of the glass and paint brighten with the sky
+    if (amb.current) { amb.current.intensity = lerp(0.8, 1.25, e); mix(amb.current.color, "#fff4e6", "#ffffff"); }
+    if (hemi.current) { hemi.current.intensity = lerp(0.35, 0.9, e); mix(hemi.current.color, "#2a2a38", "#e8f1fb"); mix(hemi.current.groundColor, BG, "#9aa1ab"); }
+    if (key.current) { key.current.intensity = lerp(0.6, 2.1, e); mix(key.current.color, "#ffe9d2", "#fff6e6"); }
+    if (fill.current) fill.current.intensity = lerp(0.3, 0.9, e);
+    if (red.current) red.current.intensity = lerp(30, 8, e);
+    if (stars.current) stars.current.visible = e < 0.5;           // the stars go out while the sky is half way to day
+  });
+
   return (
     <>
-      <color attach="background" args={[sky]} />
-      <fog attach="fog" args={[sky, day ? 46 : 34, day ? 150 : 110]} />
+      <color attach="background" args={[BG]} />
+      <fog attach="fog" args={[BG, 34, 110]} />
       {/* a fixed lighting baseline: nothing in the scene can fall to pitch black, whatever the camera's position in its loop
-          or the flight - the key/fill directionals are static (never animated) */}
-      <ambientLight intensity={day ? 1.25 : 0.8} color={day ? "#ffffff" : "#fff4e6"} />
-      <hemisphereLight args={day ? ["#e8f1fb", "#9aa1ab", 0.9] : ["#2a2a38", BG, 0.35]} />
-      <directionalLight position={[-6, 14, 10]} intensity={day ? 2.1 : 0.6} color={day ? "#fff6e6" : "#ffe9d2"} />
-      <directionalLight position={[8, 10, 12]} intensity={day ? 0.9 : 0.3} color="#dfe6ff" />
-      <pointLight position={[0, 9, -4]} intensity={day ? 8 : 30} distance={30} color={RED} />
-      {/* reflections for the chrome, the car paint, the train shell and the wet road: white, warm and red strips */}
+          or the flight. Intensities and colours are eased between night and day by the useFrame above (dayState) */}
+      <ambientLight ref={amb} intensity={0.8} color="#fff4e6" />
+      <hemisphereLight ref={hemi} args={["#2a2a38", BG, 0.35]} />
+      <directionalLight ref={key} position={[-6, 14, 10]} intensity={0.6} color="#ffe9d2" />
+      <directionalLight ref={fill} position={[8, 10, 12]} intensity={0.3} color="#dfe6ff" />
+      <pointLight ref={red} position={[0, 9, -4]} intensity={30} distance={30} color={RED} />
+      {/* reflections for the chrome, the car paint, the train shell and the wet road: white, warm and red strips. Baked ONCE (the same for
+          night and day - scene.environmentIntensity brightens it for day), so a theme change never re-renders the cube camera */}
       <Environment resolution={256} frames={1}>
         <Lightformer form="rect" intensity={2.6} position={[0, 6, 4]} scale={[14, 2, 1]} color="#ffffff" />
         <Lightformer form="rect" intensity={1.4} position={[-7, 1.5, 1]} scale={[2, 8, 1]} color="#ffe2c0" />
         <Lightformer form="rect" intensity={1.6} position={[7, 0.5, -2]} scale={[2, 7, 1]} color={RED} />
         <Lightformer form="rect" intensity={0.8} position={[0, -2, -6]} scale={[18, 1, 1]} color="#8fa3c8" />
-        {/* the night-sky glow on the camera's side, 5-35 deg up: what the towers' street-facing glass mirrors when seen from
-            the low camera (their reflections point back up towards the viewer). Only visible in reflections - it gives the
-            glass a cool gradient sheen instead of reflecting black, and a soft highlight on the cars' flanks */}
-        <Lightformer form="rect" intensity={day ? 2.4 : 0.9} position={[0, 3.5, 10]} rotation-y={Math.PI} scale={[44, 8, 1]} color={day ? "#9fc4ec" : "#51689a"} />
+        {/* the sky glow on the camera's side, 5-35 deg up: what the towers' street-facing glass mirrors when seen from the low
+            camera (their reflections point back up towards the viewer). Only visible in reflections - it gives the glass a cool
+            gradient sheen instead of reflecting black, and a soft highlight on the cars' flanks */}
+        <Lightformer form="rect" intensity={1.3} position={[0, 3.5, 10]} rotation-y={Math.PI} scale={[44, 8, 1]} color="#6f8fc4" />
       </Environment>
-      {!day && <Stars radius={90} depth={40} count={still ? 300 : 700} factor={3} saturation={0} fade speed={still ? 0 : 0.2} />}
+      <group ref={stars}>
+        <Stars radius={90} depth={40} count={still ? 300 : 700} factor={3} saturation={0} fade speed={still ? 0 : 0.2} />
+      </group>
     </>
   );
 });
@@ -1090,26 +1148,46 @@ const SceneBase = memo(function SceneBase({ still, day }) {
 /**
  * The post-processing chain, memoised with no props: @react-three/postprocessing's EffectComposer rebuilds its EffectPass
  * (new fullscreen material, shader recompile) whenever its `children` identity changes - which, unmemoised, was every
- * re-render of the scene (inset, leaving, the splash's own state) and showed as a blink / dropped frame.
+ * re-render of the scene (inset, leaving, the splash's own state) and showed as a blink / dropped frame. The bloom and vignette
+ * follow the night <-> day blend through their refs, so the chain itself never changes.
  */
-const PostFX = memo(function PostFX({ day }) {
+const PostFX = memo(function PostFX() {
+  const bloom = useRef();
+  const vignette = useRef();
+  const last = useRef(-1);
+  useFrame(() => {
+    const e = dayState.v;
+    if (e === last.current) return;
+    last.current = e;
+    if (bloom.current) {
+      bloom.current.intensity = lerp(0.9, 0.45, e);
+      if (bloom.current.luminanceMaterial) bloom.current.luminanceMaterial.threshold = lerp(BLOOM_THRESHOLD, 1.6, e);
+    }
+    if (vignette.current) vignette.current.darkness = lerp(0.6, 0.25, e);
+  });
   return (
     <EffectComposer multisampling={2}>
-      <Bloom mipmapBlur luminanceThreshold={day ? 1.6 : BLOOM_THRESHOLD} luminanceSmoothing={0.2} intensity={day ? 0.45 : 0.9} radius={0.72} />
-      <Vignette offset={0.3} darkness={day ? 0.25 : 0.6} />
+      <Bloom ref={bloom} mipmapBlur luminanceThreshold={BLOOM_THRESHOLD} luminanceSmoothing={0.2} intensity={0.9} radius={0.72} />
+      <Vignette ref={vignette} offset={0.3} darkness={0.6} />
       <ToneMapping mode={ToneMappingMode.ACES_FILMIC} />
     </EffectComposer>
   );
 });
 
 export default function CityScene({ leaving, still, onArrive, onReady, inset = 0, day = false }) {
+  const first = useRef(true);
+  useLayoutEffect(() => {
+    dayState.target = day ? 1 : 0;
+    if (first.current || still) dayState.v = dayState.target;     // the first frame is already the right time of day; reduced motion = no transition
+    first.current = false;
+  }, [day, still]);
   return (
-    <DayContext.Provider value={day}>
-      <SceneBase still={still} day={day} />
+    <>
+      <SceneBase still={still} />
       <Suspense fallback={null}>
         <City leaving={leaving} still={still} onArrive={onArrive} onReady={onReady} inset={inset} />
       </Suspense>
-      <PostFX day={day} />
-    </DayContext.Provider>
+      <PostFX />
+    </>
   );
 }

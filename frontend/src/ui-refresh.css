@@ -219,3 +219,9 @@ html, body { background: var(--n0a); }
 :root[data-theme="light"] .app-shell .ws-cta:disabled, :root[data-theme="light"] .app-shell .btn:disabled { opacity: 0.4; }
 html, body { transition: background-color var(--t-base) var(--ease); }
 :root[data-theme="light"] .app-shell { color-scheme: light; }
+
+/* a theme change fades every colour over 0.45 s instead of snapping (the class is added by utils/theme.js for that moment only) */
+html.theme-fade, html.theme-fade *, html.theme-fade *::before, html.theme-fade *::after {
+  transition: background-color 0.45s ease, border-color 0.45s ease, color 0.45s ease, fill 0.45s ease, stroke 0.45s ease, box-shadow 0.45s ease, opacity 0.2s ease !important;
+}
+@media (prefers-reduced-motion: reduce) { html.theme-fade, html.theme-fade * { transition: none !important; } }

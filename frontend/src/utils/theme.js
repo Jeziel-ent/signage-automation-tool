@@ -39,10 +39,20 @@ const subscribe = (cb) => {
 };
 const notify = () => listeners.forEach((cb) => cb());
 
-/** Put a theme on the page. */
+let fadeTimer = null;
+
+/** Put a theme on the page. A change of an already painted page fades (`theme-fade` on <html> for the length of the fade). */
 export function paintTheme(theme) {
   const t = theme === "light" ? "light" : "dark";
-  document.documentElement.dataset.theme = t;
+  const root = document.documentElement;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute("content", META_COLOR[t]);
+  if (root.dataset.theme === t) return t;                 // already showing it: nothing to repaint, nobody to tell (the auto timer calls this every minute)
+  if (root.dataset.theme && root.classList) {
+    root.classList.add("theme-fade");
+    clearTimeout(fadeTimer);
+    fadeTimer = setTimeout(() => root.classList.remove("theme-fade"), 600);
+  }
+  root.dataset.theme = t;
   document.querySelector('meta[name="theme-color"]')?.setAttribute("content", META_COLOR[t]);
   notify();
   return t;
