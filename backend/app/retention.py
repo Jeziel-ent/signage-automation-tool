@@ -23,8 +23,13 @@ DEBUG_AGE_DAYS = 14.0
 
 
 def _size(path: Path) -> int:
+    """Bytes of a file or a folder tree. A file that disappears while it is being measured counts 0 - SQLite creates and
+    removes its -wal / -shm files at any moment (an alert once reported FileNotFoundError on signage.db-shm here)."""
     if path.is_file():
-        return path.stat().st_size
+        try:
+            return path.stat().st_size
+        except OSError:
+            return 0
     total = 0
     for root, _dirs, files in os.walk(path):
         for f in files:
@@ -64,7 +69,7 @@ def storage_report(data: Path) -> dict:
                         out[cat] += _size(p)
                 for f in shop.iterdir():
                     if f.is_file():
-                        out["boards"] += f.stat().st_size
+                        out["boards"] += _size(f)
         claimed.add(jobs)
     for name, cat in (("agent_fonts", "fonts"), ("shared_zips", "shared"), ("convert_runs", "runs"), ("backups", "backups")):
         p = data / name
@@ -72,7 +77,7 @@ def storage_report(data: Path) -> dict:
             out[cat] += _size(p)
             claimed.add(p)
     for f in data.glob("signage.db*"):
-        out["database"] += f.stat().st_size
+        out["database"] += _size(f)
     for p in data.iterdir():
         if p in claimed or p.name.startswith("signage.db"):
             continue

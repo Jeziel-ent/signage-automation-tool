@@ -18,12 +18,27 @@ _SAFE = re.compile(r"^[A-Za-z0-9._ ()&'+,-]+$")
 
 
 def _size(p: Path) -> int:
+    """Bytes of a file or folder; a file removed while being measured (SQLite's -wal / -shm, a finishing export) counts 0."""
     try:
         if p.is_file():
             return p.stat().st_size
-        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
     except OSError:
         return 0
+    total = 0
+    for f in p.rglob("*"):
+        try:
+            if f.is_file():
+                total += f.stat().st_size
+        except OSError:
+            pass
+    return total
+
+
+def _mtime(p: Path) -> float:
+    try:
+        return p.stat().st_mtime
+    except OSError:
+        return 0.0
 
 
 def _kind(name: str) -> str:
@@ -64,7 +79,7 @@ def listing(data: Path, label=lambda row: row.get("master_name") or row.get("mas
                 masters.append({
                     "id": jdir.name, "brand": (job or {}).get("brand") or "?", "name": label(job) if job else "(not in the database)",
                     "file_name": (job or {}).get("master_filename") or "master.cdr", "orientation": (job or {}).get("orientation") or "",
-                    "bytes": sum(_size(f) for f in files), "created_at": (job or {}).get("created_at") or files[0].stat().st_mtime,
+                    "bytes": sum(_size(f) for f in files), "created_at": (job or {}).get("created_at") or _mtime(files[0]),
                     "deleted": bool((job or {}).get("deleted_at")) or job is None, "boards": boards_per_master.get(jdir.name, 0),
                     "has_preview": (jdir / "preview.png").is_file(),
                 })
@@ -77,7 +92,7 @@ def listing(data: Path, label=lambda row: row.get("master_name") or row.get("mas
                 shop = shops.get(sdir.name)
                 own = [f for f in sdir.iterdir() if f.is_file()]
                 parts = {k: _size(sdir / k) for k in SUBFOLDERS if (sdir / k).is_dir()}
-                total = sum(f.stat().st_size for f in own) + sum(parts.values())
+                total = sum(_size(f) for f in own) + sum(parts.values())
                 if shop is None:
                     orphans.append({"job_id": jdir.name, "folder": sdir.name, "bytes": total})
                     continue
@@ -86,13 +101,13 @@ def listing(data: Path, label=lambda row: row.get("master_name") or row.get("mas
                     "shop_id": shop["id"], "job_id": shop["job_id"], "brand": (job or {}).get("brand") or "?", "name": shop["name"],
                     "size": f"{shop['width']:g} {shop['width_unit']} x {shop['height']:g} {shop['height_unit']}", "status": shop["status"],
                     "made_at": shop.get("completed_at") or shop["created_at"], "user_email": by.get("user_email"), "pc": by.get("pc"),
-                    "files": sorted(({"name": f.name, "kind": _kind(f.name), "bytes": f.stat().st_size} for f in own), key=lambda f: f["name"]),
+                    "files": sorted(({"name": f.name, "kind": _kind(f.name), "bytes": _size(f)} for f in own), key=lambda f: f["name"]),
                     "parts": parts, "bytes": total, "learned": shop["id"] in learned,
                 })
     backups = []
     bdir = data / "backups"
     if bdir.is_dir():
-        backups = sorted(({"name": f.name, "bytes": f.stat().st_size, "at": f.stat().st_mtime} for f in bdir.iterdir() if f.is_file()),
+        backups = sorted(({"name": f.name, "bytes": _size(f), "at": _mtime(f)} for f in bdir.iterdir() if f.is_file()),
                          key=lambda b: -b["at"])
     other = {name: _size(data / name) for name in ("shared_zips", "convert_runs", "agent_fonts") if (data / name).is_dir()}
     database = sum(_size(f) for f in data.glob("signage.db*"))
