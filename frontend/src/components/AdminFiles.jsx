@@ -34,10 +34,13 @@ export default function AdminFiles({ onClose, onChanged }) {
   async function remove(c) {
     setBusy(c.key);
     setMsg(null);
-    const r = await fetch(c.url, { method: "DELETE" });
+    const r = c.bulk
+      ? await fetch("/api/admin/files/delete-many", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(c.bulk) })
+      : await fetch(c.url, { method: "DELETE" });
     if (r.ok) {
       const body = await r.json();
-      setMsg({ kind: "good", text: `${c.done} - ${fmtBytes(body.bytes)} freed.` });
+      const skipped = body.skipped?.length ? ` ${body.skipped.length} skipped (${body.skipped.map((x) => `${x.target}: ${x.reason}`).join("; ")}).` : "";
+      setMsg({ kind: skipped ? "bad" : "good", text: `${c.bulk ? `${body.deleted} deleted` : c.done} - ${fmtBytes(body.bytes)} freed.${skipped}` });
       await load();
       onChanged?.();
     } else setMsg({ kind: "bad", text: await readError(r, "Could not delete it") });
@@ -57,6 +60,11 @@ export default function AdminFiles({ onClose, onChanged }) {
     { key: "leftovers", label: "Leftover folders", Icon: FolderX, n: totals.orphans.n, bytes: totals.orphans.bytes },
   ];
   const ask = (c) => setConfirm(c);
+  const sum = (items) => items.reduce((n, x) => n + (x.bytes || 0), 0);
+  const askBoards = (items, scope) => ask({
+    key: `bulk:${scope}`, bulk: { boards: items.map((b) => b.shop_id) },
+    text: `Delete ${items.length} board${items.length === 1 ? "" : "s"} (${scope}) and all their files (${fmtBytes(sum(items))})? They disappear from Recently generated. Boards still converting are skipped. What they taught Corel Intelligence is kept.`,
+  });
 
   return (
     <div className="adf-backdrop" role="presentation" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -93,11 +101,20 @@ export default function AdminFiles({ onClose, onChanged }) {
                         <option value="">All brands</option>
                         {brands.map((b) => <option key={b} value={b}>{b}</option>)}
                       </select>
+                      {boards.length > 0 && (
+                        <button type="button" className="adash-btn danger adf-all" disabled={!!busy}
+                          title={q || brand ? "Delete every board in this filtered list" : "Delete every board on the server"}
+                          onClick={() => askBoards(boards, q || brand ? "the filtered list" : "all boards")}>
+                          <Trash2 size={14} /> Delete all{q || brand ? " shown" : ""} ({boards.length})
+                        </button>
+                      )}
                     </div>
                     {!boards.length && <p className="adash-empty">No board files on the server.</p>}
                     {byDay(boards).map((g) => (
                       <div key={g.day} className="adf-group">
-                        <h3>{g.label}<span className="adash-muted"> · {g.items.length} board{g.items.length === 1 ? "" : "s"} · {fmtBytes(g.bytes)}</span></h3>
+                        <h3>{g.label}<span className="adash-muted"> · {g.items.length} board{g.items.length === 1 ? "" : "s"} · {fmtBytes(g.bytes)}</span>
+                          <button type="button" className="adf-day-del" disabled={!!busy} onClick={() => askBoards(g.items, g.label)}
+                            title={`Delete every board made on ${g.label}`}><Trash2 size={12} /> Delete day</button></h3>
                         {g.items.map((b) => (
                           <div key={b.shop_id} className="adf-row">
                             <img className="adf-thumb" src={`/api/v2/shops/${b.shop_id}/thumb`} alt="" loading="lazy" onError={(e) => { e.currentTarget.style.visibility = "hidden"; }} />
@@ -166,6 +183,16 @@ export default function AdminFiles({ onClose, onChanged }) {
                 {cat === "backups" && (
                   <div className="adf-group">
                     {!data.backups.length && <p className="adash-empty">No backups yet. The backup service writes one every 24 hours and keeps the newest 14.</p>}
+                    {data.backups.length > 1 && (
+                      <div className="adash-filters">
+                        <button type="button" className="adash-btn danger adf-all" disabled={!!busy}
+                          title="The newest backup is kept, so a restore is always possible"
+                          onClick={() => ask({ key: "bulk:backups", bulk: { backups: data.backups.slice(1).map((b) => b.name) },
+                            text: `Delete ${data.backups.length - 1} older backup${data.backups.length === 2 ? "" : "s"} (${fmtBytes(sum(data.backups.slice(1)))})? The newest one (${data.backups[0].name}) is kept.` })}>
+                          <Trash2 size={14} /> Delete all but the newest ({data.backups.length - 1})
+                        </button>
+                      </div>
+                    )}
                     {data.backups.map((b) => (
                       <div key={b.name} className="adf-row slim">
                         <Database size={16} className="adash-muted" />
@@ -180,6 +207,15 @@ export default function AdminFiles({ onClose, onChanged }) {
                 {cat === "leftovers" && (
                   <div className="adf-group">
                     {!data.orphans.length && <p className="adash-empty">No leftover folders.</p>}
+                    {data.orphans.length > 1 && (
+                      <div className="adash-filters">
+                        <button type="button" className="adash-btn danger adf-all" disabled={!!busy}
+                          onClick={() => ask({ key: "bulk:orphans", bulk: { orphans: data.orphans.map((o) => ({ job_id: o.job_id, folder: o.folder })) },
+                            text: `Delete all ${data.orphans.length} leftover folders (${fmtBytes(sum(data.orphans))})?` })}>
+                          <Trash2 size={14} /> Delete all ({data.orphans.length})
+                        </button>
+                      </div>
+                    )}
                     {data.orphans.map((o) => (
                       <div key={`${o.job_id}/${o.folder}`} className="adf-row slim">
                         <FolderX size={16} className="adash-muted" />

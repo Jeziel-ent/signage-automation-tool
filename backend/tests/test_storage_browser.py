@@ -104,3 +104,25 @@ def test_backups_can_be_removed_but_nothing_outside_their_folder(world):
 
 def test_the_file_browser_is_for_administrators_only(world):
     assert world.dee.get("/api/admin/files").status_code == 403
+
+
+def test_delete_all_removes_many_boards_and_skips_a_converting_one(world):
+    """The file browser's "Delete all": many boards in one call; a board still converting is skipped and reported, the rest go."""
+    boss = _boss(world)
+    _, a = _made_board(world, "Shop A")
+    _, b = _made_board(world, "Shop B")
+    _learn(world, a)
+    _, busy = _shop(world.dee, "Busy shop")
+    _convert(world.dee, busy)                      # queued for the agent, not finished
+    r = boss.post("/api/admin/files/delete-many", json={"boards": [a, b, busy, "gone"]})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["deleted"] == 2 and body["bytes"] >= 2 * 1700
+    reasons = {s["target"]: s["reason"] for s in body["skipped"]}
+    assert "Busy shop" in reasons and reasons["gone"] == "already gone"
+    assert world.db.get_shop(a) is None and world.db.get_shop(b) is None and world.db.get_shop(busy)
+    assert any(c["shop_id"] == a for c in world.db.list_corrections())       # what it taught is kept
+
+
+def test_delete_all_is_for_administrators_only(world):
+    assert world.dee.post("/api/admin/files/delete-many", json={"boards": []}).status_code == 403

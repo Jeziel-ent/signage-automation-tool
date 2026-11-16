@@ -198,6 +198,36 @@ def backup_delete(name: str):
     return _deleted("backup", name, _guard(storage_browser.delete_backup, _data(), name))
 
 
+class DeleteMany(BaseModel):
+    boards: list[str] = []
+    orphans: list[dict] = []      # [{job_id, folder}]
+    backups: list[str] = []
+
+
+@router.post("/api/admin/files/delete-many")
+def files_delete_many(body: DeleteMany):
+    """The file browser's "Delete all" buttons: many boards / leftover folders / backups in one call. Each item is deleted like its
+    own row's delete; one that is busy (a board converting) or already gone is skipped and reported, never stops the rest."""
+    data, freed, deleted, skipped = _data(), 0, 0, []
+    jobs = [("board", sid, lambda sid=sid: storage_browser.delete_board(data, sid, "all")) for sid in body.boards]
+    jobs += [("leftover folder", f"{o.get('job_id')}/{o.get('folder')}",
+              lambda o=o: storage_browser.delete_orphan(data, str(o.get("job_id", "")), str(o.get("folder", "")))) for o in body.orphans]
+    jobs += [("backup", name, lambda name=name: storage_browser.delete_backup(data, name)) for name in body.backups]
+    for what, target, fn in jobs:
+        label = (db.get_shop(target) or {}).get("name", target) if what == "board" else target
+        try:
+            freed += fn()
+            deleted += 1
+        except FileNotFoundError:
+            skipped.append({"target": label, "reason": "already gone"})
+        except storage_browser.Busy as e:
+            skipped.append({"target": label, "reason": str(e)})
+    if deleted:
+        audit.record("files_deleted", f"{deleted} item(s)", what="delete all", bytes=freed, boards=len(body.boards),
+                     orphans=len(body.orphans), backups=len(body.backups))
+    return {"deleted": deleted, "bytes": freed, "skipped": skipped}
+
+
 @router.get("/api/admin/spaces")
 def spaces_usage(refresh: bool = False):
     return spaces.usage(force=refresh)
