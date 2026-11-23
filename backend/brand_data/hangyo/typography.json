@@ -1,0 +1,13 @@
+{
+  "brand": "hangyo",
+  "tamil": {
+    "family": "Anek Tamil",
+    "evidence": "Stage 1: all 36 designer boards with Tamil text set it in Anek Tamil (backend/dataset_analysis/stage1/design_intent_discovery.json); the supplied TTF in '01 - Details' is Anek Tamil Medium (variable)",
+    "enforce_when_master_font_cannot_draw_tamil": true
+  },
+  "english": {
+    "family": "Amaranth",
+    "evidence": "Stage 1: Amaranth is the English name font on all 3 masters and all 50 designer boards",
+    "note": "kept from the master; never installed or distributed by this application"
+  }
+}

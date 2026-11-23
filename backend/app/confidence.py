@@ -188,6 +188,9 @@ def layout_confidence(layout: dict | None) -> dict | None:
         reasons = [f"no designer board of this size - copied the nearest one ({size}); positions are a guess, check the board"
                    if label == REVIEW else
                    f"the nearest designer board ({size}) is far from this size - treat the layout as a rough draft"]
+    for note in layout.get("review") or []:
+        label = _worse(label, REVIEW)
+        reasons.append(note)
     if (layout.get("extra") or 0) >= 3:
         label = _worse(label, REVIEW)
         reasons.append("the designer's board repeats artwork the master does not contain - a repeat/extra picture may be missing")

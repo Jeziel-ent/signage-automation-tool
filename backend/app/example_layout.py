@@ -284,14 +284,16 @@ def board_record(master: dict, dump: dict, name_en: str | None, file: str) -> di
     """One designer file expressed against `master`; None when it is not built from it (too few elements match)."""
     W, H = dump["page_mm"]["w"], dump["page_mm"]["h"]
     top = top_level(dump)
-    names = {}
+    names: dict[str, list[int]] = {}
+    ta_idx = [i for i, s in enumerate(top) if s["kind"] == "text" and TAMIL.search(s.get("text") or "")]
+    if ta_idx:
+        # a designer often sets the Tamil name as SEVERAL text objects (one per line: 'ஏசியன்' / 'ஜூஸ் பார்'); the name block is all of them, not
+        # the first (the library then said her 16x3 ft name was one small line). A much smaller Tamil text is a stamp, not part of the name.
+        tall = max(top[i]["h"] for i in ta_idx)
+        names["name_ta"] = [i for i in ta_idx if top[i]["h"] >= NAME_PART_MIN_FRAC * tall]
     for i, s in enumerate(top):
-        if s["kind"] != "text":
-            continue
-        if TAMIL.search(s.get("text") or ""):
-            names.setdefault("name_ta", i)
-        elif is_name_text(name_en, s.get("text")):
-            names["name_en"] = i
+        if s["kind"] == "text" and not TAMIL.search(s.get("text") or "") and is_name_text(name_en, s.get("text")):
+            names.setdefault("name_en", []).append(i)
     if "name_en" not in names and "name_ta" in names:
         # the designer retyped the name ('N N POOJA STORE' for 'N N NATTU MARUNDHU KADAI'): with a Tamil name line present, the biggest
         # remaining Latin text that is no stamp of the master (and no date code) is the English line
@@ -299,15 +301,15 @@ def board_record(master: dict, dump: dict, name_en: str | None, file: str) -> di
         best = None
         for i, s in enumerate(top):
             t = (s.get("text") or "")
-            if s["kind"] != "text" or i in names.values() or TAMIL.search(t) or re.search(r"\d", t) or len(re.findall(r"[A-Za-z]", t)) < 3:
+            if s["kind"] != "text" or any(i in v for v in names.values()) or TAMIL.search(t) or re.search(r"\d", t) or len(re.findall(r"[A-Za-z]", t)) < 3:
                 continue
             if re.sub(r"[^A-Z]", "", t.upper()) in stamps or s["w"] * s["h"] < 0.002 * W * H:
                 continue
             if best is None or s["w"] * s["h"] > best[0]:
                 best = (s["w"] * s["h"], i)
         if best:
-            names["name_en"] = best[1]
-    units = dump_units(dump, set(names.values()))
+            names["name_en"] = [best[1]]
+    units = dump_units(dump, {i for idx in names.values() for i in idx})
     matches = match_elements(master, units, W, H)
     if not master["elements"] or len(matches) < 0.6 * len(master["elements"]):
         return None
@@ -348,10 +350,20 @@ def board_record(master: dict, dump: dict, name_en: str | None, file: str) -> di
         clip["panel"] = {a: round(b, 5) for a, b in _frac(panel[0], W, H).items()}
     rec["clip"] = clip
     rec["cbm"] = match_clip_bitmaps(master.get("clip_bitmaps", []), clip_bitmaps(dump), W, H)
-    rec["texts"] = {k: {**{a: round(b, 5) for a, b in _frac(top[i], W, H).items()},
-                        "lines": len([ln for ln in re.split(r"[\r\n\v]+", top[i].get("text") or "") if ln.strip()]) or 1}
-                    for k, i in names.items()}
+    rec["texts"] = {k: {**{a: round(b, 5) for a, b in _frac(_union([top[i] for i in idx]), W, H).items()},
+                        "lines": sum(len([ln for ln in re.split(r"[\r\n\v]+", top[i].get("text") or "") if ln.strip()]) or 1 for i in idx)}
+                    for k, idx in names.items()}
     return rec
+
+
+NAME_PART_MIN_FRAC = 0.4       # a Tamil text under this share of the tallest one is not a line of the name
+
+
+def _union(shapes: list[dict]) -> dict:
+    """The box of several shapes (a name set as one text object per line)."""
+    x0, y0 = min(s["x"] for s in shapes), min(s["y"] for s in shapes)
+    x1, y1 = max(s["x"] + s["w"] for s in shapes), max(s["y"] + s["h"] for s in shapes)
+    return {"x": x0, "y": y0, "w": x1 - x0, "h": y1 - y0}
 
 
 # ------------------------------------------------------------------------------------------------ run time
@@ -548,6 +560,51 @@ def _text_spec(lib: dict, master: dict | None, board: dict, key: str, new_w: flo
             "pref_lines": int(box.get("lines") or 0) if (fill and key == "name_en") else 0}
 
 
+WIDE_REVIEW_ASPECT = 4.2     # Stage 1: boards this wide scored 0.586 (compact 0.881): flagged for review, not re-composed by a rule
+
+
+def pool_enabled() -> bool:
+    import os
+
+    return os.environ.get("SIGNAGE_NAME_POOL", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+POOL_K = 3
+
+
+def pooled_text_specs(lib: dict, new_w: float, new_h: float, board_type: str | None = None, exclude=None, k: int = POOL_K) -> dict | None:
+    """Name specs (same fields as `_text_spec`) from the MEDIAN of the `k` nearest designer boards of this shape family that carry that name line, instead of the
+    single nearest board. Measured leave-one-shop-out on the 50 Hangyo boards (Stage 2): block height error 0.27 vs 0.35, centre error 0.023 vs 0.042, line count
+    right 79% vs 69%, share of names under 0.85x the designer's 17% vs 28%. A cut-down of `_text_spec`: no panel logic, mode "block"."""
+    import statistics as st
+
+    fam, asp = family(new_w, new_h), new_w / new_h
+    want_type = norm_type(board_type)
+    skip = {exclude} if isinstance(exclude, str) else set(exclude or ())
+    cands = [b for b in lib["boards"] if family(b["W"], b["H"]) == fam and b["file"] not in skip and (b.get("texts") or {})]
+    if not cands:
+        return None
+
+    def rank(b):
+        d = _ln(b["W"] / b["H"], asp) + H_WEIGHT * _ln(b["H"], new_h)
+        return (round(d, 3), 1 if want_type and board_kind(b["file"]) and board_kind(b["file"]) != want_type else 0)
+
+    out = {}
+    for key in ("name_en", "name_ta"):
+        near = sorted((b for b in cands if b["texts"].get(key)), key=rank)[:k]
+        if not near:
+            continue
+        ts = [b["texts"][key] for b in near]
+        cx, cy = st.median(t["cx"] for t in ts), st.median(t["cy"] for t in ts)
+        h = st.median(t["h"] for t in ts)
+        line_h = st.median(t["h"] / max(t.get("lines", 1), 1) for t in ts)
+        anchor = "center" if abs(cx - 0.5) < 0.06 else ("left" if cx < 0.5 else "right")
+        ax = {"center": cx, "left": st.median(t["x"] for t in ts), "right": st.median(t["x"] + t["w"] for t in ts)}[anchor]
+        out[key] = {"anchor": anchor, "ax": ax * new_w, "cy": cy * new_h, "h": h * new_h, "w_cap": min(max(t["w"] for t in ts), PAGE_FIT) * new_w, "page_w": new_w,
+                    "line_h": line_h * new_h, "max_lines": max(t.get("lines", 1) for t in ts), "mode": "block", "pref_lines": 0, "pooled_from": [b["file"] for b in near]}
+    return out or None
+
+
 BLOCK_GAP_FRAC = 0.06           # clear space between a stacked Tamil and English block, as a share of the board height
 BLOCK_EDGE_FRAC = 0.04          # a borrowed name block keeps this share of the height clear of the top and bottom edges
 BLOCK_MAX_FRAC = {"name_ta": 0.56, "name_en": 0.36}   # tallest a borrowed block may be (share of the board height)
@@ -728,6 +785,11 @@ def plan(brand: str | None, objs, page_w: float, page_h: float, new_w: float, ne
     if bpanel and tpanel:
         fill = [b for b in lib["boards"] if (b.get("clip") or {}).get("panel") and abs(b["H"] / tboard["H"] - 1) < 0.02 and b["file"] not in skip_files]
     texts = {k: s for k in ("name_en", "name_ta") if (s := _text_spec(lib, tmaster, tboard, k, new_w, new_h, caps.get(k), fill))}
+    if pool_enabled() and not fill and not _same_size(tboard, new_w, new_h):
+        # no designer board of this size: the name spec is the MEDIAN of the nearest few boards (Stage 2, evaluated leave-one-out) instead of one board's
+        pooled = pooled_text_specs(lib, new_w, new_h, board_type, exclude)
+        for k, sp in (pooled or {}).items():
+            texts[k] = sp
     if fill:
         _fit_blocks_in_panel(texts, new_h)
     _separate_name_lines(texts, tboard, new_w)
@@ -739,10 +801,37 @@ def plan(brand: str | None, objs, page_w: float, page_h: float, new_w: float, ne
     if pics:
         _clear_of_pictures(texts, pics, new_w, new_h)
     dist = _ln(board["W"] / board["H"], new_w / new_h) + H_WEIGHT * _ln(board["H"], new_h)
-    return {"template": {"file": board["file"], "W": board["W"], "H": board["H"], "exact": _same_size(board, new_w, new_h),
+    review = []
+    if new_w / new_h >= WIDE_REVIEW_ASPECT:
+        review.append(f"wide board ({new_w / new_h:.1f}:1): the designers re-compose boards this wide (name panel, line count, repeated art) instead of scaling - check the layout")
+    return {"review": review, "template": {"file": board["file"], "W": board["W"], "H": board["H"], "exact": _same_size(board, new_w, new_h),
                          "distance": round(dist, 4), "extra": board.get("extra", 0)},
             "boxes": boxes, "clip": clip, "texts": texts, "board_scripts": sorted(tboard.get("texts") or {}),
             "nested_names": bool(lib.get("nested_names_by_spec")), "name_case": lib.get("name_case")}
+
+
+def name_hints(brand: str | None, new_w: float, new_h: float, board_type: str | None = None, exclude=None) -> dict | None:
+    """Name size and case for a board `plan` cannot lay out (no library master fits this master: Hangyo 3x6 / 4x7 / 4x8 ft rules
+    layout). The nearest designer board of this brand and size family (ANY master) says how big her name lines are, on how many lines,
+    and whether English names are capitals; the master keeps its own positions (`keep_pos`: the engine centres the fitted text on the
+    line's current box instead of moving it to her x / y, which belong to another design). None = nothing to borrow."""
+    if not brand:
+        return None
+    for lib in [library(brand)]:                       # the brand's OWN library only: another brand's names say nothing here
+        if not lib:
+            continue
+        tboard = select_text_board(lib, new_w, new_h, board_type, exclude)
+        if tboard is None:
+            continue
+        texts = {}
+        for k in ("name_en", "name_ta"):
+            spec = _text_spec(lib, None, tboard, k, new_w, new_h)
+            if spec:
+                texts[k] = {**spec, "keep_pos": True}
+        if texts:
+            return {"texts": texts, "name_case": lib.get("name_case"),
+                    "board": {"file": tboard["file"], "W": tboard["W"], "H": tboard["H"]}}
+    return None
 
 
 def preferred_master_file(brand: str | None, new_w: float, new_h: float, available: set[str] | None = None,

@@ -820,6 +820,12 @@ def run_with_timeout(fn, pid: int | None, op_name: str, timeout: float | None = 
 # round-trip per text object), just the ones this codebase already trusts.
 _KNOWN_TAMIL_FONTS = {"nirmala ui", "nirmala text"}
 _tamil_capable: dict[str, bool] = {}
+_TAMIL_PREFERRED: str | None = None        # the brand's Tamil font for the board being made (set by CorelEngine for the duration of one conversion)
+
+
+def set_tamil_preference(font: str | None) -> None:
+    global _TAMIL_PREFERRED
+    _TAMIL_PREFERRED = font or None
 
 
 def font_renders_tamil(name: str | None) -> bool:
@@ -834,9 +840,12 @@ def font_renders_tamil(name: str | None) -> bool:
     if key not in _tamil_capable:
         ok = False
         try:
-            from . import fonts
+            from . import fonts, typography
             path = fonts.font_file(name)
             ok = bool(path and fonts.font_has_tamil(str(path)))
+            if not ok and not path and typography.enabled():
+                # a family registered through one of its named instances (variable fonts: "Anek Tamil" = "Anek Tamil Medium (TrueType)")
+                ok = any(fonts.font_has_tamil(str(p)) for p in fonts.family_files(name))
         except Exception:
             ok = False
         _tamil_capable[key] = ok
@@ -883,12 +892,17 @@ def ensure_tamil_font_renders(shape, text: str | None, warnings: list[str]) -> N
         # cannot (Arial & co., or one not installed here) is replaced, because it would print tofu boxes
         if font_renders_tamil(story.Font):
             return
-        story.Font = TAMIL_FONT
-        if story.Font != TAMIL_FONT:
-            warnings.append(
-                f"Tamil text still tagged {current!r} after trying to set {TAMIL_FONT!r} "
-                f"- it may render as tofu boxes; check the font is installed"
-            )
+        # the brand's own Tamil font (typography.json) when it is installed and draws Tamil, else the legacy default
+        for target in ([_TAMIL_PREFERRED] if _TAMIL_PREFERRED else []) + [TAMIL_FONT]:
+            story.Font = target
+            if story.Font == target:
+                if target != TAMIL_FONT:
+                    warnings.append(f"Tamil text set in {target!r} (the brand's Tamil font): the master's {current!r} cannot draw Tamil")
+                return
+        warnings.append(
+            f"Tamil text still tagged {current!r} after trying to set {TAMIL_FONT!r} "
+            f"- it may render as tofu boxes; check the font is installed"
+        )
     except Exception as e:
         warnings.append(f"could not verify/fix Tamil font on a text shape: {e}")
 

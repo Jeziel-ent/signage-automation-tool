@@ -195,7 +195,12 @@ def compute_layout(
         from . import example_layout
         tpl_plan = example_layout.plan(brand_rule["brand"], objects, page_w, page_h, new_w, new_h,
                                        name_ids=shopname_ids, exclude=template_exclude, board_type=board_type)
-    if tpl_plan and tpl_plan.get("name_case") == "upper" and shop_name:
+    hints = None
+    if not tpl_plan and brand_rule and brand_rule.get("example_library") and brand_rule.get("brand"):
+        # rules layout (no designer example fits this master): still borrow her name size, line count and capitals from the nearest board
+        from . import example_layout
+        hints = example_layout.name_hints(brand_rule["brand"], new_w, new_h, board_type, template_exclude)
+    if ((tpl_plan or hints) or {}).get("name_case") == "upper" and shop_name:
         shop_name = shop_name.upper()        # the brand's designers set every English shop name in capitals (library "name_case")
     # a master with ONE name line, a board whose designer example shows ONE script, and a shop with both names: "Both" stacks the two
     # names as two lines of that line's text box (a second box would sit on top of the first)
@@ -241,6 +246,15 @@ def compute_layout(
                 out.append(Placed(o.id, o.name, "shopname", x, spec["cy"] - h / 2, w, h, orig, warns, text, font,
                                   text_fit=spec))
                 continue
+            if hints and not (axis and n_tiles > 1):
+                hspec = hints["texts"].get("name_ta" if (text and is_tamil(text)) else "name_en")
+                if hspec is not None:
+                    w, h = o.w * s, o.h * s
+                    cx = (o.x + o.w / 2) / page_w * new_w
+                    cy = (o.y + o.h / 2) / page_h * new_h
+                    out.append(Placed(o.id, o.name, "shopname", cx - w / 2, cy - h / 2, w, h, orig, warns, text, font,
+                                      text_fit=keep_pos_spec(hspec, cx, cy, o.w * s, o.h * s, language in (None, "both") and bool(shop_name and shop_name_local))))
+                    continue
             # A `panel_sequence` rule's real boards keep the shop name in its
             # normal bottom-bar spot (between the "authorized dealer" footer
             # and the phone/GST line), not in a gap between panel copies -
@@ -344,14 +358,27 @@ def compute_layout(
     if tpl_plan and language in (None, "both") and shop_name and shop_name_local and not stack_both:
         _add_missing_name_line(out, objects, tpl_plan, shop_name, shop_name_local)
     if out and brand_rule and brand_rule.get("example_library"):
-        out[0].layout_source = ({"mode": "example", **tpl_plan["template"]} if tpl_plan else
+        out[0].layout_source = ({"mode": "example", **tpl_plan["template"], **({"review": tpl_plan["review"]} if tpl_plan.get("review") else {})} if tpl_plan else
                                 {"mode": "rules", "reason": "no designer example of this brand fits this master and size"})
+    if out and hints:
+        out[0].name_specs = hints["texts"]          # names inside groups: sized like hers, left where the master has them
+        if hints.get("name_case"):
+            out[0].name_case = hints["name_case"]
     if out and tpl_plan and tpl_plan.get("nested_names") and tpl_plan.get("texts"):
         out[0].name_specs = tpl_plan["texts"]
     if out and tpl_plan and tpl_plan.get("name_case"):
         out[0].name_case = tpl_plan["name_case"]
     _distribute_shopname_lines(out, objects)
     return out
+
+
+def keep_pos_spec(spec: dict, cx: float, cy: float, w: float, h: float, both: bool = False) -> dict:
+    """A rules-layout name spec (example_layout.name_hints) bounded by the master's own line box, which is what fits the master's
+    panel (a lone name line takes her vertical centre: the white panel sits at the same height on every board of this design): at most two lines, a block at most twice as tall and a quarter wider than the master's line."""
+    lines = max(1, min(int(spec.get("max_lines") or 1), 2))
+    hh = min(spec["h"], (1.3 if both else 4.0) * h)      # two scripts share the panel: neither may take it all
+    return {**spec, "ax": cx, "cy": cy if both else spec.get("cy", cy), "anchor": "center", "max_lines": lines, "h": hh,
+            "line_h": min(spec.get("line_h") or hh, hh / lines if lines > 1 else hh), "w_cap": min(spec["w_cap"], 1.25 * w) if both else spec["w_cap"]}
 
 
 def _add_missing_name_line(out: list[Placed], objects: list[Obj], tpl_plan: dict, shop_name: str, shop_name_local: str) -> None:

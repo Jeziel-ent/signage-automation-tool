@@ -111,6 +111,42 @@ def resolve_font_file(family: str, entries: list[tuple[str, str]], fonts_dir: st
     return data if os.path.isabs(data) else os.path.join(fonts_dir, data)
 
 
+def family_files(family: str) -> list[str]:
+    """Every installed font FILE that belongs to `family`: the registry entry named exactly like the family, and the entries whose name is the family
+    plus a face / weight / instance name ("Anek Tamil Medium", "Nirmala UI Semilight"). A VARIABLE font is registered once under one of its named
+    instances (the designers' Anek Tamil is "Anek Tamil Medium (TrueType)"), so the exact family name finds nothing in `resolve_font_file` - which made
+    the engine believe the font cannot draw Tamil and replace it with Nirmala UI on every Hangyo board. Used to decide what a family can DRAW (any of its
+    files), never to serve a particular face. Order: exact first."""
+    if sys.platform != "win32":
+        return []
+    import os
+
+    want = " ".join((family or "").split()).casefold()
+    if not want:
+        return []
+    try:
+        entries, folders = _registry_entries()
+    except Exception:
+        return []
+    exact, faces = [], []
+    for value_name, data in entries:
+        if not str(data).lower().endswith(FONT_EXTS):
+            continue
+        path = data if os.path.isabs(data) else os.path.join(folders[0], data)
+        for name in parse_registry_name(value_name):
+            n = " ".join(name.split()).casefold()
+            if n == want:
+                exact.append(path)
+            elif n.startswith(want + " "):
+                faces.append(path)
+    seen, out = set(), []
+    for pth in exact + faces:
+        if pth not in seen:
+            seen.add(pth)
+            out.append(pth)
+    return out
+
+
 def _registry_entries() -> tuple[list[tuple[str, str]], list[str]]:
     """(entries, allowed folders): every registered font value, and the folders a served file must live in."""
     import os

@@ -1,0 +1,363 @@
+{
+ "brand": "hangyo",
+ "note": "Inferred from Stage 1 (backend/dataset_analysis/stage1/shop_reference_mapping.json): library signature match + top-level structure match. Nothing here is confirmed by a designer.",
+ "boards": {
+  "01 - 16 X 3 Feet - Frontlit - Asian Juice bar.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "02 - 3 X 6 Feet - Double Side GSB - Sri Sai cafe (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "02 - 3 X 6 Feet - Double Side GSB - Sri Sai cafe (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "03 - 4 X 8 Feet - Nonlit - Shenbagam Enterprises ( Jothi maligai).cdr": {
+   "masters": {
+    "4 X 8.cdr": 0.7
+   },
+   "status": "inferred_structure_only",
+   "mapping_status": "PROBABLE"
+  },
+  "04 - 10 X 3 Feet - Nonlit - Lakshmi Store.cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.4,
+    "10 X 3.cdr": 0.4
+   },
+   "status": "disputed",
+   "mapping_status": "CONFIRMED"
+  },
+  "05 - 6 X 3 Feet - Double Side GSB - Namma T Zone (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "05 - 6 X 3 Feet - Double Side GSB - Namma T Zone (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "06 - 3 X 6 Feet - Double Side GSB - Eriyur  Bekary (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "PROBABLE"
+  },
+  "06 - 3 X 6 Feet - Double Side GSB - Eriyur  Bekary (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "PROBABLE"
+  },
+  "07 - 4 X 7 Feet - Double Side GSB - New Chennai bakery (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "07 - 4 X 7 Feet - Double Side GSB - New Chennai bakery (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "08 - 26 X 3 Feet - Frontlit - Sri Ganesha Kitchen.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "08 - 8 X 4 Feet - Double Side GSB - Sri Ganesha Kitchen (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "08 - 8 X 4 Feet - Double Side GSB - Sri Ganesha Kitchen (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "09 - 6 X 3 Feet - Double Side GSB - Sri renugambal maligai (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "09 - 6 X 3 Feet - Double Side GSB - Sri renugambal maligai (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "10 - 20 X 4 Feet - Frontlit - Jeeva hotel.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "10 - 6 X 3 Feet - Double Side GSB - Jeeva hotel (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "10 - 6 X 3 Feet - Double Side GSB - Jeeva hotel (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "11 - 6 X 3 Feet - Double Side GSB - Annamaliyar bakery And tea coffee (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "11 - 6 X 3 Feet - Double Side GSB - Annamaliyar bakery And tea coffee (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "12 - 6 X 3 Feet - Double Side GSB - Saravanan maligai store (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "12 - 6 X 3 Feet - Double Side GSB - Saravanan maligai store (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "13 - 3 X 6 Feet - Double Side GSB - Amutham Store (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "13 - 3 X 6 Feet - Double Side GSB - Amutham Store (2).cdr": {
+   "masters": {
+    "4 X 8.cdr": 0.7
+   },
+   "status": "inferred_structure_only",
+   "mapping_status": "CONFIRMED"
+  },
+  "14 - 8 X 4 Feet - GSB - New Sri happy Iyengar bakery.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "15 - 6 X 3 Feet - Double Side GSB - Golden Knife Bakery (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "15 - 6 X 3 Feet - Double Side GSB - Golden Knife Bakery (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "16 - 3 X 5 Feet - Double Side GSB - Shanvi fancy store (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.4,
+    "4 X 8.cdr": 0.4
+   },
+   "status": "disputed",
+   "mapping_status": "CONFIRMED"
+  },
+  "16 - 3 X 5 Feet - Double Side GSB - Shanvi fancy store (2).cdr": {
+   "masters": {
+    "4 X 8.cdr": 0.7
+   },
+   "status": "inferred_structure_only",
+   "mapping_status": "CONFIRMED"
+  },
+  "17 - 12 X 4 Feet - Nonlit - Thirukumaran store.cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.4,
+    "10 X 3.cdr": 0.4
+   },
+   "status": "disputed",
+   "mapping_status": "CONFIRMED"
+  },
+  "18 - 10 X 4 Feet - GSB - Udhayam cold drinks arthavadi.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "19 - 10 X 3 Feet - GSB - Sivani Maligai.cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.4,
+    "10 X 3.cdr": 0.4
+   },
+   "status": "disputed",
+   "mapping_status": "PROBABLE"
+  },
+  "20 - 8 X 3 Feet - GSB - Sri thanga Vilas soda factory.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "21 - 8 X 3 Feet - GSB - Paramasivam store.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "22 - 20 X 3 Feet - Frontlit - Bengaluru bakery.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "23 - 10 X 3 Feet - Frontlit - Guru tea stall.cdr": {
+   "masters": {
+    "10 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "24 - 20 X 4 Feet - Frontlit - PERUMAL STORE.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "24 - 6 X 3 Feet - Double Side GSB - PERUMAL STORE (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "24 - 6 X 3 Feet - Double Side GSB - PERUMAL STORE (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "25 - 10 X 3 Feet - GSB - Karthikeyan store.cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.4,
+    "10 X 3.cdr": 0.4
+   },
+   "status": "disputed",
+   "mapping_status": "CONFIRMED"
+  },
+  "25 - 20 X 3 Feet - Frontlit - Karthikeyan store.cdr": {
+   "masters": {
+    "4 X 8.cdr": 0.7
+   },
+   "status": "inferred_structure_only",
+   "mapping_status": "CONFIRMED"
+  },
+  "26 - 20 X 3 Feet - GSB - Om guru sweets & bakery.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "26 - 3 X 6 Feet - Double Side GSB - Om guru sweets & bakery (1).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "26 - 3 X 6 Feet - Double Side GSB - Om guru sweets & bakery (2).cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "27 - 20 X 4 Feet - Nonlit - Jairam maligai.cdr": {
+   "masters": {
+    "6 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "28 - 10 X 3 Feet - Nonlit - Sekar store.cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.7
+   },
+   "status": "inferred_library_only",
+   "mapping_status": "CONFIRMED"
+  },
+  "29 - 15 X 3 Feet - GSB - Hotel dhanalakshmi Vilas.cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.4,
+    "10 X 3.cdr": 0.4
+   },
+   "status": "disputed",
+   "mapping_status": "CONFIRMED"
+  },
+  "30 - 10 X 3 Feet - Frotlit - Arulmoli maligai & bakery.cdr": {
+   "masters": {
+    "10 X 3.cdr": 1.0
+   },
+   "status": "inferred_corroborated",
+   "mapping_status": "CONFIRMED"
+  },
+  "31 - 10 X 3 Feet - GSB - Kanish Cool Drink's.cdr": {
+   "masters": {
+    "6 X 3.cdr": 0.4,
+    "10 X 3.cdr": 0.4
+   },
+   "status": "disputed",
+   "mapping_status": "CONFIRMED"
+  }
+ }
+}

@@ -22,7 +22,7 @@ from pathlib import Path
 
 from . import corel_util, corrections
 from .corel_watchdog import Watchdog
-from .layout import (_norm_name, MIN_TEXT_PT, TAMIL_FONT, Obj, compute_layout, detect_role, find_contact_ids, find_local_partner_ids,
+from .layout import (keep_pos_spec, _norm_name, MIN_TEXT_PT, TAMIL_FONT, Obj, compute_layout, detect_role, find_contact_ids, find_local_partner_ids,
                      find_shopname_ids, is_tamil, load_brand_rule, brand_rule_for_shop, to_mm)
 
 logger = logging.getLogger(__name__)
@@ -244,7 +244,35 @@ class CorelEngine:
         # live), so Quit() silently failed and every conversion waited out the 15 s force-kill, and a pooled instance could never
         # be reused. See corel_util.ensure_com.
         corel_util.ensure_com()
-        return self._process(master_path, shop, out_dir, on_step)
+        from . import typography
+
+        corel_util.set_tamil_preference(typography.tamil_font(shop.get("brand")))     # the brand's Tamil font, when installed (typography.json)
+        try:
+            return self._process(master_path, shop, out_dir, on_step)
+        finally:
+            corel_util.set_tamil_preference(None)
+
+    @classmethod
+    def _collect_fonts(cls, coll, used: dict | None = None, depth: int = 0) -> dict:
+        """{font family: number of text shapes} over every shape of a collection (groups and PowerClip contents included); a text whose runs mix fonts counts as
+        "(mixed)". Read-only; one COM call per shape, so it is called once per board, after the layout."""
+        used = {} if used is None else used
+        for i in range(1, int(coll.Count) + 1):
+            try:
+                s = coll.Item(i)
+                if int(s.Type) == cls.SHAPE_TEXT:
+                    try:
+                        fam = s.Text.Story.Font or "(mixed)"
+                    except Exception:
+                        fam = "(mixed)"
+                    used[fam] = used.get(fam, 0) + 1
+                elif depth < 6:
+                    kids = cls._child_shapes(s)
+                    if kids:
+                        cls._collect_fonts(_Coll(kids), used, depth + 1)
+            except Exception:
+                continue
+        return used
 
     @staticmethod
     def _shape_text(s) -> str | None:
@@ -436,6 +464,33 @@ class CorelEngine:
                 warnings.append(f"shop name scaled to {k:.0%} of its natural size to fit the designer's block ({n} line(s))")
         except Exception as e:
             warnings.append(f"text-fit failed: {e}")
+
+    @staticmethod
+    def _apply_spatial_plan(placed: list, objs: list, shop: dict, page_w: float, page_h: float, new_w: float, new_h: float,
+                            warnings: list[str]) -> None:
+        """Master spatial intelligence (app/adaptation_plan.py), behind SIGNAGE_SPATIAL_PLANNER (main._convert_job adds `shop["spatial_model"]`).
+        Priority: a designer example layout (`layout_source.mode == "example"`) and learned corrections (`shop["intelligence"]`) come FIRST and
+        this step is skipped for them; it only replaces the legacy generic placement of plain objects, and any problem (model does not match the
+        opened file, validation errors, a tiled board, an exception) leaves the legacy result exactly as it was."""
+        model_dict = shop.get("spatial_model")
+        if not model_dict or not placed or shop.get("intelligence"):
+            return
+        src = next((p.layout_source for p in placed if p.layout_source), None)
+        if src and src.get("mode") == "example":
+            return
+        try:
+            from . import adaptation_plan, master_model
+
+            summary = adaptation_plan.apply_to_placed(placed, master_model.MasterModel.from_dict(model_dict), objs, new_w, new_h,
+                                                      page_w=page_w, page_h=page_h)
+        except Exception as e:  # noqa: BLE001
+            summary = {"used": False, "reason": f"{type(e).__name__}: {e}"}
+        if src is not None:                       # never CREATE a layout record: that would give a brand without a library a confidence label
+            src["spatial"] = {k: v for k, v in summary.items() if k != "validation"} | {"issues": len(summary.get("validation") or [])}
+        if summary.get("used"):
+            warnings.append(f"spatial planner ({summary.get('strategy')}): {summary.get('applied', 0)} object(s) placed from the master model")
+        elif summary.get("reason"):
+            warnings.append(f"spatial planner not used: {summary['reason']}")
 
     @staticmethod
     def _inside_page(w: float, x: float, spec: dict) -> float:
@@ -848,6 +903,8 @@ class CorelEngine:
                 continue
             spec = (specs or {}).get("name_ta" if is_tamil(new) else "name_en")
             if spec:
+                if spec.get("keep_pos"):         # rules layout: her size, but the master's own place for the line
+                    spec = keep_pos_spec(spec, o.x + o.w / 2, o.y + o.h / 2, o.w, o.h, lang == "both" and bool(name and local))
                 cls._apply_text_fit(sh, spec, warnings)
             else:
                 cls._fit_text(sh, o.w, warnings)
@@ -1061,6 +1118,7 @@ class CorelEngine:
                     language=shop_language(shop, warnings),
                 )
                 apply_name_fonts(placed, shop)
+                self._apply_spatial_plan(placed, objs, shop, page_w, page_h, new_w, new_h, warnings)
                 if shop.get("intelligence"):
                     summary = corrections.apply_to_placed(placed, new_w, new_h, shop["intelligence"],
                                                           min_confidence=shop.get("intelligence_min", corrections.APPLY_MIN_CONFIDENCE))
@@ -1179,6 +1237,14 @@ class CorelEngine:
             cdr_path = out_dir / f"{base}.cdr"
             pdf_path = out_dir / f"{base}.pdf"
             png_path = out_dir / f"{base}.png"
+            fonts_used: dict = {}
+            try:
+                from . import typography
+
+                if typography.enabled():
+                    fonts_used = self._collect_fonts(doc.ActivePage.Shapes)
+            except Exception as e:  # noqa: BLE001 - a report problem never stops a board
+                warnings.append(f"could not read the board's fonts: {e}")
             step("saveas", lambda: corel_util.save_cdr(doc, cdr_path))
             cdr_format = corel_util.check_cdr_format(cdr_path, warnings)
             step("pdf", lambda: doc.PublishToPDF(str(pdf_path)))
@@ -1221,6 +1287,13 @@ class CorelEngine:
 
         report = _report((page_w, page_h), (new_w, new_h), placed, timings, warnings, free_ram_gb)
         report["cdr_format"] = cdr_format
+        if fonts_used:
+            from . import typography
+
+            report["typography"] = typography.font_status(shop.get("brand"), fonts_used)
+            if report["typography"]["missing_on_this_machine"]:
+                warnings.append("font(s) not installed on this machine: " + ", ".join(report["typography"]["missing_on_this_machine"]) +
+                                " - CorelDRAW substitutes them; this board is not typographically designer-equivalent")
         report["bitmap_cap"] = {"max_dpi": corel_util.max_bitmap_dpi(), **bitmap_cap}
         report["corel"] = dict(corel_util.connected)  # which CorelDRAW (ProgID + version) produced this board
         # the master was already open from the previous shop (restored by undo and verified) / kept open for the next one

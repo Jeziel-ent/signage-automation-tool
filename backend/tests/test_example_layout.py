@@ -244,3 +244,27 @@ def test_a_retyped_english_name_is_still_found_next_to_the_tamil_name():
     rec = X.board_record(master, d, "NATTU MARUNDHU KADAI", "b.cdr")              # the file's name is not what the board shows
     assert set(rec["texts"]) == {"name_ta", "name_en"}
     assert rec["texts"]["name_en"]["w"] == pytest.approx(1000 / 3000, abs=1e-3)
+
+
+def test_a_tamil_name_set_as_one_text_per_line_is_one_name_block():
+    """A designer sets 'ஏசியன்' / 'ஜூஸ் பார்' as two text objects: the name block is both (box = union, 2 lines), not the first one;
+    a tiny Tamil stamp is no part of it."""
+    master = X.describe_master(master_dump(), {1, 2})
+    d = dump(3000, 1000,
+             [("group", 100, 600, 600, 300, 4), ("group", 1500, 300, 900, 600, 6), ("bitmap", 2700, 100, 150, 700)],
+             texts=[("NEW SHOP", 100, 50, 1000, 100), ("ஏசியன்", 1500, 500, 800, 220), ("ஜூஸ் பார்", 1550, 250, 700, 120), ("ஹ", 2000, 900, 50, 20)],
+             clip=[("bitmap", -100, -50, 3200, 1100), ("group", -50, -300, 3100, 500), ("group", 100, 150, 1200, 700)])
+    rec = X.board_record(master, d, "NEW SHOP", "b.cdr")
+    ta = rec["texts"]["name_ta"]
+    assert ta["lines"] == 2
+    assert ta["h"] == pytest.approx((720 - 250) / 1000, abs=1e-3)       # from the lower line's bottom to the upper line's top
+    assert ta["w"] == pytest.approx(800 / 3000, abs=1e-3)
+
+
+def test_name_hints_borrow_size_and_case_for_a_rules_layout_board():
+    from app import example_layout as ex
+    h = ex.name_hints("hangyo", 914, 1829)
+    assert h and h["name_case"] == "upper"
+    for spec in h["texts"].values():
+        assert spec["keep_pos"] and spec["line_h"] > 0 and spec["max_lines"] >= 1
+    assert ex.name_hints("no-such-brand", 914, 1829) is None

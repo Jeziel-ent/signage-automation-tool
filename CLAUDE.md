@@ -17,6 +17,22 @@ is being built alongside it, not as a replacement yet. Engine-side work
 (layout rules, validation, tiling) is unaffected by either UI and
 continues independently - none of it was touched building the new UI.
 
+## Master spatial intelligence (2026-11-22, working tree - NOT committed)
+
+Reusable per-master spatial model + target planner, **off by default** (`SIGNAGE_SPATIAL_PLANNER=1`; analysis `SIGNAGE_MASTER_ANALYSIS`). Full description, API,
+priority rules, limits and what was / was not run on real CorelDRAW: **`docs/master-spatial-intelligence.md`**. New files: `app/master_analysis.py`,
+`master_model.py`, `background_analysis.py`, `master_store.py`, `adaptation_plan.py`, `plan_validation.py`; table `master_models`; worker job `master_analysis`;
+agent job kind `master_analysis` (agent rebuild + publish still to do); `CorelEngine._apply_spatial_plan` (skipped for designer examples and learned corrections).
+Also in the same working tree: `layout.keep_pos_spec` + `example_layout.name_hints` (rules-layout name size / capitals, 2026-11-22).
+
+## Stage 2: typography / master selection / name pooling (2026-11-23, real CorelDRAW 27, 50 Hangyo boards x 3 sets)
+
+Full report + data: `backend/dataset_analysis/stage2/stage2_report.md` (git-ignored folder; regenerate with `backend/tools/stage2_eval.py gen|extract|compare|diff` + `stage2_summary.py`; Stage 1 tooling `tools/stage1_audit.py`).
+- **Typography fix (default ON, `SIGNAGE_TYPOGRAPHY_V2=0` turns it off):** `fonts.family_files` + `corel_util.font_renders_tamil` recognise a variable font registered by one named instance (Anek Tamil), so the master's Tamil font is no longer forced to Nirmala UI; `brand_data/<brand>/typography.json` (Hangyo: Tamil Anek Tamil, English Amaranth - not installed, never installed) via `app/typography.py`; `report.typography` lists fonts used / missing. Measured: fair leave-one-out +0.012 combined similarity (10 boards better, 0 worse), +0.018 same-conditions, all on Tamil boards; Tamil crop SSIM 0.423 -> 0.471.
+- **OPEN DECISION:** saved as CDR v21 (the default for CorelDRAW 2019) Anek Tamil text becomes CURVES (variable font cannot be stored in v21): 0 of 36 Tamil boards keep live Tamil text (Stage 1: 36 of 36 in Nirmala UI). A native save (`SIGNAGE_CDR_VERSION=0`) keeps live Anek Tamil. Until decided (native save for Hangyo / accept outlines / keep Nirmala), set `SIGNAGE_TYPOGRAPHY_V2=0` for production. The agent bundles `backend/app`, so nothing changes on designer PCs until a new agent is built and published.
+- **OFF by default, NOT measured on real CorelDRAW:** `SIGNAGE_MASTER_SCORE=1` (`master_selection.py`, `brand_data/hangyo/master_evidence.json`; offline it mostly equals "always 6 X 3" and loses on the other 13 boards) and `SIGNAGE_NAME_POOL=1` (`example_layout.pooled_text_specs`, median of the 3 nearest designer boards). Wide boards (>= 4.2:1) are only flagged REVIEW (`example_layout.WIDE_REVIEW_ASPECT`).
+- **Stage 1 baseline leaks** (27 boards had their own designer board in the library): fair baseline = `old_loo` (0.7585 on 41 boards); Stage 1 read 0.023 too high.
+
 ## 2026-11-15 session summary (home PC) - READ THIS FIRST on the office PC
 
 **Workflow:** development is done on the owner's HOME PC (no SSH to the droplet); deployment is done from the OFFICE PC (has SSH). Anything not in git must be carried over (see "Not in git" below). Pushing to `main` deploys the site through GitHub Actions; the agent build is published by hand with `scp` (docs/deploy-droplet.md "Publishing the agent").

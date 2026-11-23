@@ -29,7 +29,7 @@ from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
 from . import corel_supervisor, corel_util, db, export_replay, fonts, orientation_adapter, scene_export, scene_ops
-from . import admin, agents, alerts, audit, chat_reports, auth, confidence, corrections, file_naming, ratelimit, retention
+from . import admin, agents, alerts, audit, chat_reports, auth, confidence, corrections, file_naming, master_selection, master_store, ratelimit, retention
 from .batch_import import clean_shop_name, parse_shop_lines, shop_name_from_filename, strip_copy_suffix
 from .engines import get_engine
 from .layout import to_mm
@@ -154,6 +154,7 @@ async def _lifespan(_app):
     _refuse_mock_engine_in_production()
     auth.bootstrap_admin()
     _recover_interrupted_work()
+    master_store.recover_interrupted()
     _archive_previous_masters()
     tasks = [asyncio.create_task(_housekeeping_loop())]
     if _remote_mode():
@@ -524,6 +525,7 @@ def _save_master_upload(master: UploadFile, brand: str, orientation: str, master
     _record_master_info(job_id, master_path)
     preview_path, preview_error = _extract_cdr_preview(master_path)
     db.set_job_preview(job_id, str(preview_path) if preview_path else None, preview_error)
+    _ensure_master_analysis(job_id)          # never blocks the upload: the analysis runs in the background (or on the owner's agent)
     return job_id
 
 
@@ -537,6 +539,146 @@ def _record_master_info(job_id: str, path: Path) -> None:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     db.set_master_info(job_id, h.hexdigest(), corel_util.cdr_core_version(path))
+
+
+# ------------------------------------------------------------------------------- master spatial intelligence (master_store.py)
+
+
+def _analysis_owner(user_id: int | None) -> int:
+    """Remote mode: whose agent analyses the master - the given user, else the only user with an agent online, else 0 (nobody yet)."""
+    if user_id:
+        return user_id
+    owners = {a["user_id"] for a in db.list_agents() if agents._agent_json(a)["online"]}
+    return owners.pop() if len(owners) == 1 else 0
+
+
+def _ensure_master_analysis(job_id: str, user_id: int | None = None, force: bool = False) -> str:
+    """Start the spatial analysis of this master if it has no current one and none is running; returns the resulting status. Never raises
+    (an analysis problem must not break an upload or a conversion). Local mode: a task on the single CorelDRAW pool; remote mode: a job
+    for the owner's agent (kept 'pending' until some agent owner is known). Nothing runs CorelDRAW on a server without a local engine."""
+    try:
+        row = db.get_job(job_id)
+        if not row or not master_store.enabled():
+            return "disabled"
+        if not master_store.should_analyse(row, force=force):
+            return master_store.status_for(row)["status"]
+        if _remote_mode():
+            owner = _analysis_owner(user_id)
+            if not owner:
+                db.mark_master_pending(job_id, row.get("master_hash"))
+                return "pending"
+            if db.active_agent_job("master_analysis", ref=job_id) or not master_store.begin(row, force=force):
+                return "analysing"
+            out = Path(row["master_path"]).parent / "analysis"
+            out.mkdir(parents=True, exist_ok=True)
+            master = Path(row["master_path"])
+            db.create_agent_job(uuid.uuid4().hex[:12], "master_analysis", None, owner,
+                                {"spec": {}, "inputs": {"cdr": {"path": str(master), "filename": master.name}}, "out_dir": str(out)},
+                                ref=job_id)
+            return "analysing"
+        if not master_store.begin(row, force=force):
+            return "analysing"
+        _pool.submit(_master_analysis_worker, job_id, get_engine(os.environ.get("SIGNAGE_ENGINE", "auto")).name)   # engine fixed NOW, not when the task runs
+        return "analysing"
+    except Exception:  # noqa: BLE001
+        logger.exception("could not start the analysis of master %s", job_id)
+        return "failed"
+
+
+ANALYSIS_RETRY_DELAY_S = 6.0
+
+
+def _master_analysis_worker(job_id: str, engine_name: str) -> None:
+    row = db.get_job(job_id)
+    if not row:
+        return
+    results_path = CONVERT_RUNS / f"analysis_{job_id}.json"
+    try:
+        out = Path(row["master_path"]).parent / "analysis"
+        out.mkdir(parents=True, exist_ok=True)
+        if engine_name == "corel":
+            # One retry in a fresh worker + CorelDRAW: found in the first real multi-master run - a worker started right after the previous
+            # one can attach to the CorelDRAW that is still quitting and die with "The remote procedure call failed" (the conversion path
+            # retries a failed batch member the same way).
+            for attempt in (1, 2):
+                results = corel_supervisor.run_batch([{"master_analysis": row["master_path"], "analysis_out": str(out)}], results_path)
+                if results[0].get("status") == "done":
+                    break
+                if attempt == 2:
+                    raise RuntimeError(results[0].get("error", "master analysis failed"))
+                logger.warning("master analysis %s failed (%s) - retrying once", job_id, results[0].get("error"))
+                time.sleep(ANALYSIS_RETRY_DELAY_S)
+            extraction = json.loads((out / "extraction.json").read_text(encoding="utf-8"))
+            render = out / "master_page.png"
+        else:
+            extraction, render = master_store.mock_extraction(), None
+        master_store.store_result(row, extraction, render if render and render.is_file() else None)
+    except corel_supervisor.RefusedToStart as e:
+        master_store.fail(job_id, str(e))
+    except Exception as e:  # noqa: BLE001
+        logger.exception("master analysis %s failed", job_id)
+        master_store.fail(job_id, f"{type(e).__name__}: {e}")
+    finally:
+        for p in (results_path, results_path.with_suffix(_HEARTBEAT_SUFFIX), results_path.with_suffix(_DONE_SUFFIX),
+                  results_path.with_suffix(".jobs.json"), results_path.with_suffix(".json.tmp"), results_path.with_suffix(".heartbeat.tmp")):
+            p.unlink(missing_ok=True)
+
+
+def _finalize_agent_master_analysis(job: dict, entry: dict) -> None:
+    master_id = job.get("ref")
+    row = db.get_job(master_id) if master_id else None
+    if not row:
+        return
+    if entry.get("status") != "done":
+        master_store.fail(master_id, entry.get("error") or "analysis failed")
+        return
+    out = Path(json.loads(job["payload_json"])["out_dir"])
+    files = entry["result"]["files"]
+    try:
+        extraction = json.loads((out / files["extraction"]).read_text(encoding="utf-8"))
+        render = out / files["render"] if files.get("render") else None
+        master_store.store_result(row, extraction, render)
+    except Exception as e:  # noqa: BLE001
+        master_store.fail(master_id, f"the agent's analysis could not be stored: {type(e).__name__}: {e}")
+        raise
+
+
+agents.register_finalizer("master_analysis", _finalize_agent_master_analysis)
+
+
+@app.get("/api/masters/{master_id}/analysis", responses={404: {"description": "Not found"}})
+def master_analysis_status(master_id: str):
+    """Spatial-analysis state of a master (no technical error text: see the admin route)."""
+    row = db.get_job(master_id)
+    if not row:
+        raise HTTPException(404, "no such master")
+    return master_store.status_for(row)
+
+
+@app.post("/api/masters/{master_id}/analysis", dependencies=[Depends(auth.require_admin)], responses={404: {"description": "Not found"}})
+def master_analysis_run(master_id: str, request: Request, force: bool = False):
+    """Start (or, with force=true, redo) the spatial analysis of a master. Returns the resulting status."""
+    row = db.get_job(master_id)
+    if not row:
+        raise HTTPException(404, "no such master")
+    user = getattr(request.state, "user", None) or {}
+    status = _ensure_master_analysis(master_id, user.get("id"), force=force)
+    return {**master_store.status_for(db.get_job(master_id)), "status": status}
+
+
+@app.get("/api/admin/masters/{master_id}/analysis", dependencies=[Depends(auth.require_admin)], responses={404: {"description": "Not found"}})
+def master_analysis_admin(master_id: str):
+    """Technical detail for administrators: error text, versions, hash and the stored model's summary."""
+    row = db.get_job(master_id)
+    if not row:
+        raise HTTPException(404, "no such master")
+    out = master_store.status_for(row, admin=True)
+    model = master_store.load_model(row)
+    if model is not None:
+        out["summary"] = {"objects": len(model.objects), "top_level": len(model.top_level()), "orientation": model.orientation,
+                          "warnings": model.warnings, "shape_sets": model.shape_sets, "extraction_errors": model.extraction_errors,
+                          "has_background": model.background is not None}
+    return out
 
 
 _AUTO_MASTER_NAME = re.compile(r"^Master \d+$")
@@ -579,6 +721,7 @@ def _master_json(row: dict) -> dict:
         "preview_url": f"/api/v2/jobs/{row['id']}/preview" if row.get("preview_path") else None,
         "preview_error": row.get("preview_error"),
         "created_at": datetime.fromtimestamp(row["created_at"], timezone.utc).isoformat(),
+        "analysis": master_store.status_for(row),      # additive: spatial analysis state (pending / analysing / completed / failed / needs_reanalysis / disabled)
     }
 
 
@@ -695,6 +838,7 @@ async def replace_master_file(master_id: str, master: UploadFile = File(...)):
     _record_master_info(master_id, path)
     preview_path, preview_error = _extract_cdr_preview(path)
     db.set_job_preview(master_id, str(preview_path) if preview_path else None, preview_error)
+    _ensure_master_analysis(master_id)       # the hash changed: the stored model is `needs_reanalysis` until this finishes
     return _master_json(db.get_job(master_id))
 
 
@@ -987,6 +1131,24 @@ def _master_record(mrow: dict, orientation: str, reason: str, fallback: bool = F
             "orientation": orientation, "reason": reason, "fallback": fallback, "selected": selected}
 
 
+def _scored_master(brand: str, target_w_mm: float, target_h_mm: float, board_type: str | None):
+    """(best Score, ranked) over the brand's registered masters, or None (fewer than two masters / no example library to learn from)."""
+    from . import example_layout
+
+    lib = example_layout.library(brand)
+    rows = [m for m in db.list_masters(brand) if not m.get("deleted_at")]
+    if len(rows) < 2 or not lib:
+        return None
+    pages = {(m["file"] or "").strip().lower(): m.get("page") for m in lib.get("masters", [])}
+    cands = []
+    for r in rows:
+        name = r.get("master_filename") or ""
+        pg = pages.get(name.strip().lower()) or (None, None)
+        cands.append(master_selection.MasterCandidate(name, pg[0], pg[1], r.get("orientation"), r))
+    best, ranked = master_selection.choose(lib, cands, target_w_mm, target_h_mm, board_type, evidence=master_selection.load_evidence(brand))
+    return (best, ranked) if best else None
+
+
 def _example_style_master(brand: str, orientation: str, target_w_mm: float, target_h_mm: float, board_type: str | None = None) -> dict | None:
     """With an example library (app/example_layout.py), the registered master whose file the nearest designer board was built from
     - only when the brand has two or more masters of this orientation to choose between (a single one is the default anyway)."""
@@ -1047,6 +1209,17 @@ def _select_shop_master(shop_row: dict, job_row: dict, target_w_mm: float, targe
                else f"is a {m_orient} master and this board is {want}")
         note = f"selected master {chosen} {why} - used the default {want} master"
         logger.warning("Shop %s: %s", shop_row["id"], note)
+
+    if master_selection.enabled() and not shop_row.get("master_id"):
+        # Evidence-based selection over EVERY registered master of the brand (both orientations) - SIGNAGE_MASTER_SCORE=1, off by default (app/master_selection.py).
+        scored = _scored_master(brand, target_w_mm, target_h_mm, shop_row.get("board_type"))
+        if scored is not None:
+            best, ranked = scored
+            mrow = best.ref
+            top = ", ".join(f"{s.file} {s.total:.2f}" for s in ranked[:3])
+            rec = _master_record(mrow, mrow.get("orientation") or want, f"master score {top}; " + "; ".join(best.reasons), False)
+            rec["selection"] = "score"
+            return Path(mrow["master_path"]), rec
 
     def usable(mid):  # a soft-deleted default is skipped; an id that no longer exists still fails loudly below
         m = db.get_job(mid) if mid else None
@@ -1169,6 +1342,14 @@ def _convert_job(shop_id: str) -> tuple[dict, dict]:
         shop_dict["master_shop_name"] = master_name
     if mrow.get("master_shop_name_local"):
         shop_dict["master_shop_name_local"] = mrow["master_shop_name_local"]
+    if master_store.planner_enabled() and not shop_dict.get("intelligence"):
+        # spatial planner (behind SIGNAGE_SPATIAL_PLANNER=1): hand the engine this master's CURRENT stored model. usable_model() is None when
+        # the analysis is missing, failed, or stale for this exact file (hash / extractor / schema) -> the legacy layout runs untouched.
+        smodel = master_store.usable_model(mrow)
+        if smodel is not None:
+            shop_dict["spatial_model"] = smodel.to_dict()
+        elif master_store.may_auto_retry(mrow):
+            _ensure_master_analysis(mrow["id"])       # missing / failed / stale: analyse for the NEXT board; this one uses the legacy layout
     logger.info("Shop %s (%sx%s mm, %s target): Selected master file path -> %s (%s)", shop_id,
                 round(shop_dict["width"], 1), round(shop_dict["height"], 1), master_used.get("orientation"),
                 master_path, master_used.get("reason"))
@@ -1340,7 +1521,8 @@ def _enqueue_remote_export(job_id: str, shop_id: str, export_id: str) -> None:
             if f.is_file():
                 inputs[f"asset:{f.name}"] = {"path": str(f), "filename": f.name}
     spec = {"ops": json.loads(row["ops_json"]), "formats": json.loads(row["formats_json"]), "options": json.loads(row["options_json"]),
-            "base_name": file_naming.shop_basename(shop_row), "font_subs": db.get_font_substitutions(shop_id), "export_id": export_id}
+            "base_name": file_naming.shop_basename(shop_row), "font_subs": db.get_font_substitutions(shop_id), "export_id": export_id,
+            "render_ids": json.loads(row["options_json"]).get("render_ids")}
     db.create_agent_job(uuid.uuid4().hex[:12], "export", shop_id, _shop_owner(shop_id),
                         {"spec": spec, "inputs": inputs, "out_dir": str(_export_dir(job_id, shop_id, export_id))}, ref=export_id)
 
@@ -3233,6 +3415,7 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
     out_dir = _export_dir(job_id, shop_id, export_id)
     formats, options, ops = json.loads(row["formats_json"]), json.loads(row["options_json"]), json.loads(row["ops_json"])
     results_path = CONVERT_RUNS / f"export_{export_id}.json"
+    render_ids = options.get("render_ids")
     db.set_export_status(export_id, "running")
     try:
         engine = get_engine(os.environ.get("SIGNAGE_ENGINE", "auto"))
@@ -3244,11 +3427,14 @@ def _export_worker(job_id: str, shop_id: str, export_id: str) -> None:
                 "out_dir": str(out_dir), "base_name": file_naming.shop_basename(shop_row),
                 "assets_dir": str(_product_assets_dir(job_id, shop_id)),
                 "font_subs": db.get_font_substitutions(shop_id),     # permanent "Missing Font" choices
+                "render_ids": render_ids,
             }
             entry = corel_supervisor.run_batch([{"export_replay": spec}], results_path)[0]
             if entry.get("status") != "done":
                 raise RuntimeError(entry.get("error", "export failed"))
             report = entry["report"]
+        elif render_ids:
+            report = export_replay.mock_render(render_ids, results_path.with_suffix(_HEARTBEAT_SUFFIX))
         else:
             scene = _load_scene(job_id, shop_id)
             report = _mock_export(scene_ops.apply_ops(scene, ops), formats, options, out_dir,
@@ -3379,13 +3565,55 @@ def editor_export_status(job_id: str, shop_id: str, export_id: str):
     }
 
 
+class RenderRequest(BaseModel):
+    ids: list[str]
+    ops: list[dict]
+
+
+@app.post("/api/editor/{job_id}/{shop_id}/render", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}, 422: {"description": "Validation error"}})
+def editor_render(job_id: str, shop_id: str, body: RenderRequest):
+    """The single-object render: CorelDRAW (the designer's agent, or this server) replays the given edits and draws just the named TEXT objects,
+    so the editor can show Corel's real lettering instead of its browser-font approximation. It is an export row with no formats (`options.render_ids`),
+    so queueing, progress, the agent job and the files all reuse the export machinery; `GET .../export/{id}` is its status and
+    `GET .../render/{id}/{file}` an image. The edits come from the request (what the editor shows now), not from the saved list."""
+    _editor_shop(job_id, shop_id)
+    scene = _load_scene(job_id, shop_id)
+    if scene is None:
+        raise HTTPException(409, "scene has not been built yet - open the editor first")
+    try:
+        expected = scene_ops.apply_ops(scene, body.ops) if body.ops else scene
+    except scene_ops.OpError as e:
+        raise HTTPException(422, f"these edits cannot be replayed: {e}")
+    ids = list(dict.fromkeys(body.ids))[:export_replay.MAX_RENDER_IDS]
+    ok = export_replay.render_candidates(expected, ids)
+    if not ok:
+        raise HTTPException(422, "none of these is a text object of the board")
+    ids = [i for i in ids if i in ok]
+    plan = export_replay.plan_render_steps(len(body.ops), len(ids))
+    export_id = uuid.uuid4().hex[:12]
+    db.create_export(export_id, shop_id, [], {"render_ids": ids}, body.ops, plan)
+    _start_export(job_id, shop_id, export_id)
+    return {"export_id": export_id, "ids": ids, "plan": plan}
+
+
+@app.get("/api/editor/{job_id}/{shop_id}/render/{export_id}/{filename}", responses={404: {"description": "Not found"}})
+def editor_render_file(job_id: str, shop_id: str, export_id: str, filename: str):
+    """One rendered object image, shown inline by the editor."""
+    _export_row(job_id, shop_id, export_id)
+    base = _export_dir(job_id, shop_id, export_id).resolve()
+    p = (base / filename).resolve()
+    if base not in p.parents or not p.is_file() or p.suffix.lower() != ".png":
+        raise HTTPException(404)
+    return FileResponse(p, media_type="image/png", headers={"Cache-Control": "private, max-age=3600"})
+
+
 @app.get("/api/editor/{job_id}/{shop_id}/exports", responses={404: {"description": "Not found"}, 409: {"description": "Conflict with the current state"}})
 def editor_export_list(job_id: str, shop_id: str):
     _editor_shop(job_id, shop_id)
     return [{"export_id": r["id"], "status": r["status"], "formats": json.loads(r["formats_json"]),
              "files": json.loads(r["files_json"]) if r["files_json"] else None,
              "error": r["error"], "created_at": r["created_at"], "completed_at": r["completed_at"]}
-            for r in db.list_exports(shop_id)]
+            for r in db.list_exports(shop_id) if json.loads(r["formats_json"])]      # a render job (no formats) is not a download
 
 
 def _std_ext(p: Path) -> str:
