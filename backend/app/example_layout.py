@@ -563,6 +563,88 @@ def _text_spec(lib: dict, master: dict | None, board: dict, key: str, new_w: flo
 WIDE_REVIEW_ASPECT = 4.2     # Stage 1: boards this wide scored 0.586 (compact 0.881): flagged for review, not re-composed by a rule
 
 
+# ------------------------------------------------------------------------------------------------ wide-board composition (Stage 4)
+WIDE_COMPOSE_LOGO_TOL = 0.15    # |ln| allowed between a donor logo box's aspect ratio and the master logo pair's
+WIDE_COMPOSE_DONORS = 3         # nearest wide designer boards that vote (median)
+
+
+def wide_compose_enabled() -> bool:
+    """Stage 4: re-scale the master's mirrored logo pair on a wide board (>= WIDE_REVIEW_ASPECT) the way the designers' wide boards do.
+    OFF unless SIGNAGE_WIDE_COMPOSE=1 (evaluated by the Stage 4 audit; the production default is unchanged)."""
+    import os
+
+    return os.environ.get("SIGNAGE_WIDE_COMPOSE", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _logo_pair(master: dict, mapping: dict):
+    """The master's biggest pair of identical art groups (same kind, nested count and aspect ratio within 3 %) - the logo drawn twice
+    (left and right) on a wide design. Returns (key_a, key_b) or None."""
+    els = [e for e in master["elements"] if e["k"] in mapping and e["kind"] in ("group", "cluster")]
+    best = None
+    for i, a in enumerate(els):
+        for b in els[i + 1:]:
+            if a["n_desc"] == b["n_desc"] and _ln(a["aspect"], b["aspect"]) < 0.03:
+                area = a["area"] + b["area"]
+                if best is None or area > best[0]:
+                    best = (area, a["k"], b["k"])
+    return (best[1], best[2]) if best else None
+
+
+def _wide_logo_donor(lib: dict, aspect: float, new_w: float, new_h: float, pair_aspect: float, exclude):
+    """Left / right logo boxes (cx, cy, h as page fractions) from the nearest designer WIDE boards that show the logo twice: any master,
+    boxes picked by their own proportions (the logo's aspect ratio), median over the nearest boards. None = no donor."""
+    skip = {exclude} if isinstance(exclude, str) else set(exclude or ())
+    cands = []
+    for b in lib["boards"]:
+        if b["file"] in skip or b["W"] / b["H"] < WIDE_REVIEW_ASPECT * 0.95:
+            continue
+        boxes = [e for e in b["els"].values()] + [c for cs in (b.get("copies") or {}).values() for c in cs]
+        logos = [e for e in boxes if e["h"] > 0.4 and _ln((e["w"] * b["W"]) / (e["h"] * b["H"]), pair_aspect) < WIDE_COMPOSE_LOGO_TOL]
+        left = [e for e in logos if e["cx"] < 0.5]
+        right = [e for e in logos if e["cx"] >= 0.5]
+        if left and right:
+            cands.append((_ln(b["W"] / b["H"], aspect) + H_WEIGHT * _ln(b["H"], new_h), b, left[0], right[0]))
+    if not cands:
+        return None
+    cands.sort(key=lambda c: c[0])
+    top = cands[:WIDE_COMPOSE_DONORS]
+
+    def med(vals):
+        vals = sorted(vals)
+        return vals[len(vals) // 2] if len(vals) % 2 else (vals[len(vals) // 2 - 1] + vals[len(vals) // 2]) / 2
+
+    return {"left": {k: med([c[2][k] for c in top]) for k in ("cx", "cy", "h")},
+            "right": {k: med([c[3][k] for c in top]) for k in ("cx", "cy", "h")}, "donors": [c[1]["file"] for c in top]}
+
+
+def _wide_compose(boxes: dict, master: dict, mapping: dict, lib: dict, new_w: float, new_h: float, exclude) -> dict | None:
+    """Put the master's logo pair where the designers' wide boards put theirs, at THEIR height share and the logo's own proportions (never
+    stretched). Edits `boxes` in place; returns a short record for the report or None when nothing was changed."""
+    pair = _logo_pair(master, mapping)
+    if not pair:
+        return None
+    ua, ub = mapping[pair[0]], mapping[pair[1]]
+    donor = _wide_logo_donor(lib, new_w / new_h, new_w, new_h, ua.aspect, exclude)
+    if donor is None:
+        return None
+    units = sorted((ua, ub), key=lambda u: u.x + u.w / 2)           # left one first
+    for u, side in zip(units, ("left", "right")):
+        d = donor[side]
+        h = d["h"] * new_h
+        w = h * u.aspect
+        if w > 0.30 * new_w:                                         # never wider than the pink side panel can hold
+            w = 0.30 * new_w
+            h = w / u.aspect
+        x0, y0 = d["cx"] * new_w - w / 2, d["cy"] * new_h - h / 2
+        if len(u.members) == 1:
+            boxes[u.id] = (x0, y0, w, h, boxes.get(u.id, (0, 0, 0, 0, pair[0]))[4])
+        else:
+            kx, ky = w / u.w, h / u.h
+            for m in u.members:
+                boxes[m.id] = (x0 + (m.x - u.x) * kx, y0 + (m.y - u.y) * ky, m.w * kx, m.h * ky, pair[0])
+    return {"pair": list(pair), "donors": donor["donors"], "left": donor["left"], "right": donor["right"]}
+
+
 def pool_enabled() -> bool:
     import os
 
@@ -742,6 +824,9 @@ def plan(brand: str | None, objs, page_w: float, page_h: float, new_w: float, ne
             for m in u.members:
                 mid = m.id if hasattr(m, "id") else m.get("idx")
                 boxes[f"{mid}_tile{i}"] = (x0 + (m.x - u.x) * kx, y0 + (m.y - u.y) * ky, m.w * kx, m.h * ky, k)
+    wide_compose = None
+    if wide_compose_enabled() and new_w / new_h >= WIDE_REVIEW_ASPECT and not _same_size(board, new_w, new_h):
+        wide_compose = _wide_compose(boxes, master, mapping, lib, new_w, new_h, exclude)
     clip = {}
     for k, t in board["clip"].items():
         clip[k] = (t["cx"] * new_w - t["w"] * new_w / 2, t["cy"] * new_h - t["h"] * new_h / 2, t["w"] * new_w, t["h"] * new_h)
@@ -804,7 +889,7 @@ def plan(brand: str | None, objs, page_w: float, page_h: float, new_w: float, ne
     review = []
     if new_w / new_h >= WIDE_REVIEW_ASPECT:
         review.append(f"wide board ({new_w / new_h:.1f}:1): the designers re-compose boards this wide (name panel, line count, repeated art) instead of scaling - check the layout")
-    return {"review": review, "template": {"file": board["file"], "W": board["W"], "H": board["H"], "exact": _same_size(board, new_w, new_h),
+    return {"wide_compose": wide_compose, "review": review, "template": {"file": board["file"], "W": board["W"], "H": board["H"], "exact": _same_size(board, new_w, new_h),
                          "distance": round(dist, 4), "extra": board.get("extra", 0)},
             "boxes": boxes, "clip": clip, "texts": texts, "board_scripts": sorted(tboard.get("texts") or {}),
             "nested_names": bool(lib.get("nested_names_by_spec")), "name_case": lib.get("name_case")}
