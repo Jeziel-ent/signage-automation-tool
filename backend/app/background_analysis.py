@@ -14,8 +14,19 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import numpy as np
 from PIL import Image
+
+
+class _LazyNumpy:
+    """numpy is NOT in requirements-server.txt (the website image): this module is imported at server start-up through master_store, but the analysis itself
+    runs on a Windows PC / the agent, where numpy exists. Import it on first use, never at import time."""
+
+    def __getattr__(self, name):
+        import numpy
+        return getattr(numpy, name)
+
+
+np = _LazyNumpy()
 
 QUANT_BITS = 4              # colour quantisation for the dominant-colour mode: 16 levels per channel
 RING_FRAC = 0.03            # ring width as a share of the page's short side (in pixels), at least 2 px
