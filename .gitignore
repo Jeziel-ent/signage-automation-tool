@@ -27,6 +27,9 @@ deploy/server.env
 !/backend/brand_data/*/
 /backend/brand_data/*/*
 !/backend/brand_data/*/library.json
+# brand typography (Tamil / English font policy) and the inferred designer-master evidence are read at run time too
+!/backend/brand_data/*/typography.json
+!/backend/brand_data/*/master_evidence.json
 
 *.pyc
 .venv/
@@ -42,16 +45,9 @@ coverage-lcov.info
 frontend-lcov.info
 .scannerwork/
 
-# coverage output (regenerable: pytest --cov / node --test --experimental-test-coverage)
-coverage.xml
-.coverage
-coverage-lcov.info
-frontend-lcov.info
-.scannerwork/
 frontend/lcov.info
 
 # CI outputs (regenerable)
-frontend/lcov.info
 .ci-data/
 ci-reports/
 backend/pytest-report.xml
@@ -60,3 +56,27 @@ frontend/frontend-junit.xml
 # deploy bundles made by hand (git archive / tar of the code)
 *.tgz
 *.tar.gz
+
+# handoff packages carried between PCs by hand (agent exe, zips) - not source
+/office-handoff/
+/office-handoff.zip
+*.zip
+
+# generated comparison decks and Office lock files (tools/build_*_deck.py output)
+*.pptx
+~$*
+
+# per-user Claude Code settings (launch.json stays shareable)
+/.claude/settings.local.json
+
+# stray empty file from a shell redirect typo
+/backend/cd
+
+# logs and editor/OS noise
+*.log
+Thumbs.db
+.idea/
+.vscode/
+
+# UT/ holds designers' CDRs and run output (client data) - never commit
+/UT/

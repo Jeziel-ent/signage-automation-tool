@@ -24,6 +24,10 @@ def _login_off_by_default(monkeypatch):
     """The API needs a login (app/auth.py); the existing API tests exercise routes, not accounts, so they run with it off.
     test_auth.py switches it back on."""
     monkeypatch.setenv("SIGNAGE_AUTH", "off")
+    # master spatial analysis (master_store.py) would start a real CorelDRAW task on every upload of a test that leaves SIGNAGE_ENGINE unset
+    # (auto = corel on Windows); the tests that exercise it switch it on themselves
+    monkeypatch.setenv("SIGNAGE_MASTER_ANALYSIS", "0")
+    monkeypatch.delenv("SIGNAGE_SPATIAL_PLANNER", raising=False)
     from app import alerts, ratelimit, spaces       # in-memory state must not leak from one test into the next
     ratelimit.reset()
     alerts.reset()

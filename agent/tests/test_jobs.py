@@ -402,3 +402,23 @@ def test_the_pump_marks_a_job_stopped_only_on_410(monkeypatch):
         pump.step_for(i, "open")
     assert [pump.is_stopped(i) for i in range(3)] == [True, False, False]
     assert pump.is_stopped(7) is False
+
+
+# ------------------------------------------------------------------ master spatial analysis (the agent reads the master for the site)
+
+def test_agent_runs_a_master_analysis_job_and_the_site_stores_the_model(world, monkeypatch):
+    """Mock agent (no CorelDRAW): the job travels site -> agent -> site, and the stored model is the one the finalizer builds."""
+    monkeypatch.setenv("SIGNAGE_MASTER_ANALYSIS", "1")
+    agent = _make_agent(world)
+    mid = world.web.post("/api/v2/upload", data={"brand": "dalmia"}, files={"master": ("m.cdr", _cdr(), "application/octet-stream")}).json()["id"]
+    assert world.db.get_master_model(mid)["status"] in ("pending", "analysing")        # queued for the agent (owner known) or waiting for one
+    from app import master_store
+
+    world.main._ensure_master_analysis(mid, user_id=world.db.list_agents()[0]["user_id"])
+    runner = JobRunner(agent, mock=True)
+    assert runner.poll_once() == 1
+    row = world.db.get_job(mid)
+    assert master_store.status_for(row)["status"] == "completed"
+    assert master_store.usable_model(row) is not None
+    st = world.web.get(f"/api/masters/{mid}/analysis").json()
+    assert st["status"] == "completed"

@@ -1077,9 +1077,87 @@ def image_size(path: Path) -> tuple[int, int] | None:
         return None
 
 
+MAX_RENDER_IDS = 40
+
+
+def plan_render_steps(n_ops: int, n_ids: int) -> list[dict]:
+    """Progress plan of a render job (render_objects): launch, open, replay the edits, one image per object."""
+    keys = ["launch", "open"] + (["replay"] if n_ops else []) + ["render"]
+    secs = [DEFAULT_SECONDS.get(k, 2 + 0.5 * n_ids) for k in keys]
+    total, acc, steps = sum(secs), 0.0, []
+    for k, sec in zip(keys, secs):
+        acc += sec
+        steps.append({"key": k, "endPct": min(100, round(acc / total * 100))})
+    steps[-1]["endPct"] = 100
+    return steps
+
+
+def render_candidates(scene: dict, ids: list[str]) -> dict[str, bool]:
+    """id -> sits inside a PowerClip, for each requested id that is a text leaf of `scene`; anything else is not rendered."""
+    found: dict[str, bool] = {}
+
+    def walk(nodes, in_clip):
+        for n in nodes:
+            if n.get("id") in ids and n.get("type") == "text" and not n.get("children"):
+                found[n["id"]] = in_clip
+            walk(n.get("children") or [], in_clip or n.get("kind") == "powerclip")
+
+    for layer in scene.get("layers", []):
+        walk(layer.get("children") or [], False)
+    return found
+
+
+def render_objects(doc, expected: dict, ids: list[str], out_dir: Path, report: dict, step: Callable[[str], None]) -> dict[str, str]:
+    """The single-object render: each requested text object of the (already replayed) document as its own transparent PNG, exactly as the
+    scene export draws a text leaf (same density, same out-of-PowerClip duplicate trick), so the editor can swap CorelDRAW's real result in for its
+    live-text approximation. Records where CorelDRAW really put the object (`report["renders"][id]` = file, x, y, w, h in mm, rotation) because
+    an edited text's box is whatever CorelDRAW typeset, not what the editor guessed. Returns {id: file name}."""
+    shapes, _ = index_doc(doc.ActivePage)
+    candidates = render_candidates(expected, ids)
+    renders: dict[str, dict] = report.setdefault("renders", {})
+    files: dict[str, str] = {}
+    todo = [i for i in ids if i in candidates]
+    for i in ids:
+        if i not in candidates:
+            report["warnings"].append(f"{i}: not a text object of this board - not rendered")
+    for k, nid in enumerate(todo, start=1):
+        step(f"render {k}/{len(todo)}")
+        shape = shapes.get(nid)
+        if shape is None:
+            report["warnings"].append(f"{nid}: not found in the document after the edits - not rendered")
+            continue
+        node = {"id": nid, "kind": "shape", "type": "text", "image": None,
+                "w": float(shape.SizeWidth), "h": float(shape.SizeHeight)}
+        if candidates[nid]:
+            node["_in_clip"] = True
+        try:
+            scene_export._export_leaf(doc, node, shape, out_dir)
+        except Exception as e:  # noqa: BLE001 - one object failing must not lose the others
+            report["warnings"].append(f"{nid}: CorelDRAW could not render it ({e})")
+            continue
+        img = node.get("image") or {}
+        if not img.get("file") or not (out_dir / img["file"]).is_file():
+            report["warnings"].append(f"{nid}: no image was written")
+            continue
+        renders[nid] = {"file": img["file"], "format": img.get("format", "png"),
+                        "x": round(float(shape.LeftX), 4), "y": round(float(shape.BottomY), 4),
+                        "w": round(float(shape.SizeWidth), 4), "h": round(float(shape.SizeHeight), 4),
+                        "rotation": round(_safe(lambda: float(shape.RotationAngle), 0.0), 4)}
+        files[nid] = img["file"]
+    return files
+
+
+def mock_render(ids: list[str], heartbeat: Path) -> dict:
+    """MockEngine stand-in: nothing is drawn (there is no CorelDRAW), so the editor keeps its live-text preview."""
+    import json
+    heartbeat.write_text(json.dumps({"step": "render"}), encoding="utf-8")
+    return {"files": {}, "renders": {}, "warnings": ["mock engine: no CorelDRAW render was made"], "mock": True, "timings_s": {}}
+
+
 def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats: list[str], options: dict,
                      out_dir: Path, base_name: str, on_step: Callable[[str], None] | None = None,
-                     assets_dir: Path | str | None = None, font_subs: dict[str, str] | None = None) -> dict:
+                     assets_dir: Path | str | None = None, font_subs: dict[str, str] | None = None,
+                     render_ids: list[str] | None = None) -> dict:
     """Opens the converted .cdr in a fresh CorelDRAW, replays `ops`, verifies, exports, closes WITHOUT saving
     over the original. Returns the job report (files, timings, replay + verification results, warnings).
     `assets_dir` is where a `swap_image`/`update_product_slot` op's asset `path` resolves against - see
@@ -1094,9 +1172,10 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
     out_dir = Path(out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     scene = json.loads(Path(scene_path).read_text(encoding="utf-8"))
-    opts = normalize_options(formats, options)
+    # a render job (render_ids) draws single text objects instead of writing the board's files: no formats, no options
+    opts = {} if render_ids else normalize_options(formats, options)
     expected = scene_ops.apply_ops(scene, ops) if ops else scene            # also re-validates the list
-    sizes = raster_sizes(expected["page"]["width"], expected["page"]["height"], opts, formats)
+    sizes = {} if render_ids else raster_sizes(expected["page"]["width"], expected["page"]["height"], opts, formats)
 
     warnings: list[str] = []
     timings: dict[str, float] = {}
@@ -1145,15 +1224,21 @@ def export_from_file(cdr_path: Path, scene_path: Path, ops: list[dict], formats:
             step("replay")
             report["replay"] = corel_util.run_with_timeout(replay, pid, "replay", timeout=max(300.0, 2.0 * len(ops)))
             timings["replay"] = round(time.time() - t, 2)
-            report["verification"] = timed("verify", lambda: verify(doc.ActivePage, expected))
-            if not report["verification"]["ok"]:
+            report["verification"] = None if render_ids else timed("verify", lambda: verify(doc.ActivePage, expected))
+            if report["verification"] and not report["verification"]["ok"]:
                 warnings.append("The exported document differs from the editor in "
                                 f"{len(report['verification']['mismatches'])} place(s) - see verification.mismatches")
         if font_subs:
             # after the replay is verified against the shadow scene (which still has the original font names)
             report["font_substitutions"] = corel_util.run_with_timeout(
                 lambda: apply_font_substitutions(doc.ActivePage, font_subs, warnings), pid, "fonts")
-        for fmt in export_order(formats, opts):
+        if render_ids:
+            t = time.time()
+            files.update(corel_util.run_with_timeout(
+                lambda: render_objects(doc, expected, list(render_ids)[:MAX_RENDER_IDS], out_dir, report, step),
+                pid, "render", timeout=max(120.0, 6.0 * len(render_ids))))
+            timings["render"] = round(time.time() - t, 2)
+        for fmt in ([] if render_ids else export_order(formats, opts)):
             if fmt == "cdr":
                 p = out_dir / f"{base}.cdr"
                 if opts["cdr"]["text"] == "curves":

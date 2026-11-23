@@ -207,6 +207,22 @@ CREATE TABLE IF NOT EXISTS shops (
     created_at REAL NOT NULL,
     completed_at REAL
 );
+
+-- Master spatial intelligence: one row per master (jobs.id) = the state of its analysis; the model itself is a JSON file
+-- (<jobs_v2>/<job>/spatial_model.json, path in model_path) so a large model never bloats this table.
+CREATE TABLE IF NOT EXISTS master_models (
+    job_id TEXT PRIMARY KEY,
+    master_hash TEXT,
+    extractor_version INTEGER,
+    schema_version INTEGER,
+    corel_version TEXT,
+    status TEXT NOT NULL,
+    error TEXT,
+    model_path TEXT,
+    started_at REAL,
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
 """
 
 # Columns added after the tables above first shipped - `CREATE TABLE IF NOT
@@ -1190,3 +1206,66 @@ def delete_exports(ids: list[str]) -> int:
     with _conn() as conn:
         return conn.execute(f"DELETE FROM exports WHERE id IN ({','.join('?' * len(ids))})", ids).rowcount
 
+
+
+# ----------------------------------------------------------------------------------- master spatial models (master_store.py)
+
+ANALYSIS_STALE_S = 1800.0     # an 'analysing' row older than this belonged to a run that died: it may be claimed again
+
+
+def get_master_model(job_id: str) -> dict | None:
+    with _conn() as conn:
+        row = conn.execute("SELECT * FROM master_models WHERE job_id = ?", (job_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def claim_master_analysis(job_id: str, master_hash: str | None, extractor_version: int, schema_version: int,
+                          force: bool = False) -> bool:
+    """Atomically mark this master 'analysing'. False when an analysis of the SAME master version is already running (not stale),
+    or when a completed analysis of this hash / extractor / schema already exists (unless `force`). BEGIN IMMEDIATE takes the write lock
+    first, so two callers cannot both win."""
+    now = time.time()
+    with _conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM master_models WHERE job_id = ?", (job_id,)).fetchone()
+        if row:
+            row = dict(row)
+            if row["status"] == "analysing" and now - (row["started_at"] or 0) < ANALYSIS_STALE_S and row["master_hash"] == master_hash:
+                return False
+            if (not force and row["status"] == "completed" and row["master_hash"] == master_hash
+                    and row["extractor_version"] == extractor_version and row["schema_version"] == schema_version):
+                return False
+            conn.execute("UPDATE master_models SET status = 'analysing', error = NULL, master_hash = ?, extractor_version = ?, "
+                         "schema_version = ?, started_at = ?, updated_at = ? WHERE job_id = ?",
+                         (master_hash, extractor_version, schema_version, now, now, job_id))
+        else:
+            conn.execute("INSERT INTO master_models (job_id, master_hash, extractor_version, schema_version, status, started_at, "
+                         "created_at, updated_at) VALUES (?, ?, ?, ?, 'analysing', ?, ?, ?)",
+                         (job_id, master_hash, extractor_version, schema_version, now, now, now))
+    return True
+
+
+def mark_master_pending(job_id: str, master_hash: str | None = None) -> None:
+    now = time.time()
+    with _conn() as conn:
+        conn.execute("INSERT INTO master_models (job_id, master_hash, status, created_at, updated_at) VALUES (?, ?, 'pending', ?, ?) "
+                     "ON CONFLICT(job_id) DO UPDATE SET status = CASE WHEN status = 'analysing' THEN status ELSE 'pending' END, "
+                     "updated_at = excluded.updated_at", (job_id, master_hash, now, now))
+
+
+def finish_master_analysis(job_id: str, ok: bool, model_path: str | None = None, corel_version: str | None = None,
+                           error: str | None = None) -> None:
+    with _conn() as conn:
+        conn.execute("UPDATE master_models SET status = ?, model_path = ?, corel_version = ?, error = ?, updated_at = ? WHERE job_id = ?",
+                     ("completed" if ok else "failed", model_path if ok else None, corel_version, None if ok else (error or "failed")[:500],
+                      time.time(), job_id))
+
+
+def fail_interrupted_master_analyses(reason: str) -> int:
+    """Server start: an 'analysing' row belonged to the previous process (local mode) and can never finish - unless an agent job for it
+    is still alive in the queue (remote mode), which keeps its row."""
+    with _conn() as conn:
+        return conn.execute(
+            "UPDATE master_models SET status = 'failed', error = ?, updated_at = ? WHERE status = 'analysing' AND job_id NOT IN "
+            "(SELECT ref FROM agent_jobs WHERE kind = 'master_analysis' AND state IN ('queued', 'claimed', 'running') AND ref IS NOT NULL)",
+            (reason, time.time())).rowcount

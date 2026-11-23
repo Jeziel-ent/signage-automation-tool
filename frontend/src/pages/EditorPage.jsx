@@ -17,6 +17,7 @@ import { Fit, Redo, Undo, ZoomIn, ZoomOut } from "../editor/icons.jsx";
 import { AlphaMaps } from "../editor/alphaMaps.js";
 import { cloneWithNewIds, shiftNode, unionBox } from "../editor/model.js";
 import { applyOps, buildIndex } from "../editor/ops.js";
+import { opsKey, renderOverrides, textsToRender } from "../editor/renderPlan.js";
 import { UNIT_NAMES, fmt, fromUnit, toUnit, trimZeros, UNITS } from "../editor/units.js";
 import { fitView, zoomAt } from "../editor/view.js";
 import { ensureFont, fontSourceDetail, isWebOnly, missingFonts, sceneFonts } from "../utils/fontLoader.js";
@@ -161,6 +162,48 @@ export default function EditorPage() {
       return base;
     }
   }, [base, ops, cursor]);
+
+  // CorelDRAW's own drawing of the edited text. The canvas shows the browser-font approximation (LiveText) at once; a couple of seconds after the
+  // edits settle, CorelDRAW (the designer's agent) is asked to draw just those text objects and the real lettering replaces the approximation.
+  // A result applies only to the exact edits it was made for. Failure or an old agent changes nothing: the approximation stays.
+  const [renders, setRenders] = useState(null); // {key, exportId, files}
+  const editsKey = useMemo(() => opsKey(ops.slice(0, cursor)), [ops, cursor]);
+  useEffect(() => {
+    if (!scene || !base) return undefined;
+    const ids = textsToRender(scene, base);
+    if (!ids.length) return undefined;
+    let alive = true;
+    let timer = null;
+    const wait = (ms) => new Promise((resolve) => { timer = setTimeout(resolve, ms); });
+    (async () => {
+      await wait(2500);
+      if (!alive) return;
+      try {
+        const r = await fetch(`/api/editor/${jobId}/${shopId}/render`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, ops: ops.slice(0, cursor) }) });
+        if (!r.ok) return;
+        const { export_id: exportId } = await r.json();
+        for (let i = 0; i < 180 && alive; i += 1) {
+          await wait(1200);
+          if (!alive) return;
+          const st = await fetch(`/api/editor/${jobId}/${shopId}/export/${exportId}`).then((x) => x.json());
+          if (st.status === "failed") return;
+          if (st.status === "done") {
+            const files = (st.report && st.report.renders) || {};
+            if (Object.keys(files).length) setRenders({ key: editsKey, exportId, files });
+            return;
+          }
+        }
+      } catch {
+        /* the live-text approximation stays */
+      }
+    })();
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- editsKey stands for ops + cursor
+  }, [editsKey, base, jobId, shopId]);
+  const renderUrls = useMemo(() => renderOverrides(renders, editsKey, `/api/editor/${jobId}/${shopId}/render/`), [renders, editsKey, jobId, shopId]);
 
   // Fonts the board's text uses, made renderable in this browser for the live text (local, the server's copy, or Google Fonts).
   const [fontStatus, setFontStatus] = useState({}); // family -> "loading" | "local" | "server" | "google" | "missing"
@@ -702,6 +745,7 @@ export default function EditorPage() {
               fonts={fonts}
               fontSubs={fontSubs}
               textPreview={textPreview}
+              renderUrls={renderUrls}
               editingId={editing}
               onEditText={startEdit}
               onTextApply={applyText}

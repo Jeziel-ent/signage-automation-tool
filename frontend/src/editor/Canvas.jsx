@@ -49,7 +49,7 @@ export function resizeBox(handle, start, dx, dy, free) {
 const LINE_BREAK = /\r\n|\r|\n/;
 const lineCount = (s) => String(s ?? "").split(LINE_BREAK).length;
 
-const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs, hideKey }) {
+const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs, hideKey, renderUrls }) {
   const hidden = new Set(hideKey ? hideKey.split(",") : []);
   const draw = (list) =>
     list.map((it) => {
@@ -99,7 +99,7 @@ const SceneImages = memo(function SceneImages({ items, assetBase, pageH, imgRefs
             else imgRefs.current.delete(n.id);
           }}
           data-id={n.id}
-          href={assetBase + n.image.file}
+          href={(renderUrls && renderUrls[n.id]) || assetBase + n.image.file}
           x={n.x}
           y={pageH - n.y - n.h}
           width={n.w}
@@ -118,7 +118,7 @@ function ancestryOf(idx, id) {
   return out;
 }
 
-export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, fontSubs, textPreview, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
+export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, setView, showRender, snap, alphaMaps, fonts, fontSubs, textPreview, renderUrls, editingId, onEditText, onTextApply, onEditEnd, onSelect, onCommit, onToast, onCursor, onSize }) {
   const rootRef = useRef(null);
   const svgRef = useRef(null);
   const imgRefs = useRef(new Map());
@@ -145,7 +145,7 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
       const typing = textPreview && textPreview.id === n.id;
       // a substituted missing font ("Missing Font Detected"): drawn live in the replacement instead of CorelDRAW's render
       const sub = substituteFor(n.text.font, fontSubs);
-      if (!typing && !n.stale && !sub) continue;
+      if (!typing && !sub && (!n.stale || (renderUrls && renderUrls[n.id]))) continue; // CorelDRAW's own render of the edit replaces the approximation
       out.push({
         node: n,
         content: typing && textPreview.content != null ? textPreview.content : n.text.content,
@@ -155,7 +155,7 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
       });
     }
     return out;
-  }, [scene, textPreview, baseLines, fontSubs]);
+  }, [scene, textPreview, baseLines, fontSubs, renderUrls]);
   const hideKey = liveTexts.map((l) => l.node.id).join(",");
   const leaves = useMemo(() => flattenLeaves(scene), [scene]);
   const plan = useMemo(() => renderItems(scene), [scene]);
@@ -471,7 +471,7 @@ export default function Canvas({ scene, baseScene, assetBase, sel, ctx, view, se
           <rect x={0} y={10 / view.zoom} width={pageW} height={pageH} fill="#000" opacity="0.8" filter="url(#ed-page-shadow)" pointerEvents="none" />
           <rect x="0" y="0" width={pageW} height={pageH} fill="#ffffff" />
           <g style={{ visibility: showRender && scene.page_image ? "hidden" : "visible" }}>
-            <SceneImages items={plan} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideKey={hideKey} />
+            <SceneImages items={plan} assetBase={assetBase} pageH={pageH} imgRefs={imgRefs} hideKey={hideKey} renderUrls={renderUrls} />
             {liveTexts.map((l) => (
               <LiveText key={l.node.id} node={l.node} content={l.content} font={l.font} origLines={l.origLines} outline={l.typing} pageH={pageH} assetBase={assetBase} imgRefs={imgRefs} />
             ))}

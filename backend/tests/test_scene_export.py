@@ -154,6 +154,8 @@ def test_plan_png_size_clamps_long_side():
     assert tiny[0] == 2 * tiny[1]
     mid = scene_export.plan_png_size(100, 50)
     assert mid == (400, 200)
+    assert scene_export.plan_png_size(100, 50, text=True) == (1000, 500)
+    assert max(scene_export.plan_png_size(3000, 100, text=True)) == scene_export.TEXT_MAX_LONG_PX
 
 
 def test_walk_page_reverses_corel_order_and_skips_special_layers():
@@ -226,7 +228,7 @@ def test_png_exports_are_selection_only_and_transparent(tmp_path):
     text_call = next(c for c in doc.calls if c["name"] == f"s{s['top_text'].StaticID}.png")
     assert text_call["transparent"] is True
     assert text_call["range_"] == scene_export.CDR_SELECTION
-    assert text_call["size"] == scene_export.plan_png_size(200, 40)
+    assert text_call["size"] == scene_export.plan_png_size(200, 40, text=True)
     page_call = next(c for c in doc.calls if c["name"] == "page.png")
     assert page_call["range_"] == scene_export.CDR_CURRENT_PAGE
     assert page_call["transparent"] is False
@@ -429,7 +431,7 @@ def test_a_powerclip_frame_is_exported_on_its_own_for_the_editor(tmp_path):
     node = next(n for n in scene_ops.iter_nodes(scene) if n["kind"] == "powerclip")
     assert node["frame_image"] == {"file": f"s{clip.StaticID}_frame.svg", "format": "svg"}
     assert events[-4:] == ["frame dup", "frame moved", "frame contents deleted", "frame deleted"]
-    assert scene["version"] == scene_export.SCENE_VERSION == 5
+    assert scene["version"] == scene_export.SCENE_VERSION == 6
 
 
 def test_a_frame_export_failure_only_leaves_the_frame_image_out(tmp_path):

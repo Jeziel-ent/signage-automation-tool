@@ -24,7 +24,7 @@ import time
 from pathlib import Path
 from typing import Callable
 
-SCENE_VERSION = 5
+SCENE_VERSION = 6
 CDR_PNG = 802
 CDR_SVG = 1345
 CDR_CURRENT_PAGE = 1
@@ -47,12 +47,17 @@ IMG_PX_PER_MM = 4.0       # ~100 dpi: crisp enough to zoom in on, small enough t
 IMG_MIN_LONG_PX = 96
 IMG_MAX_LONG_PX = 2048    # 2048x2048 RGBA is 16 MB decoded - the worst case for one leaf
 PAGE_IMAGE_MAX_PX = 2400
+# Lettering is what designers zoom in on and compare with CorelDRAW; at ~100 dpi it looked soft. Text boxes are small, so a
+# denser render costs little memory (the long side is still capped).
+TEXT_DENSITY = 2.5
+TEXT_MAX_LONG_PX = 3072
 
 
-def plan_png_size(w_mm: float, h_mm: float) -> tuple[int, int]:
-    """Pixel size for a leaf's PNG: ~IMG_PX_PER_MM, longest side clamped to [MIN, MAX]."""
+def plan_png_size(w_mm: float, h_mm: float, text: bool = False) -> tuple[int, int]:
+    """Pixel size for a leaf's PNG: ~IMG_PX_PER_MM (TEXT_DENSITY x that for text), longest side clamped to [MIN, MAX]."""
     longest = max(w_mm, h_mm, 0.001)
-    long_px = max(IMG_MIN_LONG_PX, min(IMG_MAX_LONG_PX, longest * IMG_PX_PER_MM))
+    per_mm, cap = (IMG_PX_PER_MM * TEXT_DENSITY, TEXT_MAX_LONG_PX) if text else (IMG_PX_PER_MM, IMG_MAX_LONG_PX)
+    long_px = max(IMG_MIN_LONG_PX, min(cap, longest * per_mm))
     k = long_px / longest
     return max(1, round(w_mm * k)), max(1, round(h_mm * k))
 
@@ -295,7 +300,7 @@ def _render_leaf(doc, node: dict, target, img_dir: Path) -> None:
         except Exception:
             pass
         p.unlink(missing_ok=True)
-    px_w, px_h = plan_png_size(node["w"], node["h"])
+    px_w, px_h = plan_png_size(node["w"], node["h"], text=node["type"] == "text")
     p = img_dir / f"{node['id']}.png"
     _export_png(doc, p, px_w, px_h)
     node["image"] = {"file": p.name, "format": "png"}
@@ -448,7 +453,7 @@ def export_scene(doc, out_dir: Path, on_step: Callable[[str], None] | None = Non
         failed.append(f"page image: {e}")
 
     scene = {
-        "version": SCENE_VERSION,          # 2: PowerClip children have own images; 3: ...and are exported from duplicates (v2 wrote empty SVGs for them); 4: + the frame's own fill (frame_image); 5: a frame turned by a multiple of 90 degrees still counts as a rectangle (frame_rect)
+        "version": SCENE_VERSION,          # 2: PowerClip children have own images; 3: ...and are exported from duplicates (v2 wrote empty SVGs for them); 4: + the frame's own fill (frame_image); 5: a frame turned by a multiple of 90 degrees still counts as a rectangle (frame_rect); 6: text is rendered at TEXT_DENSITY x the density of other PNGs, so zoomed-in lettering stays crisp
         "unit": "mm",
         "page": {"width": round(page_w, 4), "height": round(page_h, 4)},
         "page_image": page_image,

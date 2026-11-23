@@ -186,6 +186,8 @@ class JobRunner:
                 self._export(job, inputs, work, pump)
             elif job["kind"] == "font_files":
                 self._font_files(job)
+            elif job["kind"] == "master_analysis":
+                self._master_analysis(job, inputs, work, pump)
             else:
                 self._fail(job, f"this agent cannot do {job['kind']!r} jobs - update the agent")
         except Exception as e:  # noqa: BLE001 - whatever went wrong is the job's failure, with the reason
@@ -226,18 +228,42 @@ class JobRunner:
         _zip_scene(scene_dir, archive)
         self._send_files(job, {"scene": archive}, {})
 
+    def _master_analysis(self, job: dict, inputs: dict[str, Path], work: Path, pump: "_Pump") -> None:
+        """Master spatial intelligence: read the master read-only through CorelDRAW and send the extraction (+ one page render)."""
+        out = work / "analysis"
+        out.mkdir(parents=True, exist_ok=True)
+        if self.mock:
+            pump.step_for(0, "master_analysis")
+            from app import master_store
+
+            (out / "extraction.json").write_text(json.dumps(master_store.mock_extraction()), encoding="utf-8")
+            files = {"extraction": out / "extraction.json"}
+        else:
+            results_path = work / "analysis.json"
+            pump.heartbeat = engine_bridge.heartbeat_path(results_path)
+            entry = engine_bridge.run_spec({"master_analysis": str(inputs["cdr"]), "analysis_out": str(out)}, results_path)
+            if entry.get("status") != "done":
+                raise RuntimeError(entry.get("error", "master analysis failed"))
+            files = {"extraction": out / "extraction.json"}
+            if (out / "master_page.png").is_file():
+                files["render"] = out / "master_page.png"
+        self._send_files(job, files, {})
+
     def _export(self, job: dict, inputs: dict[str, Path], work: Path, pump: "_Pump") -> None:
         spec = dict(job.get("spec") or {})
         out_dir = work / "out"
         out_dir.mkdir(parents=True, exist_ok=True)
         results_path = work / "export.json"
         pump.heartbeat = engine_bridge.heartbeat_path(results_path)
-        if self.mock:
+        if self.mock and spec.get("render_ids"):
+            report = engine_bridge.mock_render(spec["render_ids"], pump.heartbeat)
+        elif self.mock:
             report = engine_bridge.mock_export(inputs["scene"], spec, out_dir, pump.heartbeat)
         else:
             run = {"cdr": str(inputs["cdr"]), "scene": str(inputs["scene"]), "ops": spec.get("ops") or [], "formats": spec["formats"],
                    "options": spec["options"], "out_dir": str(out_dir), "base_name": spec["base_name"],
-                   "assets_dir": str(work / "in" / "assets"), "font_subs": spec.get("font_subs") or {}}
+                   "assets_dir": str(work / "in" / "assets"), "font_subs": spec.get("font_subs") or {},
+                   "render_ids": spec.get("render_ids")}
             entry = engine_bridge.run_spec({"export_replay": run}, results_path)
             if entry.get("status") != "done":
                 raise RuntimeError(entry.get("error", "export failed"))

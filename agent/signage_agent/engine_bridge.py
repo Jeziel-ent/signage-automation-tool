@@ -67,6 +67,13 @@ def mock_export(scene_path: Path, spec: dict, out_dir: Path, heartbeat: Path) ->
     return export_replay.mock_export(expected, spec["formats"], spec["options"], out_dir, spec["base_name"], heartbeat)
 
 
+def mock_render(ids: list, heartbeat: Path) -> dict:
+    """The mock agent draws nothing for a single-object render: the editor keeps its live-text preview."""
+    from app import export_replay
+
+    return export_replay.mock_render(ids, heartbeat)
+
+
 def font_file(family: str):
     """Path of the installed font file for a family on this PC (inside a Windows fonts folder), or None."""
     from app import fonts
